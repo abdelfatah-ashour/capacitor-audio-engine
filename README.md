@@ -1,10 +1,50 @@
-# @capacitor/native-audio 🎙️
+# Capacitor Audio Engine 🎙️
 
 Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin makes it super easy to add high-quality audio recording to your mobile apps. Whether you're building a voice memo app, a podcast recorder, or just need to capture some audio, we've got you covered!
 
-## ✨ What's Inside?
+## 📑 Table of Contents
 
-Here's what you can do with this plugin:
+- [Capacitor Audio Engine 🎙️](#capacitor-audio-engine-️)
+  - [📑 Table of Contents](#-table-of-contents)
+  - [✨ Features](#-features)
+  - [📱 Platform Support](#-platform-support)
+  - [🚀 Installation](#-installation)
+    - [Prerequisites](#prerequisites)
+    - [Setup](#setup)
+      - [iOS](#ios)
+      - [Android](#android)
+  - [📖 API Documentation](#-api-documentation)
+    - [Core Interfaces](#core-interfaces)
+      - [`RecordingResult`](#recordingresult)
+      - [`TrimOptions`](#trimoptions)
+    - [Methods](#methods)
+      - [Permission Management](#permission-management)
+        - [`checkPermission()`](#checkpermission)
+        - [`requestPermission()`](#requestpermission)
+      - [Recording Control](#recording-control)
+        - [`startRecording()`](#startrecording)
+        - [`pauseRecording()`](#pauserecording)
+        - [`stopRecording()`](#stoprecording)
+      - [Status \& Information](#status--information)
+        - [`getDuration()`](#getduration)
+        - [`getStatus()`](#getstatus)
+      - [Audio Processing](#audio-processing)
+        - [`trimAudio()`](#trimaudio)
+  - [💡 Examples](#-examples)
+    - [Basic Recording](#basic-recording)
+    - [React Component Example](#react-component-example)
+  - [🔧 Troubleshooting](#-troubleshooting)
+    - [Common Issues](#common-issues)
+  - [🛠️ Technical Details](#️-technical-details)
+    - [Platform-Specific Implementations](#platform-specific-implementations)
+      - [Web](#web)
+      - [Android](#android-1)
+      - [iOS](#ios-1)
+  - [🤝 Contributing](#-contributing)
+  - [📄 License](#-license)
+  - [📞 Need Help?](#-need-help)
+
+## ✨ Features
 
 - 🎯 Record high-quality audio on Android and iOS
 - ⏯️ Pause and resume your recordings
@@ -18,18 +58,7 @@ Here's what you can do with this plugin:
   - Channels: 1 (mono)
   - Bitrate: 128kbps
 
-## 🚀 Let's Get Started!
-
-First, let's install the plugin:
-
-```bash
-npm install @capacitor/native-audio
-npx cap sync
-```
-
 ## 📱 Platform Support
-
-Here's what works where:
 
 | Feature             | Android | iOS | Web |
 | ------------------- | ------- | --- | --- |
@@ -41,13 +70,53 @@ Here's what works where:
 
 > 💡 **Note:** Android and iOS are fully supported! Web support is coming soon - we're working on it! 🚧
 
+## 🚀 Installation
+
+### Prerequisites
+
+- Node.js 14+ and npm
+- Capacitor 5.0.0+
+- iOS 13+ for iOS development
+- Android 6.0+ (API level 24) for Android development
+
+### Setup
+
+1. Install the plugin:
+
+```bash
+npm i capacitor-audio-engine
+```
+
+2. Sync your project:
+
+```bash
+npx cap sync
+```
+
+3. Add required permissions:
+
+#### iOS
+
+Add these to your `Info.plist`:
+
+```xml
+<key>NSMicrophoneUsageDescription</key>
+<string>We need access to your microphone to record audio</string>
+```
+
+#### Android
+
+Add this to your `AndroidManifest.xml`:
+
+```xml
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+```
+
 ## 📖 API Documentation
 
-### Interfaces
+### Core Interfaces
 
 #### `RecordingResult`
-
-This is what you get when you stop a recording:
 
 ```typescript
 interface RecordingResult {
@@ -67,8 +136,6 @@ interface RecordingResult {
 
 #### `TrimOptions`
 
-Use this when you want to trim your audio:
-
 ```typescript
 interface TrimOptions {
   path: string; // Your audio file
@@ -79,380 +146,103 @@ interface TrimOptions {
 
 ### Methods
 
-#### `echo`
+#### Permission Management
 
-```typescript
-echo(options: { value: string }): Promise<{ value: string }>;
-```
+##### `checkPermission()`
 
-Just a simple test method to make sure everything's working.
-
-**Parameters:**
-
-```typescript
-{
-  value: string; // Say something, and we'll say it back!
-}
-```
-
-**Returns:**
-
-```typescript
-Promise<{
-  value: string; // Your message, echoed back
-}>;
-```
-
----
-
-#### `checkPermission`
+Check if your app has permission to use the microphone.
 
 ```typescript
 checkPermission(): Promise<{ granted: boolean }>;
 ```
 
-Check if your app has permission to use the microphone.
+##### `requestPermission()`
 
-**Returns:**
-
-```typescript
-Promise<{
-  granted: boolean; // Can we use the mic?
-}>;
-```
-
-**Platform Notes:**
-
-- Web: Uses the browser's permission API
-- Android: Checks for RECORD_AUDIO permission
-- iOS: Checks AVAudioSession permissions
-
----
-
-#### `requestPermission`
+Ask the user for microphone permission.
 
 ```typescript
 requestPermission(): Promise<{ granted: boolean }>;
 ```
 
-Ask the user for microphone permission.
+#### Recording Control
 
-**Returns:**
+##### `startRecording()`
 
-```typescript
-Promise<{
-  granted: boolean; // Did they say yes?
-}>;
-```
-
-**Platform Notes:**
-
-- Web: Shows browser permission prompt
-- Android: Shows system permission dialog
-- iOS: Shows system permission dialog
-
----
-
-#### `startRecording`
+Start recording audio.
 
 ```typescript
 startRecording(): Promise<void>;
 ```
 
-Start recording! 🎙️
+##### `pauseRecording()`
 
-**Returns:**
-
-```typescript
-Promise<void>; // Ready to record!
-```
-
-**Throws:**
-
-- If you're already recording
-- If you don't have permission
-- If something goes wrong with the audio setup
-
-**Platform Notes:**
-
-- Web: Uses the MediaRecorder API
-- Android: Uses MediaRecorder
-- iOS: Uses AVAudioRecorder
-
----
-
-#### `pauseRecording`
+Pause the current recording.
 
 ```typescript
 pauseRecording(): Promise<void>;
 ```
 
-Take a break from recording.
+##### `stopRecording()`
 
-**Returns:**
-
-```typescript
-Promise<void>; // Recording paused!
-```
-
-**Throws:**
-
-- If you're not recording
-
-**Platform Notes:**
-
-- Web: Pauses MediaRecorder
-- Android: Pauses MediaRecorder (Android N+ only)
-- iOS: Pauses AVAudioRecorder
-
----
-
-#### `stopRecording`
+Stop recording and get the audio file.
 
 ```typescript
 stopRecording(): Promise<RecordingResult>;
 ```
 
-Stop recording and get your audio file.
+#### Status & Information
 
-**Returns:**
+##### `getDuration()`
 
-```typescript
-Promise<RecordingResult>; // Your recording details
-```
-
-**Throws:**
-
-- If you're not recording
-- If something goes wrong saving the file
-
-**Platform Notes:**
-
-- Web: Gives you a blob URL
-- Android: Gives you a content URL
-- iOS: Gives you a capacitor file URL
-
----
-
-#### `getDuration`
+Get the current recording duration.
 
 ```typescript
 getDuration(): Promise<{ duration: number }>;
 ```
 
-How long have you been recording?
+##### `getStatus()`
 
-**Returns:**
-
-```typescript
-Promise<{
-  duration: number; // Time in seconds
-}>;
-```
-
-**Throws:**
-
-- If you're not recording
-
-**Platform Notes:**
-
-- Web: Calculates from start time
-- Android: Uses MediaRecorder
-- iOS: Uses AVAudioRecorder
-
----
-
-#### `getStatus`
+Check if currently recording.
 
 ```typescript
 getStatus(): Promise<{ isRecording: boolean }>;
 ```
 
-Are we recording right now?
+#### Audio Processing
 
-**Returns:**
+##### `trimAudio()`
 
-```typescript
-Promise<{
-  isRecording: boolean; // Yes or no?
-}>;
-```
-
-**Platform Notes:**
-
-- All platforms track recording state internally
-
----
-
-#### `trimAudio`
+Trim an audio file to a specific duration.
 
 ```typescript
 trimAudio(options: TrimOptions): Promise<RecordingResult>;
 ```
 
-Cut your audio to just the good parts! ✂️
-
-**Parameters:**
-
-```typescript
-{
-  path: string; // Your audio file
-  startTime: number; // Start here (seconds)
-  endTime: number; // End here (seconds)
-}
-```
-
-**Returns:**
-
-```typescript
-Promise<RecordingResult>; // Your trimmed audio
-```
-
-**Throws:**
-
-- If something goes wrong trimming the file
-
-**Platform Notes:**
-
-- Web: Not supported yet (coming soon!)
-- Android: Uses MediaExtractor and MediaMuxer
-- iOS: Uses AVAssetExportSession
-
 ## 💡 Examples
 
-### Basic Recording Example
+### Basic Recording
 
 ```typescript
 import { NativeAudio } from '@capacitor/native-audio';
 
 async function startBasicRecording() {
   try {
-    // Request permission first
     const { granted } = await NativeAudio.requestPermission();
     if (!granted) {
       console.error('Microphone permission not granted');
       return;
     }
 
-    // Start recording
     await NativeAudio.startRecording();
     console.log('Recording started');
 
-    // Stop recording after 5 seconds
+    // Stop after 5 seconds
     setTimeout(async () => {
       const recording = await NativeAudio.stopRecording();
       console.log('Recording saved:', recording);
     }, 5000);
   } catch (error) {
     console.error('Recording failed:', error);
-  }
-}
-```
-
-### Recording with Pause/Resume
-
-```typescript
-import { NativeAudio } from '@capacitor/native-audio';
-
-class AudioRecorder {
-  private isRecording = false;
-
-  async startRecording() {
-    try {
-      const { granted } = await NativeAudio.requestPermission();
-      if (!granted) return;
-
-      await NativeAudio.startRecording();
-      this.isRecording = true;
-      console.log('Recording started');
-    } catch (error) {
-      console.error('Failed to start recording:', error);
-    }
-  }
-
-  async pauseRecording() {
-    if (!this.isRecording) return;
-
-    try {
-      await NativeAudio.pauseRecording();
-      console.log('Recording paused');
-    } catch (error) {
-      console.error('Failed to pause recording:', error);
-    }
-  }
-
-  async resumeRecording() {
-    if (!this.isRecording) return;
-
-    try {
-      await NativeAudio.startRecording();
-      console.log('Recording resumed');
-    } catch (error) {
-      console.error('Failed to resume recording:', error);
-    }
-  }
-
-  async stopRecording() {
-    if (!this.isRecording) return;
-
-    try {
-      const recording = await NativeAudio.stopRecording();
-      this.isRecording = false;
-      console.log('Recording saved:', recording);
-      return recording;
-    } catch (error) {
-      console.error('Failed to stop recording:', error);
-    }
-  }
-}
-```
-
-### Recording with Duration Monitoring
-
-```typescript
-import { NativeAudio } from '@capacitor/native-audio';
-
-async function recordWithDuration() {
-  try {
-    await NativeAudio.requestPermission();
-    await NativeAudio.startRecording();
-
-    // Monitor duration every second
-    const durationInterval = setInterval(async () => {
-      const { duration } = await NativeAudio.getDuration();
-      console.log(`Recording duration: ${duration.toFixed(1)} seconds`);
-    }, 1000);
-
-    // Stop after 10 seconds
-    setTimeout(async () => {
-      clearInterval(durationInterval);
-      const recording = await NativeAudio.stopRecording();
-      console.log('Final recording:', recording);
-    }, 10000);
-  } catch (error) {
-    console.error('Recording failed:', error);
-  }
-}
-```
-
-### Audio Trimming Example
-
-```typescript
-import { NativeAudio } from '@capacitor/native-audio';
-
-async function trimAudioFile(recordingPath: string) {
-  try {
-    // Trim the first 30 seconds of the recording
-    const trimmed = await NativeAudio.trimAudio({
-      path: recordingPath,
-      startTime: 0,
-      endTime: 30,
-    });
-
-    console.log('Trimmed audio:', trimmed);
-    return trimmed;
-  } catch (error) {
-    console.error('Failed to trim audio:', error);
   }
 }
 ```
@@ -470,24 +260,19 @@ const AudioRecorder: React.FC = () => {
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
-
     if (isRecording) {
       interval = setInterval(async () => {
         const { duration } = await NativeAudio.getDuration();
         setDuration(duration);
       }, 1000);
     }
-
-    return () => {
-      if (interval) clearInterval(interval);
-    };
+    return () => interval && clearInterval(interval);
   }, [isRecording]);
 
   const startRecording = async () => {
     try {
       const { granted } = await NativeAudio.requestPermission();
       if (!granted) return;
-
       await NativeAudio.startRecording();
       setIsRecording(true);
     } catch (error) {
@@ -524,6 +309,33 @@ const AudioRecorder: React.FC = () => {
 
 export default AudioRecorder;
 ```
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+1. **Permission Denied**
+
+   - Ensure you've added the required permissions in your platform-specific files
+   - Check if the user has granted permission in their device settings
+   - Try requesting permission again
+
+2. **Recording Not Starting**
+
+   - Verify that you're not already recording
+   - Check if the microphone is being used by another app
+   - Ensure you have sufficient storage space
+
+3. **Audio Quality Issues**
+
+   - Check if the device's microphone is working properly
+   - Verify that no other apps are using the microphone
+   - Ensure you're not in a noisy environment
+
+4. **File Access Issues**
+   - Check if the app has proper storage permissions
+   - Verify that the storage path is accessible
+   - Ensure there's enough free space
 
 ## 🛠️ Technical Details
 
