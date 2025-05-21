@@ -1,7 +1,7 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 import { WebPlugin } from '@capacitor/core';
 
-import type { CapacitorAudioEnginePlugin } from './definitions';
+import type { CapacitorAudioEnginePlugin, RecordingStatus, AudioRecordingEventName } from './definitions';
 
 declare global {
   interface BlobEventInit extends EventInit {
@@ -56,14 +56,18 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     console.error('pauseRecording is not supported on web');
   }
 
+  async resumeRecording(): Promise<void> {
+    console.error('resumeRecording is not supported on web');
+  }
+
   async getDuration(): Promise<{ duration: number }> {
     console.error('getDuration is not supported on web');
     return { duration: 0 };
   }
 
-  async getStatus(): Promise<{ isRecording: boolean }> {
+  async getStatus(): Promise<{ status: RecordingStatus; isRecording: boolean }> {
     console.error('getStatus is not supported on web');
-    return { isRecording: false };
+    return { status: 'idle', isRecording: false };
   }
 
   async trimAudio(options: { path: string; startTime: number; endTime: number }): Promise<{
@@ -83,9 +87,18 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     throw new Error('trimAudio is not supported on web');
   }
 
-  async addListener(eventName: string, callback: (data: any) => void): Promise<PluginListenerHandle> {
+  async addListener(
+    eventName: AudioRecordingEventName,
+    callback: (data: { message: string }) => void,
+  ): Promise<PluginListenerHandle> {
     console.log('addListener is not supported on web', { eventName, callback });
-    return Promise.resolve({} as PluginListenerHandle);
+    // For web, we can call super.addListener to handle event registration if needed for other event types in the future.
+    // However, for 'recordingInterruption', it's not applicable to the web environment in the same way as native.
+    // We'll return a dummy handle as before, but acknowledge the specific event type.
+    if (eventName === 'recordingInterruption') {
+      console.warn('recordingInterruption event is not applicable on the web platform.');
+    }
+    return Promise.resolve({ remove: () => Promise.resolve() } as PluginListenerHandle);
   }
 
   async startMonitoring(): Promise<void> {

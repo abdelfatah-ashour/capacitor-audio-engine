@@ -32,19 +32,36 @@
     }@else {
       <!-- Recording Controls -->
       <div class="recording-controls ion-margin-top">
-        @if(!isRecording) {
+        @if(!isRecording && !isPaused){
           <ion-button expand="block" color="primary" (click)="startRecording()">
             <ion-icon name="mic-outline" slot="start"></ion-icon>
             Start Recording
           </ion-button>
-        } @else {
+        }
+
+        @if(isRecording) {
           <ion-button expand="block" color="danger" (click)="stopRecording()">
-            <ion-icon name="stop-outline" slot="start"></ion-icon>
+            <ion-icon name="stop-circle-outline" slot="start"></ion-icon>
             Stop Recording
+          </ion-button>
+        }
+
+        @if(!isRecording && isPaused){
+          <ion-button expand="block" color="primary" (click)="handleResume()">
+            <ion-icon name="play-outline"></ion-icon>
+            <p class="recording-status">Resume Recording. </p>
+          </ion-button>
+        }
+
+        @if(isRecording && !isPaused){
+          <ion-button expand="block" color="primary" (click)="handlePause()">
+            <ion-icon name="pause-outline"></ion-icon>
+            <p class="recording-status">Pause Recording. </p>
           </ion-button>
         }
       </div>
     }
+
     @if(recordingUrl()){
       <audio [src]="recordingUrl()" controls>
         Your browser does not support the audio element.
@@ -64,26 +81,12 @@
         (ionChange)="handleRangeChange($event)"
         class="audio-range">
       </ion-range>
-      <div>
-        <ion-button>
-          <ion-icon name="play-outline"></ion-icon>
-          <ion-text>
-            start: {{ formatTime(startAudioTime()) }}
-          </ion-text>
-          <ion-text>
-            end: {{ formatTime(endAudioTime()) }}
-          </ion-text>
-        </ion-button>
-      </div>
       <ion-button expand="block" color="primary" (click)="trimAudio()">
         Trim Audio
       </ion-button>
+      <ion-button (click)="testInterruptionListener()"  expand="block">
+        Test Interruption Listener
+      </ion-button>
     }
-      <ion-text color="primary">
-        {{ recordingUrl() }}
-      </ion-text>
-    <ion-button (click)="testInterruptionListener()">
-      Test Interruption Listener
-    </ion-button>
   </div>
 </ion-content>

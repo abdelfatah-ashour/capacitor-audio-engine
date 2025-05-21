@@ -3,7 +3,7 @@ import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIco
 import { CapacitorAudioEngine } from "capacitor-audio-engine";
 import { CommonModule } from '@angular/common';
 import { addIcons } from 'ionicons';
-import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline } from 'ionicons/icons';
+import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline } from 'ionicons/icons';
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
 
@@ -22,7 +22,6 @@ export class HomePage implements OnInit, OnDestroy{
   hasPermission = false;
   isRecording = false;
   hasRecording = false;
-  isPlaying = false;
   isPaused = false;
   recordingUrl = signal<string>('');
   currentTime = 0;
@@ -54,7 +53,8 @@ export class HomePage implements OnInit, OnDestroy{
       stopOutline,
       micOutline,
       keyOutline,
-      timeOutline
+      timeOutline,
+      stopCircleOutline
     });
   }
 
@@ -259,5 +259,20 @@ export class HomePage implements OnInit, OnDestroy{
     } catch (error) {
       console.error('Test listener setup failed:', error);
     }
+  }
+
+
+  public async handlePause() {
+    await CapacitorAudioEngine.pauseRecording();
+    this.isPaused = true;
+    this.isRecording = false;
+    console.log('Recording paused');
+  }
+
+  public async handleResume() {
+    await CapacitorAudioEngine.resumeRecording();
+    this.isPaused = false;
+    this.isRecording = true;
+    console.log('Recording resumed');
   }
 }
