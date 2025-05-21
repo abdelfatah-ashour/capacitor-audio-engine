@@ -17,6 +17,8 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
     - [Core Interfaces](#core-interfaces)
       - [`RecordingResult`](#recordingresult)
       - [`TrimOptions`](#trimoptions)
+      - [`RecordingStatus`](#recordingstatus)
+      - [`AudioRecordingEventName`](#audiorecordingeventname)
     - [Methods](#methods)
       - [Permission Management](#permission-management)
         - [`checkPermission()`](#checkpermission)
@@ -24,15 +26,18 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
       - [Recording Control](#recording-control)
         - [`startRecording()`](#startrecording)
         - [`pauseRecording()`](#pauserecording)
+        - [`resumeRecording()`](#resumerecording)
         - [`stopRecording()`](#stoprecording)
       - [Status \& Information](#status--information)
         - [`getDuration()`](#getduration)
         - [`getStatus()`](#getstatus)
       - [Audio Processing](#audio-processing)
         - [`trimAudio()`](#trimaudio)
-  - [💡 Examples](#-examples)
-    - [Basic Recording](#basic-recording)
-    - [React Component Example](#react-component-example)
+      - [Event Handling](#event-handling)
+        - [`addListener()`](#addlistener)
+        - [`startMonitoring()`](#startmonitoring)
+        - [`stopMonitoring()`](#stopmonitoring)
+        - [`removeAllListeners()`](#removealllisteners)
   - [🔧 Troubleshooting](#-troubleshooting)
     - [Common Issues](#common-issues)
   - [🛠️ Technical Details](#️-technical-details)
@@ -83,8 +88,22 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 
 1. Install the plugin:
 
+NPM:
+
 ```bash
 npm i capacitor-audio-engine
+```
+
+PNPM:
+
+```bash
+pnpm add capacitor-audio-engine
+```
+
+YARN
+
+```bash
+yarn add capacitor-audio-engine
 ```
 
 2. Sync your project:
@@ -144,6 +163,22 @@ interface TrimOptions {
 }
 ```
 
+#### `RecordingStatus`
+
+The status of the audio recorder.
+
+```typescript
+type RecordingStatus = 'idle' | 'recording' | 'paused';
+```
+
+#### `AudioRecordingEventName`
+
+Event names for audio recording listeners.
+
+```typescript
+type AudioRecordingEventName = 'recordingInterruption';
+```
+
 ### Methods
 
 #### Permission Management
@@ -182,6 +217,14 @@ Pause the current recording.
 pauseRecording(): Promise<void>;
 ```
 
+##### `resumeRecording()`
+
+Resume the current recording if it was previously paused.
+
+```typescript
+resumeRecording(): Promise<void>;
+```
+
 ##### `stopRecording()`
 
 Stop recording and get the audio file.
@@ -202,10 +245,10 @@ getDuration(): Promise<{ duration: number }>;
 
 ##### `getStatus()`
 
-Check if currently recording.
+Check the current recording status.
 
 ```typescript
-getStatus(): Promise<{ isRecording: boolean }>;
+getStatus(): Promise<{ status: 'idle' | 'recording' | 'paused'; isRecording: boolean }>;
 ```
 
 #### Audio Processing
@@ -218,96 +261,40 @@ Trim an audio file to a specific duration.
 trimAudio(options: TrimOptions): Promise<RecordingResult>;
 ```
 
-## 💡 Examples
+#### Event Handling
 
-### Basic Recording
+##### `addListener()`
+
+Add a listener for recording interruptions.
+`AudioRecordingEventName` can be `'recordingInterruption'`.
+`PluginListenerHandle` is an interface from `@capacitor/core`.
 
 ```typescript
-import { NativeAudio } from '@capacitor/native-audio';
-
-async function startBasicRecording() {
-  try {
-    const { granted } = await NativeAudio.requestPermission();
-    if (!granted) {
-      console.error('Microphone permission not granted');
-      return;
-    }
-
-    await NativeAudio.startRecording();
-    console.log('Recording started');
-
-    // Stop after 5 seconds
-    setTimeout(async () => {
-      const recording = await NativeAudio.stopRecording();
-      console.log('Recording saved:', recording);
-    }, 5000);
-  } catch (error) {
-    console.error('Recording failed:', error);
-  }
-}
+addListener(eventName: AudioRecordingEventName, callback: (data: { message: string }) => void): Promise<PluginListenerHandle>;
 ```
 
-### React Component Example
+##### `startMonitoring()`
+
+Start monitoring for recording interruptions.
 
 ```typescript
-import React, { useState, useEffect } from 'react';
-import { NativeAudio } from '@capacitor/native-audio';
+startMonitoring(): Promise<void>;
+```
 
-const AudioRecorder: React.FC = () => {
-  const [isRecording, setIsRecording] = useState(false);
-  const [duration, setDuration] = useState(0);
-  const [recording, setRecording] = useState<any>(null);
+##### `stopMonitoring()`
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isRecording) {
-      interval = setInterval(async () => {
-        const { duration } = await NativeAudio.getDuration();
-        setDuration(duration);
-      }, 1000);
-    }
-    return () => interval && clearInterval(interval);
-  }, [isRecording]);
+Stop monitoring for recording interruptions.
 
-  const startRecording = async () => {
-    try {
-      const { granted } = await NativeAudio.requestPermission();
-      if (!granted) return;
-      await NativeAudio.startRecording();
-      setIsRecording(true);
-    } catch (error) {
-      console.error('Failed to start recording:', error);
-    }
-  };
+```typescript
+stopMonitoring(): Promise<void>;
+```
 
-  const stopRecording = async () => {
-    try {
-      const result = await NativeAudio.stopRecording();
-      setIsRecording(false);
-      setRecording(result);
-    } catch (error) {
-      console.error('Failed to stop recording:', error);
-    }
-  };
+##### `removeAllListeners()`
 
-  return (
-    <div>
-      <button onClick={isRecording ? stopRecording : startRecording}>
-        {isRecording ? 'Stop Recording' : 'Start Recording'}
-      </button>
-      {isRecording && <p>Duration: {duration.toFixed(1)}s</p>}
-      {recording && (
-        <div>
-          <p>Recording saved!</p>
-          <p>Duration: {recording.duration}s</p>
-          <p>Size: {(recording.size / 1024).toFixed(1)}KB</p>
-        </div>
-      )}
-    </div>
-  );
-};
+Remove all listeners for recording events.
 
-export default AudioRecorder;
+```typescript
+removeAllListeners(): Promise<void>;
 ```
 
 ## 🔧 Troubleshooting
@@ -388,4 +375,4 @@ Found a bug? Have a feature request? Just want to chat? [Open an issue](https://
 
 ---
 
-Made with ❤️ by [Abdelfattah Ashour](https://github.com/abdelfatah-ashour)
+Made with ❤️ by [Abdelfattah Ashour](https://github.com/abdelfattah-ashour)

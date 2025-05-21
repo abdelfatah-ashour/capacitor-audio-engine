@@ -44,6 +44,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     private MediaRecorder mediaRecorder;
     private String audioFilePath;
     private boolean isRecording = false;
+    private boolean isPaused = false;
     private boolean hasListeners = false;
     private boolean wasRecordingBeforeInterruption = false;
     private AudioManager audioManager;
@@ -101,6 +102,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             mediaRecorder.prepare();
             mediaRecorder.start();
             isRecording = true;
+            isPaused = false;
             call.resolve();
         } catch (IOException e) {
             call.reject("Failed to start recording: " + e.getMessage());
@@ -111,13 +113,37 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     public void pauseRecording(PluginCall call) {
         if (mediaRecorder != null && isRecording) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                if (isPaused) {
+                    call.reject("Recording is already paused.");
+                    return;
+                }
                 mediaRecorder.pause();
+                isPaused = true;
                 call.resolve();
             } else {
-                call.reject("Pause recording is not supported on this Android version");
+                call.reject("Pause recording is not supported on this Android version (requires API 24+).");
             }
         } else {
-            call.reject("No active recording");
+            call.reject("No active recording session to pause.");
+        }
+    }
+
+    @PluginMethod
+    public void resumeRecording(PluginCall call) {
+        if (mediaRecorder != null && isRecording) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                if (!isPaused) {
+                    call.reject("Recording is not paused.");
+                    return;
+                }
+                mediaRecorder.resume();
+                isPaused = false;
+                call.resolve();
+            } else {
+                call.reject("Resume recording is not supported on this Android version (requires API 24+).");
+            }
+        } else {
+            call.reject("No active recording session to resume.");
         }
     }
 
@@ -129,6 +155,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 mediaRecorder.release();
                 mediaRecorder = null;
                 isRecording = false;
+                isPaused = false;
 
                 // Get the recorded file and validate
                 File audioFile = new File(audioFilePath);
@@ -199,7 +226,18 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     @PluginMethod
     public void getStatus(PluginCall call) {
         JSObject ret = new JSObject();
-        ret.put("isRecording", isRecording);
+        String currentStatus;
+        if (!isRecording) {
+            currentStatus = "idle";
+        } else {
+            if (isPaused) {
+                currentStatus = "paused";
+            } else {
+                currentStatus = "recording";
+            }
+        }
+        ret.put("status", currentStatus);
+        ret.put("isRecording", isRecording && (currentStatus.equals("recording") || currentStatus.equals("paused")));
         call.resolve(ret);
     }
 
@@ -220,18 +258,28 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         }
 
         try {
-            // Convert web URL to content URI if needed
-            String contentPath = sourcePath;
-            if (sourcePath.contains("_capacitor_content_")) {
-                // Extract the content URI part
-                String[] parts = sourcePath.split("_capacitor_content_/");
-                if (parts.length > 1) {
-                    contentPath = "content://" + parts[1];
-                }
+            Uri sourceUri;
+            File sourceFile;
+
+            if (sourcePath.startsWith("capacitor://localhost/_capacitor_file_")) {
+                String actualPath = sourcePath.substring("capacitor://localhost/_capacitor_file_".length());
+                sourceFile = new File(actualPath);
+                sourceUri = Uri.fromFile(sourceFile);
+            } else if (sourcePath.startsWith("file://")) {
+                sourceUri = Uri.parse(sourcePath);
+                sourceFile = new File(sourceUri.getPath());
+            } else if (sourcePath.contains("_capacitor_content_")) {
+                sourceUri = Uri.parse(sourcePath);
+                sourceFile = null;
+            } else {
+                sourceFile = new File(sourcePath);
+                sourceUri = Uri.fromFile(sourceFile);
             }
 
-            // Parse the content URI
-            Uri sourceUri = Uri.parse(contentPath);
+            if (sourceFile != null && !sourceFile.exists()) {
+                call.reject("Source audio file does not exist at path: " + sourceFile.getAbsolutePath());
+                return;
+            }
 
             // Create output directory
             File audioDir = new File(getContext().getExternalFilesDir(Environment.DIRECTORY_MUSIC), "Trimmed");
@@ -239,52 +287,83 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 audioDir.mkdirs();
             }
 
-            String outputPath = new File(audioDir, "trimmed_" + System.currentTimeMillis() + ".mp3").getAbsolutePath();
+            String outputFileName = "trimmed_" + System.currentTimeMillis() + ".mp3";
+            File outputFile = new File(audioDir, outputFileName);
+
+            // Remove output file if it already exists
+            if (outputFile.exists()) {
+                outputFile.delete();
+            }
+            String outputPath = outputFile.getAbsolutePath();
 
             // Initialize extractor
             MediaExtractor extractor = new MediaExtractor();
-
-            try {
-                if (sourceUri.getScheme() != null && (sourceUri.getScheme().equals("content") || sourceUri.getScheme().equals("file"))) {
-                    // For content:// and file:// URIs
-                    extractor.setDataSource(getContext(), sourceUri, null);
-                } else {
-                    // For direct file paths
-                    String realPath = contentPath;
-                    if (contentPath.startsWith("file://")) {
-                        realPath = contentPath.substring(7);
-                    }
-                    File sourceFile = new File(realPath);
-                    if (!sourceFile.exists()) {
-                        call.reject("Source file does not exist: " + realPath);
-                        return;
-                    }
-                    if (!sourceFile.canRead()) {
-                        call.reject("Cannot read source file: " + realPath);
-                        return;
-                    }
-                    extractor.setDataSource(sourceFile.getAbsolutePath());
+            if (sourceFile != null) {
+                extractor.setDataSource(sourceFile.getAbsolutePath());
+            } else {
+                ParcelFileDescriptor pfd = getContext().getContentResolver().openFileDescriptor(sourceUri, "r");
+                if (pfd == null) {
+                    call.reject("Failed to open source audio file from URI.");
+                    return;
                 }
-            } catch (Exception e) {
-                call.reject("Failed to access audio file: " + e.getMessage() + " (Path: " + contentPath + ")");
-                return;
+                extractor.setDataSource(pfd.getFileDescriptor());
             }
 
             // Find audio track
             int audioTrackIndex = -1;
             MediaFormat format = null;
             for (int i = 0; i < extractor.getTrackCount(); i++) {
-                format = extractor.getTrackFormat(i);
-                String mime = format.getString(MediaFormat.KEY_MIME);
+                MediaFormat trackFormat = extractor.getTrackFormat(i);
+                String mime = trackFormat.getString(MediaFormat.KEY_MIME);
                 if (mime != null && mime.startsWith("audio/")) {
                     audioTrackIndex = i;
+                    format = trackFormat;
                     break;
                 }
             }
 
             if (audioTrackIndex < 0 || format == null) {
                 extractor.release();
-                call.reject("No audio track found");
+                call.reject("No audio track found in the source file");
+                return;
+            }
+
+            // Check duration from metadata before proceeding
+            long durationUs = format.getLong(MediaFormat.KEY_DURATION, 0);
+            if (durationUs <= 0) {
+                MediaMetadataRetriever tempRetriever = new MediaMetadataRetriever();
+                if (sourceFile != null) {
+                    tempRetriever.setDataSource(sourceFile.getAbsolutePath());
+                } else {
+                    ParcelFileDescriptor pfdForRetriever = getContext().getContentResolver().openFileDescriptor(sourceUri, "r");
+                    if (pfdForRetriever != null) {
+                        tempRetriever.setDataSource(pfdForRetriever.getFileDescriptor());
+                    }
+                }
+                String durationStrMeta = tempRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                tempRetriever.release();
+                if (durationStrMeta != null) {
+                    durationUs = Long.parseLong(durationStrMeta) * 1000;
+                }
+            }
+
+            if (durationUs <= 0) {
+                extractor.release();
+                call.reject("Source audio file has invalid or zero duration.");
+                return;
+            }
+            double sourceDurationSeconds = durationUs / 1_000_000.0;
+            if (startTime >= sourceDurationSeconds) {
+                extractor.release();
+                call.reject("Start time is beyond the source audio duration.");
+                return;
+            }
+            if (endTime > sourceDurationSeconds) {
+                endTime = sourceDurationSeconds;
+            }
+            if (endTime <= startTime) {
+                extractor.release();
+                call.reject("End time must be greater than start time after adjusting to source duration.");
                 return;
             }
 
@@ -293,34 +372,28 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             int channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
             String mime = format.getString(MediaFormat.KEY_MIME);
 
-            // Create decoder
             MediaCodec decoder = MediaCodec.createDecoderByType(mime);
             decoder.configure(format, null, null, 0);
             decoder.start();
 
-            // Create encoder with same parameters
             MediaFormat encFormat = MediaFormat.createAudioFormat(mime, sampleRate, channelCount);
             encFormat.setInteger(MediaFormat.KEY_BIT_RATE, 128000);
-            encFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, 2); // AAC LC
+            encFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, 2);
             encFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
 
             MediaCodec encoder = MediaCodec.createEncoderByType(mime);
             encoder.configure(encFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             encoder.start();
 
-            // Setup muxer
             MediaMuxer muxer = new MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             int muxerTrackIndex = -1;
 
-            // Convert time to microseconds
             long startUs = (long)(startTime * 1_000_000);
             long endUs = (long)(endTime * 1_000_000);
 
-            // Select track and seek to start position
             extractor.selectTrack(audioTrackIndex);
             extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
 
-            // Initialize buffers
             ByteBuffer[] decoderInputBuffers = decoder.getInputBuffers();
             ByteBuffer[] decoderOutputBuffers = decoder.getOutputBuffers();
             ByteBuffer[] encoderInputBuffers = encoder.getInputBuffers();
@@ -331,95 +404,105 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             boolean encoderDone = false;
             boolean inputDone = false;
 
-            // Start processing loop
             while (!encoderDone) {
-                // Feed decoder input
-                if (!inputDone) {
+                if (!decoderDone && !inputDone) {
                     int inputBufIndex = decoder.dequeueInputBuffer(10000);
                     if (inputBufIndex >= 0) {
-                        ByteBuffer inputBuf = decoderInputBuffers[inputBufIndex];
-                        inputBuf.clear();
-                        int sampleSize = extractor.readSampleData(inputBuf, 0);
-                        long presentationTime = extractor.getSampleTime();
+                        ByteBuffer dstBuf = decoderInputBuffers[inputBufIndex];
+                        int sampleSize = extractor.readSampleData(dstBuf, 0);
+                        long presentationTimeUs = extractor.getSampleTime();
 
-                        if (sampleSize < 0 || presentationTime >= endUs) {
+                        if (sampleSize < 0 || presentationTimeUs >= endUs) {
                             decoder.queueInputBuffer(inputBufIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            decoderDone = true;
                             inputDone = true;
-                        } else {
-                            decoder.queueInputBuffer(inputBufIndex, 0, sampleSize, presentationTime, 0);
-                            extractor.advance();
+                        } else if (presentationTimeUs >= startUs) {
+                            decoder.queueInputBuffer(inputBufIndex, 0, sampleSize, presentationTimeUs, extractor.getSampleFlags());
                         }
+                        extractor.advance();
                     }
                 }
 
-                // Get decoded data
-                if (!decoderDone) {
-                    int decoderStatus = decoder.dequeueOutputBuffer(info, 10000);
-                    if (decoderStatus >= 0) {
-                        ByteBuffer decodedData = decoderOutputBuffers[decoderStatus];
-                        decodedData.position(info.offset);
-                        decodedData.limit(info.offset + info.size);
+                boolean encoderOutputAvailable = true;
+                boolean decoderOutputAvailable = true;
 
-                        // Feed encoder input
-                        int encoderStatus = encoder.dequeueInputBuffer(10000);
-                        if (encoderStatus >= 0) {
-                            ByteBuffer encoderBuffer = encoderInputBuffers[encoderStatus];
-                            encoderBuffer.clear();
-                            if (info.size > 0) {
-                                encoderBuffer.put(decodedData);
+                while (encoderOutputAvailable || decoderOutputAvailable) {
+                    int encoderStatus = encoder.dequeueOutputBuffer(outputInfo, 10000);
+                    if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        encoderOutputAvailable = false;
+                    } else if (encoderStatus == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
+                        encoderOutputBuffers = encoder.getOutputBuffers();
+                    } else if (encoderStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        if (muxerTrackIndex != -1) {
+                            throw new RuntimeException("Muxer track already added, but encoder format changed again");
+                        }
+                        MediaFormat newFormat = encoder.getOutputFormat();
+                        muxerTrackIndex = muxer.addTrack(newFormat);
+                        muxer.start();
+                    } else if (encoderStatus < 0) {
+                    } else {
+                        ByteBuffer encodedData = encoderOutputBuffers[encoderStatus];
+                        if (encodedData == null) {
+                            throw new RuntimeException("encoderOutputBuffer " + encoderStatus + " was null");
+                        }
+
+                        if ((outputInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                            outputInfo.size = 0;
+                        }
+
+                        if (outputInfo.size != 0 && muxerTrackIndex != -1) {
+                            encodedData.position(outputInfo.offset);
+                            encodedData.limit(outputInfo.offset + outputInfo.size);
+                            muxer.writeSampleData(muxerTrackIndex, encodedData, outputInfo);
+                        }
+
+                        encoder.releaseOutputBuffer(encoderStatus, false);
+
+                        if ((outputInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            encoderDone = true;
+                            break;
+                        }
+                    }
+
+                    if (encoderDone) break;
+
+                    if (!decoderDone) {
+                        int decoderStatus = decoder.dequeueOutputBuffer(info, 10000);
+                        if (decoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                            decoderOutputAvailable = false;
+                        } else if (decoderStatus == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
+                            decoderOutputBuffers = decoder.getOutputBuffers();
+                        } else if (decoderStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        } else if (decoderStatus < 0) {
+                        } else {
+                            ByteBuffer decodedData = decoderOutputBuffers[decoderStatus];
+                            if (decodedData == null) {
+                                throw new RuntimeException("decoderOutputBuffer " + decoderStatus + " was null");
                             }
 
                             if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                                encoder.queueInputBuffer(encoderStatus, 0, 0, info.presentationTimeUs - startUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                int encInIdx = encoder.dequeueInputBuffer(10000);
+                                if (encInIdx >= 0) {
+                                    encoder.queueInputBuffer(encInIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                }
                                 decoderDone = true;
-                            } else {
-                                encoder.queueInputBuffer(encoderStatus, 0, info.size, info.presentationTimeUs - startUs, 0);
+                            } else if (info.size > 0) {
+                                int encInIdx = encoder.dequeueInputBuffer(10000);
+                                if (encInIdx >= 0) {
+                                    ByteBuffer encInputBuf = encoderInputBuffers[encInIdx];
+                                    encInputBuf.clear();
+                                    encInputBuf.put(decodedData);
+                                    encoder.queueInputBuffer(encInIdx, 0, info.size, info.presentationTimeUs, 0);
+                                }
                             }
+                            decoder.releaseOutputBuffer(decoderStatus, false);
                         }
-
-                        decoder.releaseOutputBuffer(decoderStatus, false);
-                    } else if (decoderStatus == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
-                        decoderOutputBuffers = decoder.getOutputBuffers();
-                    } else if (decoderStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        // Ignore decoder format changes
+                    } else {
+                        decoderOutputAvailable = false;
                     }
-                }
-
-                // Get encoded data
-                int encoderStatus = encoder.dequeueOutputBuffer(outputInfo, 10000);
-                if (encoderStatus >= 0) {
-                    ByteBuffer encodedData = encoderOutputBuffers[encoderStatus];
-                    encodedData.position(outputInfo.offset);
-                    encodedData.limit(outputInfo.offset + outputInfo.size);
-
-                    if (outputInfo.size > 0 && (outputInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                        if (muxerTrackIndex == -1) {
-                            MediaFormat newFormat = encoder.getOutputFormat();
-                            muxerTrackIndex = muxer.addTrack(newFormat);
-                            muxer.start();
-                        }
-
-                        muxer.writeSampleData(muxerTrackIndex, encodedData, outputInfo);
-                    }
-
-                    encoder.releaseOutputBuffer(encoderStatus, false);
-
-                    if ((outputInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                        encoderDone = true;
-                    }
-                } else if (encoderStatus == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
-                    encoderOutputBuffers = encoder.getOutputBuffers();
-                } else if (encoderStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    if (muxerTrackIndex >= 0) {
-                        throw new RuntimeException("Format changed twice!");
-                    }
-                    MediaFormat newFormat = encoder.getOutputFormat();
-                    muxerTrackIndex = muxer.addTrack(newFormat);
-                    muxer.start();
                 }
             }
 
-            // Cleanup
             extractor.release();
             decoder.stop();
             decoder.release();
@@ -428,7 +511,6 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             muxer.stop();
             muxer.release();
 
-            // Create content URI for the trimmed file
             File trimmedFile = new File(outputPath);
             Uri contentUri = FileProvider.getUriForFile(
                 getContext(),
@@ -436,14 +518,12 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 trimmedFile
             );
 
-            // Get metadata for the trimmed file
             MediaMetadataRetriever retriever = new MediaMetadataRetriever();
             retriever.setDataSource(outputPath);
             String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
             String bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
             retriever.release();
 
-            // Create response object
             JSObject ret = new JSObject();
             ret.put("path", outputPath);
             ret.put("uri", contentUri.toString());
@@ -539,18 +619,28 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     }
 
     private void handleInterruptionBegan() {
-        if (isRecording) {
+        if (isRecording && !isPaused) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                mediaRecorder.pause();
+                try {
+                    mediaRecorder.pause();
+                    isPaused = true;
+                } catch (IllegalStateException e) {
+                    System.err.println("Error pausing on interruption: " + e.getMessage());
+                }
             }
             wasRecordingBeforeInterruption = true;
         }
     }
 
     private void handleInterruptionEnded(boolean shouldResume) {
-        if (wasRecordingBeforeInterruption && shouldResume) {
+        if (wasRecordingBeforeInterruption && shouldResume && isPaused) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                mediaRecorder.resume();
+                try {
+                    mediaRecorder.resume();
+                    isPaused = false;
+                } catch (IllegalStateException e) {
+                    System.err.println("Error resuming after interruption: " + e.getMessage());
+                }
             }
         }
         wasRecordingBeforeInterruption = false;
@@ -558,33 +648,57 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
     @Override
     protected void handleOnPause() {
-        if (isRecording) {
+        super.handleOnPause();
+        if (isRecording && !isPaused) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                mediaRecorder.pause();
+                try {
+                    mediaRecorder.pause();
+                    isPaused = true;
+                } catch (IllegalStateException e) {
+                    System.err.println("Error pausing on handleOnPause: " + e.getMessage());
+                }
             }
-            wasRecordingBeforeInterruption = true;
+            if (isRecording) wasRecordingBeforeInterruption = true;
         }
         notifyListeners("recordingInterruption", new JSObject().put("message", "App moved to background"));
     }
 
     @Override
     protected void handleOnResume() {
-        if (wasRecordingBeforeInterruption) {
+        super.handleOnResume();
+        if (wasRecordingBeforeInterruption && isPaused) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                mediaRecorder.resume();
+                try {
+                    mediaRecorder.resume();
+                    isPaused = false;
+                } catch (IllegalStateException e) {
+                    System.err.println("Error resuming on handleOnResume: " + e.getMessage());
+                }
             }
+        }
+        if (!isPaused) {
+            wasRecordingBeforeInterruption = false;
         }
         notifyListeners("recordingInterruption", new JSObject().put("message", "App became active"));
     }
 
     @Override
     protected void handleOnDestroy() {
+        super.handleOnDestroy();
         cleanupInterruptionListeners();
         if (mediaRecorder != null) {
-            mediaRecorder.release();
+            try {
+                if (isRecording) {
+                    mediaRecorder.stop();
+                }
+                mediaRecorder.release();
+            } catch (IllegalStateException e) {
+                System.err.println("Error stopping/releasing MediaRecorder in onDestroy: " + e.getMessage());
+            }
             mediaRecorder = null;
         }
         isRecording = false;
+        isPaused = false;
     }
 
     @PermissionCallback

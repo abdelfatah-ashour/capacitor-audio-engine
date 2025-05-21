@@ -1,5 +1,8 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 
+export type RecordingStatus = 'idle' | 'recording' | 'paused';
+export type AudioRecordingEventName = 'recordingInterruption';
+
 /**
  * Interface for the Native Audio Plugin that provides audio recording capabilities.
  *
@@ -71,12 +74,22 @@ export interface CapacitorAudioEnginePlugin {
   /**
    * Pause the current recording.
    * @returns Promise that resolves when recording is paused successfully
-   * @throws {Error} If no active recording exists
+   * @throws {Error} If no active recording exists or if recording is already paused.
    * @platform web Uses MediaRecorder.pause()
    * @platform android Uses MediaRecorder.pause() (Android N/API 24+ only)
    * @platform ios Uses AVAudioRecorder.pause()
    */
   pauseRecording(): Promise<void>;
+
+  /**
+   * Resume the current recording if it was previously paused.
+   * @returns Promise that resolves when recording is resumed successfully
+   * @throws {Error} If no active recording exists, if the recording is not paused, or if resumption fails.
+   * @platform web Uses MediaRecorder.resume()
+   * @platform android Uses MediaRecorder.resume() (Android N/API 24+ only)
+   * @platform ios Uses AVAudioRecorder.record() (which resumes if paused)
+   */
+  resumeRecording(): Promise<void>;
 
   /**
    * Stop the current recording and get the recorded file information.
@@ -131,13 +144,14 @@ export interface CapacitorAudioEnginePlugin {
 
   /**
    * Get the current recording status.
-   * @returns Promise that resolves with the current recording status
-   * @property {boolean} isRecording - Whether recording is currently in progress
-   * @platform web Tracks internal isRecording state
-   * @platform android Tracks internal isRecording state
-   * @platform ios Tracks internal isRecording state
+   * @returns Promise that resolves with the current recording status.
+   * @property {string} status - The current state of the recorder: "idle", "recording", or "paused".
+   * @property {boolean} isRecording - True if the recording session is active (i.e., status is "recording" or "paused").
+   * @platform web Tracks internal state
+   * @platform android Tracks internal state
+   * @platform ios Tracks internal state, mapping AVAudioRecorder states
    */
-  getStatus(): Promise<{ isRecording: boolean }>;
+  getStatus(): Promise<{ status: RecordingStatus; isRecording: boolean }>;
 
   /**
    * Trim an audio file to the specified start and end times.
@@ -187,8 +201,14 @@ export interface CapacitorAudioEnginePlugin {
 
   /**
    * Add a listener for recording interruptions
+   * @param eventName - The name of the event to listen to. Currently only 'recordingInterruption' is supported.
+   * @param callback - The callback to invoke when the event occurs.
+   * @returns A promise that resolves with a handle to the listener.
    */
-  addListener(eventName: string, callback: (data: any) => void): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: AudioRecordingEventName,
+    callback: (data: { message: string }) => void,
+  ): Promise<PluginListenerHandle>;
 
   /**
    * Start monitoring for recording interruptions

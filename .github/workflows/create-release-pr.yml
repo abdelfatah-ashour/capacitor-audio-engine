@@ -1,0 +1,110 @@
+name: Create Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Type of version bump (patch, minor, major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  create_release_pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # To commit and push a new branch
+      pull-requests: write # To create a pull request
+
+    steps:
+      - name: Checkout master branch
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache node modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-20-${{ hashFiles('''**/package-lock.json''') }}
+          restore-keys: |
+            ${{ runner.os }}-node-20-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Get current version (before bump)
+        id: version_before_bump
+        run: echo "VERSION=$(node -p "require('''./package.json''').version")" >> $GITHUB_OUTPUT
+
+      - name: Run version bump script
+        run: |
+          chmod +x ./scripts/bump-version.sh
+          ./scripts/bump-version.sh ${{ github.event.inputs.version_type }}
+          if [ $? -ne 0 ]; then
+            echo "Error: bump-version.sh script failed."
+            exit 1
+          fi
+
+      - name: Get new version (after bump)
+        id: version_after_bump
+        run: echo "NEW_VERSION=$(node -p "require('''./package.json''').version")" >> $GITHUB_OUTPUT
+
+      - name: Verify version change
+        run: |
+          echo "Old version: ${{ steps.version_before_bump.outputs.VERSION }}"
+          echo "New version: ${{ steps.version_after_bump.outputs.NEW_VERSION }}"
+          if [ "${{ steps.version_before_bump.outputs.VERSION }}" == "${{ steps.version_after_bump.outputs.NEW_VERSION }}" ]; then
+            echo "Error: Version was not changed by bump-version.sh script. Ensure the script modifies package.json and exits successfully."
+            exit 1
+          fi
+
+      - name: Create new release branch
+        id: release_branch
+        run: |
+          branch_name="release/v${{ steps.version_after_bump.outputs.NEW_VERSION }}"
+          git checkout -b $branch_name
+          echo "BRANCH_NAME=$branch_name" >> $GITHUB_OUTPUT
+
+      - name: Commit version changes
+        run: |
+          # Add all files that might have been changed by the bump script.
+          # This includes package.json, package-lock.json, and potentially others like podspec or changelogs.
+          git add .
+          git commit -m "chore: Bump version to v${{ steps.version_after_bump.outputs.NEW_VERSION }}"
+
+      - name: Push new release branch
+        run: git push origin ${{ steps.release_branch.outputs.BRANCH_NAME }}
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: 'Release v${{ steps.version_after_bump.outputs.NEW_VERSION }}'
+          body: |
+            Automated PR for version v${{ steps.version_after_bump.outputs.NEW_VERSION }}.
+
+            Triggered by: `${{ github.workflow }}` workflow run by @${{ github.actor }}
+            Version type: `${{ github.event.inputs.version_type }}`
+
+            Please review the changes and merge to `master` to trigger the publish workflow.
+          branch: ${{ steps.release_branch.outputs.BRANCH_NAME }}
+          base: master
+          labels: release, automated pr
+          # draft: false # Set to true if create a draft PR

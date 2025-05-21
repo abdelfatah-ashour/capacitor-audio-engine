@@ -18,6 +18,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "startRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pauseRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resumeRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getDuration", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimAudio", returnType: CAPPluginReturnPromise),
@@ -120,11 +121,46 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func pauseRecording(_ call: CAPPluginCall) {
-        if let recorder = audioRecorder, isRecording {
-            recorder.pause()
-            call.resolve()
+        if let recorder = audioRecorder, isRecording { // isRecording is the plugin's overall session state
+            if recorder.isRecording { // Check if it's actually recording (not already paused)
+                recorder.pause()
+                // isRecording remains true, recorder.isRecording becomes false after pause()
+                call.resolve()
+            } else {
+                // It's "isRecording" (session active) but not "recorder.isRecording" (already paused)
+                call.reject("Recording is already paused.")
+            }
         } else {
-            call.reject("No active recording")
+            // Neither session active nor recorder exists
+            call.reject("No active recording session to pause.")
+        }
+    }
+
+    @objc func resumeRecording(_ call: CAPPluginCall) {
+        guard let recorder = audioRecorder, isRecording else {
+            call.reject("No recording session active or recorder not initialized.")
+            return
+        }
+
+        if recorder.isRecording {
+            call.reject("Recording is already active, not paused.")
+            return
+        }
+
+        // If it's paused (plugin's isRecording is true, but recorder.isRecording is false)
+        do {
+            // Ensure audio session is active
+            try recordingSession?.setActive(true, options: .notifyOthersOnDeactivation)
+
+            let recordingResumed = recorder.record() // AVAudioRecorder's record method resumes if paused
+            if recordingResumed {
+                // recorder.isRecording will now be true
+                call.resolve()
+            } else {
+                call.reject("Failed to resume recording.")
+            }
+        } catch {
+            call.reject("Failed to set audio session active for resume: \(error.localizedDescription)")
         }
     }
 
@@ -199,8 +235,22 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func getStatus(_ call: CAPPluginCall) {
+        let currentStatus: String
+        let sessionActive = self.isRecording // Plugin's flag for active session
+
+        if let recorder = audioRecorder, sessionActive {
+            if recorder.isRecording {
+                currentStatus = "recording" // Actively capturing audio
+            } else {
+                currentStatus = "paused"    // Session active, but paused
+            }
+        } else {
+            currentStatus = "idle"          // No active session, or recorder not initialized
+        }
+
         call.resolve([
-            "isRecording": isRecording
+            "status": currentStatus, // "idle", "recording", "paused"
+            "isRecording": sessionActive && (currentStatus == "recording" || currentStatus == "paused")
         ])
     }
 
