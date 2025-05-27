@@ -9,6 +9,12 @@
     <external-files-path
         name="recordings"
         path="Music/Recordings" />
+    <external-files-path
+        name="audio_recordings"
+        path="Recordings" />
+    <external-files-path
+        name="audio_trimmed"
+        path="Trimmed" />
     <external-files-path name="my_images" path="." />
     <cache-path name="cached_files" path="." />
 </paths>

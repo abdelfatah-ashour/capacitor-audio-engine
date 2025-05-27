@@ -1,11 +1,12 @@
-import { Component,  OnInit, signal, OnDestroy } from '@angular/core';
+import { Component,  OnInit, signal, OnDestroy, inject } from '@angular/core';
 import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon, IonRange } from '@ionic/angular/standalone';
-import { CapacitorAudioEngine } from "capacitor-audio-engine";
+import { CapacitorAudioEngine,AudioFileInfo } from "capacitor-audio-engine";
 import { CommonModule } from '@angular/common';
 import { addIcons } from 'ionicons';
 import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline } from 'ionicons/icons';
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
+import { AlertController } from '@ionic/angular';
 
 @Component({
   selector: 'app-home',
@@ -15,6 +16,7 @@ import { Capacitor } from '@capacitor/core';
   standalone: true
 })
 export class HomePage implements OnInit, OnDestroy{
+  private readonly alertController = inject(AlertController);
   startAudioTime = signal<number>(0);
   endAudioTime = signal<number>(0);
   currentAudioTime = signal<number>(0);
@@ -26,6 +28,8 @@ export class HomePage implements OnInit, OnDestroy{
   recordingUrl = signal<string>('');
   currentTime = 0;
   duration = 0;
+  audioInfo = signal<AudioFileInfo | null>(null);
+  currentDuration = signal<number>(0);
 
   // Add channel configuration
   recordingChannels = 1;  // Default to mono
@@ -59,12 +63,14 @@ export class HomePage implements OnInit, OnDestroy{
   }
 
   ngOnInit(): void {
-    this.checkPermission();
+    this._checkPermission();
 
     CapacitorAudioEngine.getStatus().then((res) => {
       console.log("🚀 ~ getStatus:", res)
       this.isRecording = res.isRecording;
-    })
+    }).catch((error) => {
+      console.error("Error getting status:", error);
+    });
 
      document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
@@ -74,6 +80,12 @@ export class HomePage implements OnInit, OnDestroy{
 
     // Start monitoring for interruptions
     this.setupInterruptionListener();
+
+    // Set up duration change listener
+    CapacitorAudioEngine.addListener("durationChange", (data) => {
+      console.log("🚀 ~ HomePage ~ CapacitorAudioEngine.addListener ~ data:", data.payload.duration)
+      this.currentDuration.set(data.payload.duration);
+    });
   }
 
   ngOnDestroy() {
@@ -84,20 +96,17 @@ export class HomePage implements OnInit, OnDestroy{
   private async setupInterruptionListener() {
     try {
       // First add the listener
-      CapacitorAudioEngine.addListener('recordingInterruption', (data: any) => {
-        console.log('Recording interruption:', data.message);
-        this.handleRecordingInterruption(data.message);
+      CapacitorAudioEngine.addListener('recordingInterruption', (data) => {
+        console.log("🚀 ~ HomePage ~ CapacitorAudioEngine.addListener ~ data:", data.payload.message)
+        this.handleRecordingInterruption(data.payload.message);
       });
-
-      // Then start monitoring
-      await CapacitorAudioEngine.startMonitoring();
       console.log('Interruption listener setup complete');
     } catch (error) {
       console.error('Failed to setup interruption listener:', error);
     }
   }
 
-  async checkRecordingState() {
+   async checkRecordingState() {
     try {
       const { isRecording: nativeIsRecording } = await CapacitorAudioEngine.getStatus();
       if (this.isRecording !== nativeIsRecording) {
@@ -111,33 +120,62 @@ export class HomePage implements OnInit, OnDestroy{
     }
   }
 
-  checkPermission() {
-    CapacitorAudioEngine.checkPermission().then((res) => {
-      this.hasPermission = !!res;
+  private _checkPermission() {
+    CapacitorAudioEngine.checkPermission().then(({granted}) => {
+      this.hasPermission = granted;
+    }).catch((error) => {
+      console.error("Error checking permission:", error);
     });
   }
 
-  requestPermission() {
-    CapacitorAudioEngine.requestPermission().then((res) => {
-      this.hasPermission = !!res;
+  public checkPermission() {
+    CapacitorAudioEngine.checkPermission().then(({granted}) => {
+      console.log("🚀 ~ HomePage ~ CapacitorAudioEngine.checkPermission ~ granted:", granted)
+      this.alertController.create({
+        header: 'Permission Status',
+        message: granted ? 'Permission granted' : 'Permission denied',
+        buttons: [
+          {
+            text: 'OK',
+            handler: () => {
+              if (!granted) {
+                this._requestPermission();
+              }
+            }
+          }
+        ]
+      }).then(alert => alert.present());
+    }).catch((error) => {
+      console.log("Error checking permission:", error);
     });
   }
 
-  // Add quality selection method
-  setRecordingQuality(type: 'voice' | 'stereo') {
-    const quality = this.recordingQualities[type];
-    this.recordingChannels = quality.channels;
-    console.log(`Setting recording quality to ${quality.label}`, quality);
+  private _requestPermission() {
+    CapacitorAudioEngine.requestPermission().then(({granted}) => {
+      this.hasPermission = granted;
+      this.alertController.create({
+        header: 'Permission Request',
+        message: granted ? 'Permission granted' : 'Permission denied',
+        buttons: ['OK']
+      }).then(alert => alert.present());
+    });
   }
 
-  async startRecording() {
+  public requestPermission() {
+    CapacitorAudioEngine.requestPermission().then(({granted}) => {
+      this.hasPermission = granted;
+      this.alertController.create({
+        header: 'Permission Request',
+        message: granted ? 'Permission granted' : 'Permission denied',
+        buttons: ['OK']
+      }).then(alert => alert.present());
+    });
+  }
+  public startRecording() {
     try {
-      const { granted } = await CapacitorAudioEngine.requestPermission();
-      if (!granted) return;
-
-      await CapacitorAudioEngine.startRecording();
-      this.isRecording = true;
-      console.log('Recording started');
+      CapacitorAudioEngine.startRecording({maxDuration:5}).then(() => {
+        this.isRecording = true;
+      });
     } catch (error) {
       console.error('Failed to start recording:', error);
     }
@@ -155,6 +193,7 @@ export class HomePage implements OnInit, OnDestroy{
   async stopRecording() {
     try {
       const res = await CapacitorAudioEngine.stopRecording();
+      console.log("🚀 ~ HomePage ~ stopRecording ~ res:", res)
       const file = await Capacitor.convertFileSrc(res.uri);
       this.isRecording = false;
       this.hasRecording = true;
@@ -168,6 +207,10 @@ export class HomePage implements OnInit, OnDestroy{
       this.endAudioTime.set(this.duration);
       this.currentAudioTime.set(0);
       this.recordingUrl.set(file);
+      this.audioInfo.set(res);
+
+      // Don't remove all listeners here, as we need them for the next recording session
+      // Instead, we'll clean up in ngOnDestroy
     } catch (error) {
       console.error("Error stopping recording:", error);
       this.isRecording = false;
@@ -196,24 +239,30 @@ export class HomePage implements OnInit, OnDestroy{
       }
   }
 
-  trimAudio() {
-      CapacitorAudioEngine.trimAudio({
-        path: this.recordingUrl(),
-        startTime: this.startAudioTime(),
-        endTime: this.endAudioTime()
-      }).then(async (res) => {
-        const file = await Capacitor.convertFileSrc(res.uri);
-        // update time signals
-        const durationInSeconds = res.duration;
-        // Initialize the range with start at 0 and end at total duration
-        this.duration = durationInSeconds;
-        this.startAudioTime.set(0);
-        this.endAudioTime.set(this.duration);
-        this.currentAudioTime.set(0);
-        this.recordingUrl.set(file);
-      }).catch((error) => {
-        console.error("Error trimming audio:", error);
-      })
+  async trimAudio() {
+    if (!this.audioInfo()) {
+      console.error('No audio info available for trimming.');
+      return;
+    }
+
+    try {
+      const res = await CapacitorAudioEngine.trimAudio({
+        uri: this.audioInfo()!.uri,
+        start: this.startAudioTime(),
+        end: this.endAudioTime()
+      });
+
+      const file = Capacitor.convertFileSrc(res.uri);
+      // Update state
+      this.duration = res.duration;
+      this.startAudioTime.set(0);
+      this.endAudioTime.set(this.duration);
+      this.currentAudioTime.set(0);
+      this.recordingUrl.set(file);
+      this.audioInfo.set(res); // Keep audioInfo in sync
+    } catch (error) {
+      console.error("Error trimming audio:", error);
+    }
   }
 
   async handleRecordingInterruption(message: string) {
@@ -239,7 +288,7 @@ export class HomePage implements OnInit, OnDestroy{
       // Resume recording if it was active before interruption
       if (this.wasRecordingBeforeInterruption) {
         try {
-          await CapacitorAudioEngine.startRecording();
+          await CapacitorAudioEngine.startRecording({maxDuration:5});
           console.log('Recording resumed after interruption');
         } catch (error) {
           console.error('Failed to resume recording:', error);
@@ -251,7 +300,6 @@ export class HomePage implements OnInit, OnDestroy{
   async testInterruptionListener() {
     try {
       console.log('Testing interruption listener...');
-      await CapacitorAudioEngine.startMonitoring();
       await CapacitorAudioEngine.addListener('recordingInterruption', (data: any) => {
         console.log('Test interruption received:', data);
       });
@@ -260,7 +308,6 @@ export class HomePage implements OnInit, OnDestroy{
       console.error('Test listener setup failed:', error);
     }
   }
-
 
   public async handlePause() {
     await CapacitorAudioEngine.pauseRecording();

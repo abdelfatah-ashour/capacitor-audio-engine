@@ -15,29 +15,14 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
       - [Android](#android)
   - [📖 API Documentation](#-api-documentation)
     - [Core Interfaces](#core-interfaces)
-      - [`RecordingResult`](#recordingresult)
-      - [`TrimOptions`](#trimoptions)
-      - [`RecordingStatus`](#recordingstatus)
-      - [`AudioRecordingEventName`](#audiorecordingeventname)
     - [Methods](#methods)
       - [Permission Management](#permission-management)
-        - [`checkPermission()`](#checkpermission)
-        - [`requestPermission()`](#requestpermission)
       - [Recording Control](#recording-control)
-        - [`startRecording()`](#startrecording)
-        - [`pauseRecording()`](#pauserecording)
-        - [`resumeRecording()`](#resumerecording)
-        - [`stopRecording()`](#stoprecording)
-      - [Status \& Information](#status--information)
-        - [`getDuration()`](#getduration)
-        - [`getStatus()`](#getstatus)
+      - [Segmented Recording](#segmented-recording)
+      - [Status & Information](#status--information)
       - [Audio Processing](#audio-processing)
-        - [`trimAudio()`](#trimaudio)
       - [Event Handling](#event-handling)
-        - [`addListener()`](#addlistener)
-        - [`startMonitoring()`](#startmonitoring)
-        - [`stopMonitoring()`](#stopmonitoring)
-        - [`removeAllListeners()`](#removealllisteners)
+      - [Usage Example](#usage-example)
   - [🔧 Troubleshooting](#-troubleshooting)
     - [Common Issues](#common-issues)
   - [🛠️ Technical Details](#️-technical-details)
@@ -72,6 +57,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 | Permission Handling | ✅      | ✅  | 🔜  |
 | Status Monitoring   | ✅      | ✅  | 🔜  |
 | Audio Trimming      | ✅      | ✅  | 🔜  |
+| Segmented Recording | ✅      | ✅  | 🔜  |
 
 > 💡 **Note:** Android and iOS are fully supported! Web support is coming soon - we're working on it! 🚧
 
@@ -82,7 +68,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - Node.js 14+ and npm
 - Capacitor 5.0.0+
 - iOS 13+ for iOS development
-- Android 6.0+ (API level 24) for Android development
+- Android 10+ (API level 29) for Android development
 
 ### Setup
 
@@ -135,37 +121,44 @@ Add this to your `AndroidManifest.xml`:
 
 ### Core Interfaces
 
-#### `RecordingResult`
+#### `AudioFileInfo`
 
 ```typescript
-interface RecordingResult {
-  path: string; // Where your file is stored
-  webPath: string; // Web-friendly path
-  uri: string; // Platform-specific URI
-  mimeType: string; // File type (e.g., 'audio/mpeg')
-  size: number; // File size in bytes
-  duration: number; // Length in seconds
-  sampleRate: number; // Sample rate (44100 Hz)
-  channels: number; // Audio channels (1 = mono)
-  bitrate: number; // Quality (128000 bps)
-  createdAt: number; // When it was created
-  filename: string; // The file's name
+export interface AudioFileInfo {
+  path: string;
+  webPath: string;
+  uri: string;
+  mimeType: string;
+  size: number;
+  duration: number;
+  sampleRate: number;
+  channels: number;
+  bitrate: number;
+  createdAt: number;
+  filename: string;
 }
 ```
 
-#### `TrimOptions`
+#### `RecordingOptions`
 
 ```typescript
-interface TrimOptions {
-  path: string; // Your audio file
-  startTime: number; // Where to start (in seconds)
-  endTime: number; // Where to end (in seconds)
+export interface RecordingOptions {
+  maxDuration?: number;
+  sampleRate?: number;
+  channels?: number;
+  bitrate?: number;
+}
+```
+
+#### `SegmentedRecordingOptions`
+
+```typescript
+export interface SegmentedRecordingOptions extends RecordingOptions {
+  segmentDuration?: number;
 }
 ```
 
 #### `RecordingStatus`
-
-The status of the audio recorder.
 
 ```typescript
 type RecordingStatus = 'idle' | 'recording' | 'paused';
@@ -173,10 +166,14 @@ type RecordingStatus = 'idle' | 'recording' | 'paused';
 
 #### `AudioRecordingEventName`
 
-Event names for audio recording listeners.
-
 ```typescript
-type AudioRecordingEventName = 'recordingInterruption';
+type AudioRecordingEventName =
+  | 'recordingInterruption'
+  | 'durationChange'
+  | 'progress'
+  | 'segmentProgress'
+  | 'segmentMetadata'
+  | 'error';
 ```
 
 ### Methods
@@ -203,10 +200,10 @@ requestPermission(): Promise<{ granted: boolean }>;
 
 ##### `startRecording()`
 
-Start recording audio.
+Start recording audio from the device's microphone.
 
 ```typescript
-startRecording(): Promise<void>;
+startRecording(options?: RecordingOptions): Promise<void>;
 ```
 
 ##### `pauseRecording()`
@@ -227,10 +224,28 @@ resumeRecording(): Promise<void>;
 
 ##### `stopRecording()`
 
-Stop recording and get the audio file.
+Stop the current recording and get the recorded file information.
 
 ```typescript
-stopRecording(): Promise<RecordingResult>;
+stopRecording(): Promise<AudioFileInfo>;
+```
+
+#### Segmented Recording
+
+##### `startSegmentedRecording()`
+
+Start recording audio in segments (chunks) that will be merged when stopped.
+
+```typescript
+startSegmentedRecording(options?: SegmentedRecordingOptions): Promise<void>;
+```
+
+##### `stopSegmentedRecording()`
+
+Stop segmented recording and merge all segments into a single file.
+
+```typescript
+stopSegmentedRecording(): Promise<AudioFileInfo>;
 ```
 
 #### Status & Information
@@ -248,7 +263,7 @@ getDuration(): Promise<{ duration: number }>;
 Check the current recording status.
 
 ```typescript
-getStatus(): Promise<{ status: 'idle' | 'recording' | 'paused'; isRecording: boolean }>;
+getStatus(): Promise<{ status: RecordingStatus; isRecording: boolean }>;
 ```
 
 #### Audio Processing
@@ -258,35 +273,27 @@ getStatus(): Promise<{ status: 'idle' | 'recording' | 'paused'; isRecording: boo
 Trim an audio file to a specific duration.
 
 ```typescript
-trimAudio(options: TrimOptions): Promise<RecordingResult>;
+trimAudio(options: { uri: string; start: number; end: number }): Promise<AudioFileInfo>;
 ```
 
 #### Event Handling
 
 ##### `addListener()`
 
-Add a listener for recording interruptions.
-`AudioRecordingEventName` can be `'recordingInterruption'`.
-`PluginListenerHandle` is an interface from `@capacitor/core`.
+Add a listener for recording events.
 
 ```typescript
-addListener(eventName: AudioRecordingEventName, callback: (data: { message: string }) => void): Promise<PluginListenerHandle>;
-```
-
-##### `startMonitoring()`
-
-Start monitoring for recording interruptions.
-
-```typescript
-startMonitoring(): Promise<void>;
-```
-
-##### `stopMonitoring()`
-
-Stop monitoring for recording interruptions.
-
-```typescript
-stopMonitoring(): Promise<void>;
+addListener(
+  eventName: AudioRecordingEventName,
+  callback: (
+    data:
+      | RecordingInterruptionData
+      | DurationChangeData
+      | ProgressEventData
+      | SegmentMetadataEventData
+      | ErrorEventData,
+  ) => void,
+): Promise<PluginListenerHandle>;
 ```
 
 ##### `removeAllListeners()`
@@ -297,28 +304,24 @@ Remove all listeners for recording events.
 removeAllListeners(): Promise<void>;
 ```
 
+> **Note:** The audio format is always `.m4a` (MPEG-4/AAC) on all platforms.
+
 ## 🔧 Troubleshooting
 
 ### Common Issues
 
 1. **Permission Denied**
-
    - Ensure you've added the required permissions in your platform-specific files
    - Check if the user has granted permission in their device settings
    - Try requesting permission again
-
 2. **Recording Not Starting**
-
    - Verify that you're not already recording
    - Check if the microphone is being used by another app
    - Ensure you have sufficient storage space
-
 3. **Audio Quality Issues**
-
    - Check if the device's microphone is working properly
    - Verify that no other apps are using the microphone
    - Ensure you're not in a noisy environment
-
 4. **File Access Issues**
    - Check if the app has proper storage permissions
    - Verify that the storage path is accessible
@@ -339,21 +342,25 @@ removeAllListeners(): Promise<void>;
 #### Android
 
 - Uses MediaRecorder
-- Format: MPEG_4 container with AAC codec
-- MIME Type: 'audio/mpeg'
+- Format: M4A container with AAC codec (MPEG-4/AAC, always .m4a)
+- MIME Type: 'audio/m4a' or 'audio/m4a'
 - Audio Source: MIC
 - Storage: App's external files directory under "Recordings" folder
-- Filename Format: "recording\_[timestamp].mp3"
-- Required Permission: `android.permission.RECORD_AUDIO`
-- Pause functionality requires Android N/API 24 or higher
+- Filename Format: "recording\_[timestamp].m4a"
+- **Background Recording**: Full support via foreground service with microphone type
+- **Required Permission**: `android.permission.RECORD_AUDIO`
+- **Background Permissions**: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS`
 
 #### iOS
 
 - Uses AVAudioRecorder
-- Format: M4A container with AAC codec
+- Format: M4A container with AAC codec (MPEG-4/AAC, always .m4a)
 - MIME Type: 'audio/m4a'
 - Quality: High
 - Uses AVAssetExportSession for audio trimming
+- **Background Recording**: Supports continuous recording when app is backgrounded (requires 'audio' background mode)
+- **Required Permission**: NSMicrophoneUsageDescription in Info.plist
+- **Background Mode**: UIBackgroundModes with 'audio' capability
 
 ## 🤝 Contributing
 
@@ -371,7 +378,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Need Help?
 
-Found a bug? Have a feature request? Just want to chat? [Open an issue](https://github.com/abdelfatah-ashour/capacitor-native-audio/issues) on GitHub and we'll help you out!
+Found a bug? Have a feature request? Just want to chat? [Open an issue](https://github.com/abdelfattah-ashour/capacitor-native-audio/issues) on GitHub and we'll help you out!
 
 ---
 

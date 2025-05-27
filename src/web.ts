@@ -1,7 +1,14 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 import { WebPlugin } from '@capacitor/core';
 
-import type { CapacitorAudioEnginePlugin, RecordingStatus, AudioRecordingEventName } from './definitions';
+import type {
+  CapacitorAudioEnginePlugin,
+  RecordingStatus,
+  AudioRecordingEventName,
+  AudioFileInfo,
+  AudioRecordingEventMap,
+  RecordingOptions,
+} from './definitions';
 
 declare global {
   interface BlobEventInit extends EventInit {
@@ -19,93 +26,201 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     return options;
   }
 
+  /**
+   * Check if the app has microphone permission.
+   * @returns Promise that resolves with an object containing the permission status
+   * @platform web Not supported - returns false
+   */
   async checkPermission(): Promise<{ granted: boolean }> {
-    console.error('checkPermission is not supported on web');
+    console.warn(
+      'checkPermission is not supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
+    );
     return { granted: false };
   }
 
+  /**
+   * Request microphone permission from the user.
+   * @returns Promise that resolves with an object containing the permission status
+   * @platform web Not supported - returns false
+   */
   async requestPermission(): Promise<{ granted: boolean }> {
-    console.error('requestPermission is not supported on web');
+    console.warn(
+      'requestPermission is not supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
+    );
     return { granted: false };
   }
 
-  async startRecording(): Promise<void> {
-    console.error('startRecording is not supported on web');
+  /**
+   * Start recording audio from the device's microphone.
+   * @param options - Recording options
+   * @param options.maxDuration - Maximum duration in seconds to keep at the end of recording
+   * @returns Promise that resolves when recording starts successfully
+   * @platform web Not supported
+   */
+  async startRecording(_options?: RecordingOptions): Promise<void> {
+    // The _options parameter is intentionally unused but added for API compatibility
+    void _options;
+    console.warn(
+      'startRecording is not supported on web platform. For web implementation, consider using MediaRecorder API directly.',
+    );
+
+    // Reset recording state and start monitoring
+    this.recordingStartTime = Date.now();
+    this.isPaused = false;
+    await this.startMonitoring();
   }
 
-  async stopRecording(): Promise<{
-    path: string;
-    webPath: string;
-    uri: string;
-    mimeType: string;
-    size: number;
-    duration: number;
-    sampleRate: number;
-    channels: number;
-    bitrate: number;
-    createdAt: number;
-    filename: string;
-  }> {
-    return new Promise((_, reject) => {
-      console.error('stopRecording is not supported on web');
-      reject(new Error('stopRecording is not supported on web'));
-    });
+  /**
+   * Stop the current recording and get the recorded file information.
+   * @returns Promise that resolves with the recorded audio file details
+   * @platform web Not supported
+   */
+  async stopRecording(): Promise<AudioFileInfo> {
+    console.warn(
+      'stopRecording is not supported on web platform. For web implementation, consider using MediaRecorder API directly.',
+    );
+
+    // Stop monitoring duration
+    await this.stopMonitoring();
+    this.recordingStartTime = 0;
+    this.isPaused = false;
+
+    throw new Error('stopRecording is not supported on web platform');
   }
 
+  /**
+   * Pause the current recording.
+   * @returns Promise that resolves when recording is paused successfully
+   * @platform web Not supported
+   */
   async pauseRecording(): Promise<void> {
-    console.error('pauseRecording is not supported on web');
+    console.warn(
+      'pauseRecording is not supported on web platform. For web implementation, consider using MediaRecorder API directly.',
+    );
+    this.isPaused = true;
   }
 
+  /**
+   * Resume the current recording if it was previously paused.
+   * @returns Promise that resolves when recording is resumed successfully
+   * @platform web Not supported
+   */
   async resumeRecording(): Promise<void> {
-    console.error('resumeRecording is not supported on web');
+    console.warn(
+      'resumeRecording is not supported on web platform. For web implementation, consider using MediaRecorder API directly.',
+    );
+    this.isPaused = false;
   }
 
+  /**
+   * Get the current recording duration.
+   * @returns Promise that resolves with the current duration in seconds
+   * @platform web Not supported - returns 0
+   */
   async getDuration(): Promise<{ duration: number }> {
-    console.error('getDuration is not supported on web');
+    console.warn(
+      'getDuration is not supported on web platform. For web implementation, consider using MediaRecorder API directly.',
+    );
     return { duration: 0 };
   }
 
-  async getStatus(): Promise<{ status: RecordingStatus; isRecording: boolean }> {
-    console.error('getStatus is not supported on web');
-    return { status: 'idle', isRecording: false };
-  }
-
-  async trimAudio(options: { path: string; startTime: number; endTime: number }): Promise<{
-    path: string;
-    webPath: string;
-    uri: string;
-    mimeType: string;
-    size: number;
+  /**
+   * Get the current recording status.
+   * @returns Promise that resolves with the current recording status
+   * @platform web Not supported - returns idle
+   */
+  async getStatus(): Promise<{
+    status: RecordingStatus;
+    isRecording: boolean;
+    currentSegment: number;
     duration: number;
-    sampleRate: number;
-    channels: number;
-    bitrate: number;
-    createdAt: number;
-    filename: string;
   }> {
-    console.error('trimAudio is not supported on web', options);
-    throw new Error('trimAudio is not supported on web');
+    console.warn(
+      'getStatus is not supported on web platform. For web implementation, consider using MediaRecorder API directly.',
+    );
+    return { status: 'idle', isRecording: false, currentSegment: 0, duration: 0 };
   }
 
-  async addListener(
-    eventName: AudioRecordingEventName,
-    callback: (data: { message: string }) => void,
+  /**
+   * Trim an audio file to the specified start and end times.
+   * @returns Promise that resolves with the trimmed audio file details
+   * @platform web Not supported
+   */
+  async trimAudio({ uri, start, end }: { uri: string; start: number; end: number }): Promise<AudioFileInfo> {
+    console.warn(
+      `trimAudio is not supported on web platform. Attempted to trim file: ${uri} from ${start}s to ${end}s. For web implementation, consider using Web Audio API directly.`,
+    );
+    throw new Error('trimAudio is not supported on web platform');
+  }
+
+  /**
+   * Add a listener for recording events
+   * @returns A promise that resolves with a handle to the listener
+   * @platform web Not supported
+   */
+  async addListener<T extends AudioRecordingEventName>(
+    eventName: T,
+    callback: (event: AudioRecordingEventMap[T]) => void,
   ): Promise<PluginListenerHandle> {
-    console.log('addListener is not supported on web', { eventName, callback });
-    // For web, we can call super.addListener to handle event registration if needed for other event types in the future.
-    // However, for 'recordingInterruption', it's not applicable to the web environment in the same way as native.
-    // We'll return a dummy handle as before, but acknowledge the specific event type.
-    if (eventName === 'recordingInterruption') {
-      console.warn('recordingInterruption event is not applicable on the web platform.');
+    console.warn(
+      `${eventName} event is not supported on web platform. Callback will not be invoked. For web implementation, consider using MediaRecorder events directly.`,
+    );
+    const handle = {
+      remove: () => Promise.resolve(),
+    } as PluginListenerHandle;
+    // Store callback in closure to prevent garbage collection
+    void callback;
+    return handle;
+  }
+
+  /**
+   * Remove all listeners
+   * @returns Promise that resolves when all listeners are removed
+   * @platform web Not supported
+   */
+  async removeAllListeners(): Promise<void> {
+    console.warn('removeAllListeners is not supported on web platform.');
+  }
+
+  private durationMonitoringInterval?: number;
+  private recordingStartTime = 0;
+  private isPaused = false;
+
+  /**
+   * Start monitoring duration. Used internally by start/pause/resume recording functions.
+   * @returns Promise that resolves when monitoring starts
+   * @private
+   */
+  private async startMonitoring(): Promise<void> {
+    // Clear any existing interval
+    this.stopMonitoring();
+
+    if (!this.recordingStartTime) {
+      this.recordingStartTime = Date.now();
     }
-    return Promise.resolve({ remove: () => Promise.resolve() } as PluginListenerHandle);
+
+    // Set up interval to emit duration changes (1 second interval)
+    this.durationMonitoringInterval = window.setInterval(() => {
+      if (!this.isPaused) {
+        const duration = Math.floor((Date.now() - this.recordingStartTime) / 1000);
+        console.log('Web: Emitting durationChange event with duration:', duration);
+        this.notifyListeners('durationChange', {
+          eventName: 'durationChange',
+          payload: { duration },
+        });
+      }
+    }, 1000) as unknown as number;
   }
 
-  async startMonitoring(): Promise<void> {
-    console.error('startMonitoring is not supported on web');
-  }
-
-  async stopMonitoring(): Promise<void> {
-    console.error('stopMonitoring is not supported on web');
+  /**
+   * Stop monitoring duration. Used internally by stop recording function.
+   * @returns Promise that resolves when monitoring stops
+   * @private
+   */
+  private async stopMonitoring(): Promise<void> {
+    if (this.durationMonitoringInterval) {
+      clearInterval(this.durationMonitoringInterval);
+      this.durationMonitoringInterval = undefined;
+    }
   }
 }
