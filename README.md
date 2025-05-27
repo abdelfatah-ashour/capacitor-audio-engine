@@ -21,6 +21,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
       - [Segmented Recording](#segmented-recording)
       - [Status & Information](#status--information)
       - [Audio Processing](#audio-processing)
+      - [Microphone Management](#microphone-management)
       - [Event Handling](#event-handling)
       - [Usage Example](#usage-example)
   - [🔧 Troubleshooting](#-troubleshooting)
@@ -30,6 +31,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
       - [Web](#web)
       - [Android](#android-1)
       - [iOS](#ios-1)
+  - [📚 Additional Documentation](#-additional-documentation)
   - [🤝 Contributing](#-contributing)
   - [📄 License](#-license)
   - [📞 Need Help?](#-need-help)
@@ -42,6 +44,8 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 🔒 Handle permissions automatically
 - ✂️ Trim your audio files
 - 📝 Get detailed recording metadata
+- 🎙️ **Microphone management** - Detect and switch between available microphones
+- 🔍 **Microphone status** - Check if microphone is busy/in use by other apps
 - 🌐 Cross-platform support (Web coming soon!)
 - 🎚️ Consistent audio quality:
   - Sample Rate: 44.1kHz
@@ -50,14 +54,16 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 
 ## 📱 Platform Support
 
-| Feature             | Android | iOS | Web |
-| ------------------- | ------- | --- | --- |
-| Recording           | ✅      | ✅  | 🔜  |
-| Pause/Resume        | ✅      | ✅  | 🔜  |
-| Permission Handling | ✅      | ✅  | 🔜  |
-| Status Monitoring   | ✅      | ✅  | 🔜  |
-| Audio Trimming      | ✅      | ✅  | 🔜  |
-| Segmented Recording | ✅      | ✅  | 🔜  |
+| Feature              | Android | iOS | Web |
+| -------------------- | ------- | --- | --- |
+| Recording            | ✅      | ✅  | 🔜  |
+| Pause/Resume         | ✅      | ✅  | 🔜  |
+| Permission Handling  | ✅      | ✅  | 🔜  |
+| Status Monitoring    | ✅      | ✅  | 🔜  |
+| Audio Trimming       | ✅      | ✅  | 🔜  |
+| Segmented Recording  | ✅      | ✅  | 🔜  |
+| Microphone Detection | ✅      | ✅  | 🔜  |
+| Microphone Switching | ✅      | ✅  | 🔜  |
 
 > 💡 **Note:** Android and iOS are fully supported! Web support is coming soon - we're working on it! 🚧
 
@@ -176,6 +182,52 @@ type AudioRecordingEventName =
   | 'error';
 ```
 
+#### `MicrophoneInfo`
+
+```typescript
+export interface MicrophoneInfo {
+  id: number;
+  name: string;
+  type: 'internal' | 'external' | 'unknown';
+  isConnected: boolean;
+}
+```
+
+#### `MicrophoneStatusResult`
+
+```typescript
+export interface MicrophoneStatusResult {
+  busy: boolean;
+  reason?: string;
+}
+```
+
+#### `AvailableMicrophonesResult`
+
+```typescript
+export interface AvailableMicrophonesResult {
+  microphones: MicrophoneInfo[];
+}
+```
+
+#### `SwitchMicrophoneOptions`
+
+```typescript
+export interface SwitchMicrophoneOptions {
+  microphoneId: number;
+}
+```
+
+#### `SwitchMicrophoneResult`
+
+```typescript
+export interface SwitchMicrophoneResult {
+  success: boolean;
+  microphoneId: number;
+  message?: string;
+}
+```
+
 ### Methods
 
 #### Permission Management
@@ -276,6 +328,77 @@ Trim an audio file to a specific duration.
 trimAudio(options: { uri: string; start: number; end: number }): Promise<AudioFileInfo>;
 ```
 
+#### Microphone Management
+
+##### `isMicrophoneBusy()`
+
+Check if the microphone is currently being used by another application.
+
+```typescript
+isMicrophoneBusy(): Promise<MicrophoneStatusResult>;
+```
+
+**Example:**
+
+```typescript
+const status = await CapacitorAudioEngine.isMicrophoneBusy();
+if (status.busy) {
+  console.log('Microphone is busy:', status.reason);
+} else {
+  console.log('Microphone is available');
+}
+```
+
+##### `getAvailableMicrophones()`
+
+Get a list of available microphones (internal and external).
+
+```typescript
+getAvailableMicrophones(): Promise<AvailableMicrophonesResult>;
+```
+
+**Example:**
+
+```typescript
+const result = await CapacitorAudioEngine.getAvailableMicrophones();
+result.microphones.forEach((mic) => {
+  console.log(`${mic.name} (${mic.type}): ${mic.isConnected ? 'Connected' : 'Disconnected'}`);
+});
+```
+
+##### `switchMicrophone()`
+
+Switch to a different microphone while keeping recording active.
+
+```typescript
+switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
+```
+
+**Example:**
+
+```typescript
+// Get available microphones
+const result = await CapacitorAudioEngine.getAvailableMicrophones();
+const externalMic = result.microphones.find((mic) => mic.type === 'external');
+
+if (externalMic) {
+  try {
+    const switchResult = await CapacitorAudioEngine.switchMicrophone({
+      microphoneId: externalMic.id,
+    });
+    console.log('Switched to:', switchResult.message);
+  } catch (error) {
+    console.error('Failed to switch microphone:', error);
+  }
+}
+```
+
+**Platform Notes:**
+
+- **Android**: Shows primary built-in microphone + all external devices (headsets, USB, Bluetooth)
+- **iOS**: Shows all available audio inputs from AVAudioSession
+- **Web**: Not supported (returns empty array)
+
 #### Event Handling
 
 ##### `addListener()`
@@ -306,6 +429,133 @@ removeAllListeners(): Promise<void>;
 
 > **Note:** The audio format is always `.m4a` (MPEG-4/AAC) on all platforms.
 
+#### Usage Example
+
+Here's a complete example of how to use the plugin with microphone management:
+
+```typescript
+import { CapacitorAudioEngine } from 'capacitor-audio-engine';
+
+class AudioRecorder {
+  private isRecording = false;
+  private availableMicrophones: MicrophoneInfo[] = [];
+  private selectedMicrophoneId: number | null = null;
+
+  async initialize() {
+    // Check and request permission
+    const permission = await CapacitorAudioEngine.checkPermission();
+    if (!permission.granted) {
+      const result = await CapacitorAudioEngine.requestPermission();
+      if (!result.granted) {
+        throw new Error('Microphone permission denied');
+      }
+    }
+
+    // Load available microphones
+    await this.loadMicrophones();
+
+    // Set up event listeners
+    await this.setupEventListeners();
+  }
+
+  async loadMicrophones() {
+    try {
+      const result = await CapacitorAudioEngine.getAvailableMicrophones();
+      this.availableMicrophones = result.microphones;
+
+      // Select internal microphone by default
+      const internalMic = result.microphones.find((mic) => mic.type === 'internal');
+      if (internalMic) {
+        this.selectedMicrophoneId = internalMic.id;
+      }
+
+      console.log('Available microphones:', result.microphones);
+    } catch (error) {
+      console.error('Failed to load microphones:', error);
+    }
+  }
+
+  async startRecording() {
+    try {
+      // Check if microphone is busy
+      const status = await CapacitorAudioEngine.isMicrophoneBusy();
+      if (status.busy) {
+        throw new Error(`Microphone is busy: ${status.reason}`);
+      }
+
+      // Switch to selected microphone if available
+      if (this.selectedMicrophoneId) {
+        await CapacitorAudioEngine.switchMicrophone({
+          microphoneId: this.selectedMicrophoneId,
+        });
+      }
+
+      // Start recording
+      await CapacitorAudioEngine.startRecording({
+        maxDuration: 300, // 5 minutes
+        sampleRate: 44100,
+        channels: 1,
+        bitrate: 128000,
+      });
+
+      this.isRecording = true;
+      console.log('Recording started');
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+    }
+  }
+
+  async stopRecording() {
+    try {
+      const result = await CapacitorAudioEngine.stopRecording();
+      this.isRecording = false;
+      console.log('Recording saved:', result);
+      return result;
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+    }
+  }
+
+  async switchMicrophone(microphoneId: number) {
+    try {
+      const result = await CapacitorAudioEngine.switchMicrophone({ microphoneId });
+      this.selectedMicrophoneId = result.microphoneId;
+      console.log('Switched microphone:', result.message);
+    } catch (error) {
+      console.error('Failed to switch microphone:', error);
+    }
+  }
+
+  private async setupEventListeners() {
+    // Listen for recording interruptions
+    await CapacitorAudioEngine.addListener('recordingInterruption', (data) => {
+      console.log('Recording interrupted:', data.payload.message);
+    });
+
+    // Listen for duration changes
+    await CapacitorAudioEngine.addListener('durationChange', (data) => {
+      console.log('Recording duration:', data.payload.duration);
+    });
+
+    // Listen for errors
+    await CapacitorAudioEngine.addListener('error', (data) => {
+      console.error('Recording error:', data.payload.message);
+    });
+  }
+
+  async cleanup() {
+    await CapacitorAudioEngine.removeAllListeners();
+  }
+}
+
+// Usage
+const recorder = new AudioRecorder();
+await recorder.initialize();
+await recorder.startRecording();
+// ... record audio ...
+const audioFile = await recorder.stopRecording();
+```
+
 ## 🔧 Troubleshooting
 
 ### Common Issues
@@ -326,6 +576,16 @@ removeAllListeners(): Promise<void>;
    - Check if the app has proper storage permissions
    - Verify that the storage path is accessible
    - Ensure there's enough free space
+5. **Microphone Issues**
+   - Use `isMicrophoneBusy()` to check if another app is using the microphone
+   - Try refreshing available microphones with `getAvailableMicrophones()`
+   - Ensure external microphones (headsets, USB) are properly connected
+   - On Android: Built-in microphone should always be available
+   - On iOS: Check if microphone access is enabled in device settings
+6. **Microphone Switching Issues**
+   - Verify the microphone ID exists in the available microphones list
+   - External microphones may disconnect during recording
+   - Some devices may not support seamless microphone switching during recording
 
 ## 🛠️ Technical Details
 
@@ -338,6 +598,7 @@ removeAllListeners(): Promise<void>;
 - MIME Type: 'audio/webm;codecs=opus'
 - Permission: Uses navigator.permissions.query API
 - Audio trimming: Not supported (logs console message)
+- **Microphone Management**: Not supported (returns empty arrays and placeholder responses)
 
 #### Android
 
@@ -350,6 +611,12 @@ removeAllListeners(): Promise<void>;
 - **Background Recording**: Full support via foreground service with microphone type
 - **Required Permission**: `android.permission.RECORD_AUDIO`
 - **Background Permissions**: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS`
+- **Microphone Management**:
+  - Uses AudioManager.getDevices() to enumerate input devices (API 23+)
+  - Shows primary built-in microphone + all external devices
+  - Supports headset, USB, and Bluetooth microphones
+  - Uses AudioRecord for microphone busy detection
+  - Microphone switching uses MediaRecorder.setPreferredDevice() (API 28+)
 
 #### iOS
 
@@ -361,6 +628,17 @@ removeAllListeners(): Promise<void>;
 - **Background Recording**: Supports continuous recording when app is backgrounded (requires 'audio' background mode)
 - **Required Permission**: NSMicrophoneUsageDescription in Info.plist
 - **Background Mode**: UIBackgroundModes with 'audio' capability
+- **Microphone Management**:
+  - Uses AVAudioSession.availableInputs to list audio inputs
+  - Supports built-in, wired headset, and Bluetooth microphones
+  - Uses AVAudioSession.setPreferredInput() for microphone switching
+  - Real-time microphone busy detection via AVAudioSession
+
+## 📚 Additional Documentation
+
+For more detailed examples and advanced usage patterns, check out:
+
+- **[Microphone Management Guide](docs/MICROPHONE_USAGE.md)** - Comprehensive guide for microphone detection, switching, and troubleshooting
 
 ## 🤝 Contributing
 
