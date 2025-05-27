@@ -77,6 +77,31 @@ export interface AudioFileInfo {
   filename: string;
 }
 
+export interface MicrophoneInfo {
+  id: number;
+  name: string;
+  type: 'internal' | 'external' | 'unknown';
+  description: string;
+  uid?: string; // iOS only
+}
+
+export interface MicrophoneStatusResult {
+  busy: boolean;
+}
+
+export interface AvailableMicrophonesResult {
+  microphones: MicrophoneInfo[];
+}
+
+export interface SwitchMicrophoneOptions {
+  microphoneId: number;
+}
+
+export interface SwitchMicrophoneResult {
+  success: boolean;
+  microphoneId: number;
+}
+
 /**
  * Interface for the Native Audio Plugin that provides audio recording capabilities.
  *
@@ -220,4 +245,37 @@ export interface CapacitorAudioEnginePlugin {
    * @returns Promise that resolves when all listeners are removed
    */
   removeAllListeners(): Promise<void>;
+
+  /**
+   * Check if microphone is currently being used by another application.
+   * @returns Promise that resolves with microphone status
+   * @property {boolean} busy - Whether microphone is currently in use
+   * @platform web Not supported
+   * @platform android Uses AudioRecord to test microphone availability
+   * @platform ios Uses AVAudioSession to check audio state
+   */
+  isMicrophoneBusy(): Promise<MicrophoneStatusResult>;
+
+  /**
+   * Get list of available microphones (internal and external).
+   * @returns Promise that resolves with available microphones
+   * @property {MicrophoneInfo[]} microphones - Array of available microphones
+   * @platform web Not supported
+   * @platform android Uses AudioManager.getDevices() to enumerate audio inputs
+   * @platform ios Uses AVAudioSession.availableInputs to list audio inputs
+   */
+  getAvailableMicrophones(): Promise<AvailableMicrophonesResult>;
+
+  /**
+   * Switch between microphones while keeping recording active.
+   * @param options - Switch microphone options
+   * @param options.microphoneId - ID of the microphone to switch to
+   * @returns Promise that resolves with switch result
+   * @throws {Error} If microphone ID is invalid
+   * @throws {Error} If switching fails
+   * @platform web Not supported
+   * @platform android Uses AudioRecord.setPreferredDevice() to switch input
+   * @platform ios Uses AVAudioSession.setPreferredInput() to switch input
+   */
+  switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
 }

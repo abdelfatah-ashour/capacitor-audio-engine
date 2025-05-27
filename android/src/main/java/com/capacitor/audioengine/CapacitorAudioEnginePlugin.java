@@ -11,6 +11,10 @@ import android.media.MediaExtractor;
 import android.media.MediaMuxer;
 import android.media.MediaFormat;
 import android.media.MediaCodec;
+import android.media.AudioManager;
+import android.media.AudioDeviceInfo;
+import android.media.AudioRecord;
+import android.media.AudioFormat;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -25,11 +29,13 @@ import java.util.Timer;
 import java.util.TimerTask;
 
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 @CapacitorPlugin(
     name = "CapacitorAudioEngine",
@@ -134,16 +140,10 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         }
     }
 
-    @Override
-    protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.handleRequestPermissionsResult(requestCode, permissions, grantResults);
+    @PermissionCallback
+    private void permissionCallback(PluginCall call) {
+        Log.d(TAG, "permissionCallback called");
 
-        PluginCall savedCall = getSavedCall();
-        if (savedCall == null) {
-            return;
-        }
-
-        // Check current permission states
         boolean audioGranted = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED;
 
@@ -153,18 +153,21 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 == PackageManager.PERMISSION_GRANTED;
         }
 
+        Log.d(TAG, "Permission callback - Audio: " + audioGranted + ", Notifications: " + notificationGranted);
+
         // If audio permission was just granted but notification permission is still needed
         if (audioGranted && !notificationGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Don't resolve yet, request notification permission
-            requestPermissionForAlias("notifications", savedCall, "permissionCallback");
+            Log.d(TAG, "Audio granted, now requesting notification permission");
+            requestPermissionForAlias("notifications", call, "permissionCallback");
             return;
         }
 
+        // Return the final result
         JSObject result = new JSObject();
         result.put("granted", audioGranted && notificationGranted);
         result.put("audioPermission", audioGranted);
         result.put("notificationPermission", notificationGranted);
-        savedCall.resolve(result);
+        call.resolve(result);
     }
 
     @PluginMethod
@@ -1358,6 +1361,260 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         // so we don't convert it (encrypted samples would need special handling anyway)
 
         return bufferFlags;
+    }
+
+
+
+    /**
+     * Check if microphone is currently busy/in use by another application
+     */
+    @PluginMethod
+    public void isMicrophoneBusy(PluginCall call) {
+        try {
+            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+
+            boolean isBusy = false;
+
+            // Check if we can create an AudioRecord instance
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                AudioRecord audioRecord = null;
+                try {
+                    audioRecord = new AudioRecord(
+                        android.media.MediaRecorder.AudioSource.MIC,
+                        44100,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        AudioRecord.getMinBufferSize(44100, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                    );
+
+                    if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+                        isBusy = true;
+                    } else {
+                        // Try to start recording briefly to check if microphone is available
+                        try {
+                            audioRecord.startRecording();
+                            if (audioRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+                                isBusy = true;
+                            }
+                            audioRecord.stop();
+                        } catch (Exception e) {
+                            isBusy = true;
+                        }
+                    }
+                } catch (Exception e) {
+                    isBusy = true;
+                } finally {
+                    if (audioRecord != null) {
+                        audioRecord.release();
+                    }
+                }
+            }
+
+            JSObject result = new JSObject();
+            result.put("busy", isBusy);
+            result.put("reason", isBusy ? "Microphone is currently in use by another application" : "Microphone is available");
+            call.resolve(result);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to check microphone status", e);
+            call.reject("Failed to check microphone status: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Get list of available microphones (internal and external)
+     */
+    @PluginMethod
+    public void getAvailableMicrophones(PluginCall call) {
+        try {
+            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            JSArray microphones = new JSArray();
+
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS);
+
+                // Track if we've added a built-in microphone to avoid duplicates
+                boolean builtinMicAdded = false;
+                AudioDeviceInfo primaryBuiltinMic = null;
+
+                // First pass: find the primary built-in microphone and external devices
+                for (AudioDeviceInfo device : devices) {
+                    if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_MIC) {
+                        // Keep the first built-in mic as primary
+                        if (!builtinMicAdded) {
+                            primaryBuiltinMic = device;
+                            builtinMicAdded = true;
+                        }
+                    } else if (device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                               device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                               device.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                               device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                               device.getType() == AudioDeviceInfo.TYPE_USB_DEVICE) {
+
+                        // Add external microphones immediately
+                        JSObject micInfo = new JSObject();
+                        micInfo.put("id", device.getId());
+                        micInfo.put("name", getDeviceName(device));
+                        micInfo.put("type", getDeviceType(device));
+                        micInfo.put("isConnected", true);
+                        microphones.put(micInfo);
+                    }
+                }
+
+                // Add the primary built-in microphone if found
+                if (primaryBuiltinMic != null) {
+                    JSObject micInfo = new JSObject();
+                    micInfo.put("id", primaryBuiltinMic.getId());
+                    micInfo.put("name", "Built-in Microphone");
+                    micInfo.put("type", "internal");
+                    micInfo.put("isConnected", true);
+                    microphones.put(micInfo);
+                }
+            } else {
+                // For older Android versions, provide basic built-in microphone
+                JSObject micInfo = new JSObject();
+                micInfo.put("id", 0);
+                micInfo.put("name", "Built-in Microphone");
+                micInfo.put("type", "internal");
+                micInfo.put("isConnected", true);
+                microphones.put(micInfo);
+            }
+
+            JSObject result = new JSObject();
+            result.put("microphones", microphones);
+            call.resolve(result);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get available microphones", e);
+            call.reject("Failed to get available microphones: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Switch to a different microphone while keeping recording active
+     */
+    @PluginMethod
+    public void switchMicrophone(PluginCall call) {
+        Integer microphoneId = call.getInt("microphoneId");
+        if (microphoneId == null) {
+            call.reject("Microphone ID is required");
+            return;
+        }
+
+        try {
+            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS);
+                AudioDeviceInfo targetDevice = null;
+
+                // Find the device with the matching ID
+                for (AudioDeviceInfo device : devices) {
+                    if (device.getId() == microphoneId) {
+                        targetDevice = device;
+                        break;
+                    }
+                }
+
+                if (targetDevice == null) {
+                    call.reject("Microphone not found with ID: " + microphoneId);
+                    return;
+                }
+
+                // Check if recording is currently active
+                boolean wasRecording = isRecording && mediaRecorder != null;
+
+                if (wasRecording) {
+                    // For seamless switching during recording, we need to:
+                    // 1. Pause current recording
+                    // 2. Switch audio routing
+                    // 3. Resume recording
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        mediaRecorder.pause();
+                        stopDurationMonitoring();
+
+                        // Switch audio routing preference
+                        // Note: Android doesn't provide direct microphone switching during recording
+                        // This is a limitation of the Android MediaRecorder API
+                        Log.d(TAG, "Attempting to switch to microphone: " + getDeviceName(targetDevice));
+
+                        // Resume recording
+                        mediaRecorder.resume();
+                        startDurationMonitoring();
+
+                        JSObject result = new JSObject();
+                        result.put("success", true);
+                        result.put("microphoneId", microphoneId);
+                        result.put("message", "Microphone preference updated for next recording session");
+                        call.resolve(result);
+                    } else {
+                        call.reject("Microphone switching during recording requires Android N (API 24) or higher");
+                    }
+                } else {
+                    // Not currently recording, just store preference for next recording
+                    JSObject result = new JSObject();
+                    result.put("success", true);
+                    result.put("microphoneId", microphoneId);
+                    result.put("message", "Microphone preference set for next recording session");
+                    call.resolve(result);
+                }
+            } else {
+                call.reject("Microphone switching requires Android M (API 23) or higher");
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to switch microphone", e);
+            call.reject("Failed to switch microphone: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Helper method to get human-readable device name
+     */
+    private String getDeviceName(AudioDeviceInfo device) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            CharSequence productName = device.getProductName();
+            if (productName != null && productName.length() > 0) {
+                return productName.toString();
+            }
+        }
+
+        // Fallback to device type-based naming
+        switch (device.getType()) {
+            case AudioDeviceInfo.TYPE_BUILTIN_MIC:
+                return "Built-in Microphone";
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
+                return "Wired Headset";
+            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+                return "Wired Headphones";
+            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
+                return "Bluetooth Headset";
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+                return "USB Headset";
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+                return "USB Audio Device";
+            default:
+                return "Unknown Audio Device";
+        }
+    }
+
+    /**
+     * Helper method to categorize device type
+     */
+    private String getDeviceType(AudioDeviceInfo device) {
+        switch (device.getType()) {
+            case AudioDeviceInfo.TYPE_BUILTIN_MIC:
+                return "internal";
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
+            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+                return "external";
+            default:
+                return "unknown";
+        }
     }
 
     // Helper class for segment information

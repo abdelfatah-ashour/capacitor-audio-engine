@@ -1,9 +1,9 @@
 import { Component,  OnInit, signal, OnDestroy, inject } from '@angular/core';
-import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon, IonRange } from '@ionic/angular/standalone';
-import { CapacitorAudioEngine,AudioFileInfo } from "capacitor-audio-engine";
+import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon, IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner } from '@ionic/angular/standalone';
+import { CapacitorAudioEngine,AudioFileInfo, MicrophoneInfo } from "capacitor-audio-engine";
 import { CommonModule } from '@angular/common';
 import { addIcons } from 'ionicons';
-import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline } from 'ionicons/icons';
+import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline } from 'ionicons/icons';
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
 import { AlertController } from '@ionic/angular';
@@ -12,7 +12,7 @@ import { AlertController } from '@ionic/angular';
   selector: 'app-home',
   templateUrl: 'home.page.html',
   styleUrls: ['home.page.scss'],
-  imports: [CommonModule, FormsModule, IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon,IonRange],
+  imports: [CommonModule, FormsModule, IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon,IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner],
   standalone: true
 })
 export class HomePage implements OnInit, OnDestroy{
@@ -30,6 +30,12 @@ export class HomePage implements OnInit, OnDestroy{
   duration = 0;
   audioInfo = signal<AudioFileInfo | null>(null);
   currentDuration = signal<number>(0);
+
+  // Microphone management properties
+  availableMicrophones = signal<MicrophoneInfo[]>([]);
+  selectedMicrophoneId = signal<number | null>(null);
+  microphoneBusy = signal<boolean>(false);
+  isLoadingMicrophones = signal<boolean>(false);
 
   // Add channel configuration
   recordingChannels = 1;  // Default to mono
@@ -58,7 +64,15 @@ export class HomePage implements OnInit, OnDestroy{
       micOutline,
       keyOutline,
       timeOutline,
-      stopCircleOutline
+      stopCircleOutline,
+      headsetOutline,
+      phonePortraitOutline,
+      bluetoothOutline,
+      refreshOutline,
+      warningOutline,
+      cutOutline,
+      bugOutline,
+      shieldCheckmarkOutline
     });
   }
 
@@ -77,6 +91,9 @@ export class HomePage implements OnInit, OnDestroy{
         this.checkRecordingState();
       }
     });
+
+    // Initialize microphone management
+    this.initializeMicrophoneManagement();
 
     // Start monitoring for interruptions
     this.setupInterruptionListener();
@@ -159,26 +176,6 @@ export class HomePage implements OnInit, OnDestroy{
         buttons: ['OK']
       }).then(alert => alert.present());
     });
-  }
-
-  public requestPermission() {
-    CapacitorAudioEngine.requestPermission().then(({granted}) => {
-      this.hasPermission = granted;
-      this.alertController.create({
-        header: 'Permission Request',
-        message: granted ? 'Permission granted' : 'Permission denied',
-        buttons: ['OK']
-      }).then(alert => alert.present());
-    });
-  }
-  public startRecording() {
-    try {
-      CapacitorAudioEngine.startRecording({maxDuration:5}).then(() => {
-        this.isRecording = true;
-      });
-    } catch (error) {
-      console.error('Failed to start recording:', error);
-    }
   }
 
 
@@ -321,5 +318,139 @@ export class HomePage implements OnInit, OnDestroy{
     this.isPaused = false;
     this.isRecording = true;
     console.log('Recording resumed');
+  }
+
+  // New microphone management methods
+  async initializeMicrophoneManagement() {
+      await this.loadAvailableMicrophones();
+      await this.checkMicrophoneBusy();
+  }
+
+  async loadAvailableMicrophones() {
+    if (Capacitor.isNativePlatform()) {
+      this.isLoadingMicrophones.set(true);
+      try {
+        const result = await CapacitorAudioEngine.getAvailableMicrophones();
+        console.log("🚀 ~ HomePage ~ loadAvailableMicrophones ~ result:", JSON.stringify(result,null,2))
+        this.availableMicrophones.set(result.microphones);
+
+        // Set default to first internal microphone if none selected
+        if (this.selectedMicrophoneId() === null && result.microphones.length > 0) {
+          const internalMic = result.microphones.find(mic => mic.type === 'internal');
+          if (internalMic) {
+            this.selectedMicrophoneId.set(internalMic.id);
+          } else {
+            this.selectedMicrophoneId.set(result.microphones[0].id);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load microphones:', error);
+        this.showAlert('Error', 'Failed to load available microphones');
+      } finally {
+        this.isLoadingMicrophones.set(false);
+      }
+    }
+  }
+
+  async checkMicrophoneBusy() {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const result = await CapacitorAudioEngine.isMicrophoneBusy();
+        this.microphoneBusy.set(result.busy);
+      } catch (error) {
+        console.error('Failed to check microphone status:', error);
+      }
+    }
+  }
+
+  async switchMicrophone(microphoneId: number) {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const result = await CapacitorAudioEngine.switchMicrophone({ microphoneId });
+        this.selectedMicrophoneId.set(result.microphoneId);
+
+        const mic = this.availableMicrophones().find(m => m.id === microphoneId);
+        this.showAlert('Success', `Switched to ${mic?.name || 'selected microphone'}`);
+      } catch (error) {
+        console.error('Failed to switch microphone:', error);
+        this.showAlert('Error', 'Failed to switch microphone');
+      }
+    }
+  }
+
+  getMicrophoneIcon(type: string): string {
+    switch (type) {
+      case 'internal':
+        return 'phone-portrait-outline';
+      case 'external':
+        return 'headset-outline';
+      default:
+        return 'mic-outline';
+    }
+  }
+
+  getMicrophoneTypeColor(type: string): string {
+    switch (type) {
+      case 'internal':
+        return 'primary';
+      case 'external':
+        return 'success';
+      default:
+        return 'medium';
+    }
+  }
+
+  async showAlert(header: string, message: string) {
+    const alert = await this.alertController.create({
+      header,
+      message,
+      buttons: ['OK']
+    });
+    await alert.present();
+  }
+
+  // Override existing methods to include microphone management
+  public async startRecording() {
+    try {
+      // Check microphone status before starting
+      await this.checkMicrophoneBusy();
+
+      if (this.microphoneBusy()) {
+        this.showAlert('Microphone Busy', 'Another app is using the microphone');
+        return;
+      }
+
+      // Switch to selected microphone if available
+      if (Capacitor.isNativePlatform() && this.selectedMicrophoneId() !== null) {
+        await this.switchMicrophone(this.selectedMicrophoneId()!);
+      }
+
+      CapacitorAudioEngine.startRecording({maxDuration:5}).then(() => {
+        this.isRecording = true;
+        this.hasRecording = false;
+        this.isPaused = false;
+        console.log('Recording started');
+      });
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      this.showAlert('Error', 'Failed to start recording');
+    }
+  }
+
+  // Override permission request to reload microphones
+  public async requestPermission() {
+    CapacitorAudioEngine.requestPermission().then(async ({granted}) => {
+      this.hasPermission = granted;
+
+      if (granted) {
+        await this.initializeMicrophoneManagement();
+      }
+
+      this.alertController.create({
+        header: 'Permission Request',
+        message: granted ? 'Permission granted' : 'Permission denied',
+        buttons: ['OK']
+      }).then(alert => alert.present());
+    });
   }
 }

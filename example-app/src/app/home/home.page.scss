@@ -1,140 +1,105 @@
-.audio-player {
-  background: var(--ion-color-dark);
-  border-radius: 12px;
-  padding: 16px;
+// Optimized SCSS for microphone management and recording
+.recording-controls, .microphone-management, .audio-playback {
   margin: 16px 0;
+}
 
-  .native-audio-player {
-    width: 100%;
-    margin-bottom: 16px;
-    border-radius: 8px;
-    background: var(--ion-color-medium);
-  }
+.recording-controls ion-button {
+  margin: 8px 0;
+  height: 48px;
+  font-weight: 600;
+  .recording-status { margin: 0; }
+}
 
-  .progress-container {
-    margin-bottom: 16px;
-
-    ion-progress-bar {
-      --progress-background: var(--ion-color-primary);
-      height: 8px;
-      border-radius: 4px;
-    }
-
-    .time-display {
+.microphone-management {
+  .mic-card {
+    margin: 12px 0;
+    .device-info {
       display: flex;
-      justify-content: center;
-      gap: 8px;
-      margin: 16px 0;
-      color: var(--ion-color-medium);
-      font-family: monospace;
+      align-items: center;
+      gap: 12px;
+      .device-details {
+        flex: 1;
+        min-width: 0;
+        .device-name {
+          font-weight: 600;
+          margin-bottom: 4px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .device-type {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          ion-badge { font-size: 0.75rem; }
+        }
+      }
     }
   }
 
-  .playback-controls {
+  .status-indicator {
     display: flex;
-    flex-direction: column;
+    align-items: center;
     gap: 8px;
+    margin: 8px 0;
+    ion-icon { flex-shrink: 0; }
+    .status-text { flex: 1; }
+  }
+
+  .device-selection {
     margin: 16px 0;
+    ion-select { width: 100%; }
   }
 }
 
-.recording-controls {
-  margin: 16px 0;
-}
+.audio-playback {
+  .audio-file {
+    width: 100%;
+    margin: 8px 0;
+    background: var(--ion-color-light);
+    border-radius: 8px;
+  }
 
-.audio-trimmer {
-  margin-top: 24px;
-
-  .trimmer-container {
-    background: var(--ion-color-dark-shade);
-    border-radius: 12px;
-    padding: 16px;
-
-    .waveform {
-      width: 100%;
-      height: 80px;
-      background: var(--ion-color-dark-tint);
-      border-radius: 8px;
-      margin-bottom: 16px;
-
-      canvas {
-        display: block;
-        width: 100%;
-        height: 100%;
-      }
-    }
-
-    .range-container {
-      padding: 0 12px;
-      margin: 24px 0 8px;
-
-      ion-range {
-        --bar-height: 4px;
-        --bar-background: var(--ion-color-medium);
-        --bar-background-active: var(--ion-color-primary);
-        --knob-background: var(--ion-color-primary);
-        --knob-size: 24px;
-        --pin-background: var(--ion-color-primary);
-        --pin-color: var(--ion-color-light);
-        margin: 0;
-        padding: 0;
-
-        &::part(pin) {
-          display: none;
-        }
-
-        &::part(knob) {
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-        }
-
-        &::part(bar) {
-          border-radius: 2px;
-        }
-      }
-    }
-
-    .time-indicators {
+  .file-info {
+    background: var(--ion-color-light);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 12px 0;
+    .info-row {
       display: flex;
       justify-content: space-between;
-      padding: 0 12px;
-      margin-top: 8px;
-
-      .time {
-        font-size: 12px;
-        color: var(--ion-color-medium);
-        font-family: monospace;
-        background: var(--ion-color-dark);
-        padding: 4px 8px;
-        border-radius: 4px;
-      }
-    }
-  }
-
-  .trim-controls {
-    margin-top: 16px;
-
-    ion-button {
-      margin: 0;
+      margin: 4px 0;
+      .label { font-weight: 600; }
+      .value { font-family: monospace; }
     }
   }
 }
 
-.permission-status {
-  text-align: center;
-  margin: 16px 0;
-}
-
-.permission-button {
-  margin: 16px 0;
-}
-
-.audio-range {
-  --bar-height: 4px;
-  --bar-background: var(--ion-color-medium);
+.dual-range {
+  --bar-background: var(--ion-color-light);
   --bar-background-active: var(--ion-color-primary);
+  --bar-height: 8px;
   --knob-background: var(--ion-color-primary);
   --knob-size: 20px;
-  padding: 0;
-  margin: 8px 0;
+  margin: 16px 0;
+}
+
+.trimming-controls {
+  margin: 16px 0;
+  .trim-info {
+    background: var(--ion-color-light);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 12px 0;
+    text-align: center;
+    font-family: monospace;
+  }
+}
+
+.recording-info {
+  margin: 16px 0;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--ion-color-medium);
 }
 

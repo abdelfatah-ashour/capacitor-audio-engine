@@ -23,6 +23,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getDuration", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimAudio", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "isMicrophoneBusy", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getAvailableMicrophones", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "switchMicrophone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
         CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise),
     ]
@@ -1583,5 +1586,132 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
             }
         }
         wasRecordingBeforeInterruption = false
+    }
+
+    @objc func isMicrophoneBusy(_ call: CAPPluginCall) {
+        let audioSession = AVAudioSession.sharedInstance()
+
+        // Check if another app is using the microphone
+        let isBusy = audioSession.isOtherAudioPlaying ||
+                     audioSession.secondaryAudioShouldBeSilencedHint
+
+        call.resolve([
+            "busy": isBusy
+        ])
+    }
+
+    @objc func getAvailableMicrophones(_ call: CAPPluginCall) {
+        let audioSession = AVAudioSession.sharedInstance()
+        var microphones: [[String: Any]] = []
+
+        // Get available audio inputs
+        guard let availableInputs = audioSession.availableInputs else {
+            call.resolve(["microphones": microphones])
+            return
+        }
+
+        for (index, input) in availableInputs.enumerated() {
+            var micType = "unknown"
+            var description = input.portName
+
+            switch input.portType {
+            case .builtInMic:
+                micType = "internal"
+                description = "Built-in Microphone"
+            case .headsetMic:
+                micType = "external"
+                description = "Headset Microphone"
+            case .bluetoothHFP:
+                micType = "external"
+                description = "Bluetooth Headset"
+            case .usbAudio:
+                micType = "external"
+                description = "USB Audio"
+            case .carAudio:
+                micType = "external"
+                description = "Car Audio"
+            default:
+                micType = "unknown"
+                description = input.portName
+            }
+
+            let microphone: [String: Any] = [
+                "id": index,
+                "name": input.portName,
+                "type": micType,
+                "description": description,
+                "uid": input.uid
+            ]
+
+            microphones.append(microphone)
+        }
+
+        call.resolve([
+            "microphones": microphones
+        ])
+    }
+
+    @objc func switchMicrophone(_ call: CAPPluginCall) {
+        guard let microphoneId = call.getInt("microphoneId") else {
+            call.reject("Microphone ID is required")
+            return
+        }
+
+        let audioSession = AVAudioSession.sharedInstance()
+
+        guard let availableInputs = audioSession.availableInputs,
+              microphoneId < availableInputs.count else {
+            call.reject("Invalid microphone ID")
+            return
+        }
+
+        let targetInput = availableInputs[microphoneId]
+
+        do {
+            // Check if recording is currently active
+            let wasRecording = audioRecorder?.isRecording ?? false
+
+            // Stop current recording
+            if wasRecording {
+                audioRecorder?.stop()
+                stopDurationMonitoring()
+            }
+
+            // Switch to new input
+            try audioSession.setPreferredInput(targetInput)
+            try audioSession.setActive(true)
+
+            // Recreate audio recorder if it was recording
+            if wasRecording {
+                setupAudioRecorder()
+                audioRecorder?.record()
+                startDurationMonitoring()
+            }
+
+            call.resolve([
+                "success": true,
+                "microphoneId": microphoneId
+            ])
+        } catch {
+            call.reject("Failed to switch microphone: \(error.localizedDescription)")
+        }
+    }
+
+    private func setupAudioRecorder() {
+        guard let recordingPath = recordingPath else { return }
+
+        let settings = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: 44100,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+
+        do {
+            audioRecorder = try AVAudioRecorder(url: recordingPath, settings: settings)
+            audioRecorder?.prepareToRecord()
+        } catch {
+            print("Failed to setup audio recorder: \(error)")
+        }
     }
 }

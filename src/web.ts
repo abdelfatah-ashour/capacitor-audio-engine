@@ -174,6 +174,39 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
+   * Check if microphone is currently being used by another application.
+   * @returns Promise that resolves with microphone status
+   * @platform web Not supported
+   */
+  async isMicrophoneBusy(): Promise<{ busy: boolean }> {
+    console.warn('isMicrophoneBusy is not supported on web platform.');
+    throw new Error('isMicrophoneBusy is not supported on web platform');
+  }
+
+  /**
+   * Get list of available microphones (internal and external).
+   * @returns Promise that resolves with available microphones
+   * @platform web Not supported
+   */
+  async getAvailableMicrophones(): Promise<{ microphones: any[] }> {
+    console.warn('getAvailableMicrophones is not supported on web platform.');
+    throw new Error('getAvailableMicrophones is not supported on web platform');
+  }
+
+  /**
+   * Switch between microphones while keeping recording active.
+   * @param options - Switch microphone options
+   * @returns Promise that resolves with switch result
+   * @platform web Not supported
+   */
+  async switchMicrophone(options: { microphoneId: number }): Promise<{ success: boolean; microphoneId: number }> {
+    console.warn(
+      `switchMicrophone is not supported on web platform. Attempted to switch to microphone ID: ${options.microphoneId}`,
+    );
+    throw new Error('switchMicrophone is not supported on web platform');
+  }
+
+  /**
    * Remove all listeners
    * @returns Promise that resolves when all listeners are removed
    * @platform web Not supported
