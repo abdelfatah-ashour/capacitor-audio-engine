@@ -4,6 +4,7 @@ import AVFoundation
 import AVKit
 import UIKit
 import ObjectiveC
+import UserNotifications
 
 /**
  * Please read the Capacitor iOS Plugin Development Guide
@@ -68,9 +69,24 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     private var isLooping = false
 
     @objc func checkPermission(_ call: CAPPluginCall) {
-        let status = AVAudioSession.sharedInstance().recordPermission
+        let audioStatus = AVAudioSession.sharedInstance().recordPermission
+        let audioGranted = audioStatus == .granted
+
+        // Check notification permission status on iOS 10+
+        var notificationGranted = true
+        if #available(iOS 10.0, *) {
+            let semaphore = DispatchSemaphore(value: 0)
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                notificationGranted = settings.authorizationStatus == .authorized
+                semaphore.signal()
+            }
+            semaphore.wait()
+        }
+
         call.resolve([
-            "granted": status == .granted
+            "granted": audioGranted && notificationGranted,
+            "audioPermission": audioGranted,
+            "notificationPermission": notificationGranted
         ])
     }
 
@@ -159,8 +175,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         case .began:
             handleInterruptionBegan()
             notifyListeners("recordingInterruption", data: [
-                "eventName": "recordingInterruption",
-                "payload": ["message": "Interruption began"]
+                "message": "Interruption began"
             ])
 
         case .ended:
@@ -170,13 +185,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                 if options.contains(.shouldResume) {
                     notifyListeners("recordingInterruption", data: [
-                        "eventName": "recordingInterruption",
-                        "payload": ["message": "Interruption ended - should resume"]
+                        "message": "Interruption ended - should resume"
                     ])
                 } else {
                     notifyListeners("recordingInterruption", data: [
-                        "eventName": "recordingInterruption",
-                        "payload": ["message": "Interruption ended - should not resume"]
+                        "message": "Interruption ended - should not resume"
                     ])
                 }
             }
@@ -214,8 +227,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         }
 
         notifyListeners("recordingInterruption", data: [
-            "eventName": "recordingInterruption",
-            "payload": ["message": message]
+            "message": message
         ])
     }
 
@@ -228,8 +240,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                 // Notify listeners that recording continues in background
                 notifyListeners("recordingInterruption", data: [
-                    "eventName": "recordingInterruption",
-                    "payload": ["message": "App entered background - recording continues"]
+                    "message": "App entered background - recording continues"
                 ])
 
                 // Keep the recording active but ensure proper audio session setup
@@ -262,8 +273,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     try? recordingSession?.setActive(false, options: .notifyOthersOnDeactivation)
 
                     notifyListeners("recordingInterruption", data: [
-                        "eventName": "recordingInterruption",
-                        "payload": ["message": "Background recording failed - will resume when app returns"]
+                        "message": "Background recording failed - will resume when app returns"
                     ])
                 }
             }
@@ -291,8 +301,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                             startDurationMonitoring()
 
                             notifyListeners("recordingInterruption", data: [
-                                "eventName": "recordingInterruption",
-                                "payload": ["message": "Recording resumed after returning to foreground"]
+                                "message": "Recording resumed after returning to foreground"
                             ])
                         } else {
                             print("Failed to resume recording after app state change")
@@ -305,18 +314,48 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             } else if isRecording {
                 // Recording continued in background, just notify
                 notifyListeners("recordingInterruption", data: [
-                    "eventName": "recordingInterruption",
-                    "payload": ["message": "App returned to foreground - recording continued"]
+                    "message": "App returned to foreground - recording continued"
                 ])
             }
         }
     }
 
     @objc func requestPermission(_ call: CAPPluginCall) {
-        AVAudioSession.sharedInstance().requestRecordPermission { granted in
-            call.resolve([
-                "granted": granted
-            ])
+        // First request audio permission
+        AVAudioSession.sharedInstance().requestRecordPermission { audioGranted in
+            // Then check/request notification permission on iOS 10+
+            if #available(iOS 10.0, *) {
+                UNUserNotificationCenter.current().getNotificationSettings { settings in
+                    if settings.authorizationStatus == .notDetermined {
+                        // Request notification permission
+                        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { notificationGranted, error in
+                            DispatchQueue.main.async {
+                                call.resolve([
+                                    "granted": audioGranted && notificationGranted,
+                                    "audioPermission": audioGranted,
+                                    "notificationPermission": notificationGranted
+                                ])
+                            }
+                        }
+                    } else {
+                        let notificationGranted = settings.authorizationStatus == .authorized
+                        DispatchQueue.main.async {
+                            call.resolve([
+                                "granted": audioGranted && notificationGranted,
+                                "audioPermission": audioGranted,
+                                "notificationPermission": notificationGranted
+                            ])
+                        }
+                    }
+                }
+            } else {
+                // iOS < 10, assume notification permission is granted
+                call.resolve([
+                    "granted": audioGranted,
+                    "audioPermission": audioGranted,
+                    "notificationPermission": true
+                ])
+            }
         }
     }
 
@@ -409,8 +448,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 let integerDuration = Int(self.currentDuration)
                 print("Emitting durationChange event with integer duration: \(integerDuration)")
                 self.notifyListeners("durationChange", data: [
-                    "eventName": "durationChange",
-                    "payload": ["duration": integerDuration]
+                    "duration": integerDuration
                 ])
             }
         }
@@ -469,8 +507,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         // Notify listeners of the duration change
         notifyListeners("durationChange", data: [
-            "eventName": "durationChange",
-            "payload": ["duration": currentDuration]
+            "duration": currentDuration
         ])
 
         // Get maxDuration parameter (optional)
@@ -501,10 +538,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             try recordingSession?.overrideOutputAudioPort(.speaker)
         } catch let error as NSError {
             let err: [String: Any] = ["message": "Failed to setup audio session: \(error.localizedDescription)", "code": error.code]
-            notifyListeners("error", data: [
-                "eventName": "error",
-                "payload": err
-            ])
+            notifyListeners("error", data: err)
             call.reject("Failed to setup audio session: \(error.localizedDescription). Code: \(error.code)")
             return
         }
@@ -554,10 +588,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 }
             } catch let error as NSError {
                 let err: [String: Any] = ["message": "Failed to start recording: \(error.localizedDescription)", "code": error.code]
-                notifyListeners("error", data: [
-                    "eventName": "error",
-                    "payload": err
-                ])
+                notifyListeners("error", data: err)
                 call.reject("Failed to start recording: \(error.localizedDescription). Code: \(error.code)")
             }
         }
@@ -608,20 +639,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             guard let recorder = audioRecorder else {
                 let errorMsg = "Failed to initialize segment recorder"
                 print(errorMsg)
-                notifyListeners("error", data: [
-                    "eventName": "error",
-                    "payload": ["message": errorMsg]
-                ])
+                notifyListeners("error", data: ["message": errorMsg])
                 return
             }
 
             if !recorder.prepareToRecord() {
                 let errorMsg = "Failed to prepare segment recorder"
                 print(errorMsg)
-                notifyListeners("error", data: [
-                    "eventName": "error",
-                    "payload": ["message": errorMsg]
-                ])
+                notifyListeners("error", data: ["message": errorMsg])
                 return
             }
 
@@ -629,20 +654,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             if !recordingStarted {
                 let errorMsg = "Failed to start segment recording"
                 print(errorMsg)
-                notifyListeners("error", data: [
-                    "eventName": "error",
-                    "payload": ["message": errorMsg]
-                ])
+                notifyListeners("error", data: ["message": errorMsg])
             } else {
                 print("Successfully started recording segment: \(segmentFilename.lastPathComponent)")
             }
         } catch {
             let errorMsg = "Failed to create segment recorder: \(error.localizedDescription)"
             print(errorMsg)
-            notifyListeners("error", data: [
-                "eventName": "error",
-                "payload": ["message": errorMsg]
-            ])
+            notifyListeners("error", data: ["message": errorMsg])
         }
     }
 
@@ -949,7 +968,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         // Process the final file and resolve the call
                         do {
                             // Get file attributes
-                            let file
+                            let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileToReturn.path)
                             let fileSize = fileAttributes[.size] as? Int64 ?? 0
                             let modificationDate = fileAttributes[.modificationDate] as? Date ?? Date() // Use modificationDate
 
@@ -1278,7 +1297,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                             call.reject("Failed to process trimmed audio: \(error.localizedDescription)")
                         }
                     case .failed:
-                        let errorMessage = exportSession.error?.localizedDescription ?? "Unknown error"
+                        let errorMessage = exportSession.error?.localizedDescription ?? "Unknown playback error"
                         let errorDetails = """
                             Export failed:
                             Error: \(errorMessage)
@@ -1572,8 +1591,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     let intDuration = Int(currentDuration)
                     print("Emitting immediate durationChange event with current duration: \(intDuration)")
                     notifyListeners("durationChange", data: [
-                        "eventName": "durationChange",
-                        "payload": ["duration": intDuration]
+                        "duration": intDuration
                     ])
                 }
             }
@@ -1628,43 +1646,31 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                             startSegmentTimer(maxDuration: maxDuration)
                         }
 
-                        // Restart
+                        // Restart duration monitoring after interruption
+                        startDurationMonitoring()
 
-            switch input.portType {
-            case .builtInMic:
-                micType = "internal"
-                description = "Built-in Microphone"
-            case .headsetMic:
-                micType = "external"
-                description = "Headset Microphone"
-            case .bluetoothHFP:
-                micType = "external"
-                description = "Bluetooth Headset"
-            case .usbAudio:
-                micType = "external"
-                description = "USB Audio"
-            case .carAudio:
-                micType = "external"
-                description = "Car Audio"
-            default:
-                micType = "unknown"
-                description = input.portName
+                        notifyListeners("recordingInterruption", data: [
+                            "message": "Recording resumed after interruption"
+                        ])
+                    } else {
+                        print("Failed to resume recording after interruption")
+                        wasRecordingBeforeInterruption = false
+
+                        notifyListeners("recordingInterruption", data: [
+                            "message": "Failed to resume recording after interruption"
+                        ])
+                    }
+                }
+            } catch {
+                print("Failed to resume recording after app state change: \(error.localizedDescription)")
+                wasRecordingBeforeInterruption = false
+
+                notifyListeners("recordingInterruption", data: [
+                    "message": "Failed to resume recording after interruption: \(error.localizedDescription)"
+                ])
             }
-
-            let microphone: [String: Any] = [
-                "id": index,
-                "name": input.portName,
-                "type": micType,
-                "description": description,
-                "uid": input.uid
-            ]
-
-            microphones.append(microphone)
+            wasRecordingBeforeInterruption = false
         }
-
-        call.resolve([
-            "microphones": microphones
-        ])
     }
 
     @objc func switchMicrophone(_ call: CAPPluginCall) {
@@ -1711,6 +1717,106 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         } catch {
             call.reject("Failed to switch microphone: \(error.localizedDescription)")
         }
+    }
+
+    @objc func isMicrophoneBusy(_ call: CAPPluginCall) {
+        var isBusy = false
+
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+
+            // Check if another app is currently using the microphone
+            if audioSession.isOtherAudioPlaying {
+                isBusy = true
+            }
+
+            // Check if we're currently recording
+            if audioRecorder?.isRecording == true {
+                isBusy = true
+            }
+
+            // Additional check: try to create a temporary audio recorder to test availability
+            if !isBusy {
+                let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("temp_test.m4a")
+                let settings = [
+                    AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                    AVSampleRateKey: 44100,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
+                ]
+
+                do {
+                    let tempRecorder = try AVAudioRecorder(url: tempURL, settings: settings)
+                    if !tempRecorder.prepareToRecord() {
+                        isBusy = true
+                    }
+
+                    // Clean up temp file
+                    try? FileManager.default.removeItem(at: tempURL)
+                } catch {
+                    isBusy = true
+                }
+            }
+
+            call.resolve([
+                "busy": isBusy,
+                "reason": isBusy ? "Microphone is currently in use by another application" : "Microphone is available"
+            ])
+        } catch {
+            call.reject("Failed to check microphone status: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func getAvailableMicrophones(_ call: CAPPluginCall) {
+        let audioSession = AVAudioSession.sharedInstance()
+        var microphones: [[String: Any]] = []
+
+        guard let availableInputs = audioSession.availableInputs else {
+            call.resolve([
+                "microphones": microphones
+            ])
+            return
+        }
+
+        for (index, input) in availableInputs.enumerated() {
+            var micType = "Unknown"
+            var description = input.portName
+
+            switch input.portType {
+            case .builtInMic:
+                micType = "internal"
+                description = "Built-in Microphone"
+            case .headsetMic:
+                micType = "external"
+                description = "Headset Microphone"
+            case .bluetoothHFP:
+                micType = "external"
+                description = "Bluetooth Microphone"
+            case .usbAudio:
+                micType = "external"
+                description = "USB Microphone"
+            case .airPlay:
+                micType = "external"
+                description = "AirPlay Audio"
+            default:
+                micType = "unknown"
+                description = input.portName
+            }
+
+            let microphone: [String: Any] = [
+                "id": index,
+                "name": input.portName,
+                "type": micType,
+                "description": description,
+                "uid": input.uid
+            ]
+
+            microphones.append(microphone)
+        }
+
+        call.resolve([
+            "microphones": microphones
+        ])
     }
 
     private func setupAudioRecorder() {
@@ -1974,7 +2080,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         call.resolve(result)
     }
 
-    // MARK: - Playback Helper Methods
+    // MARK: - Playback Helper
 
     private func startPlaybackProgressTimer() {
         stopPlaybackProgressTimer()
@@ -2001,3 +2107,4 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         playbackProgressTimer?.invalidate()
         playbackProgressTimer = nil
     }
+}

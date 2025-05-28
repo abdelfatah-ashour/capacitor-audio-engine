@@ -1201,26 +1201,17 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     // Event emission methods
     private void emitDurationChange() {
         JSObject data = new JSObject();
-        JSObject payload = new JSObject();
-        payload.put("duration", currentDuration);
-        data.put("eventName", "durationChange");
-        data.put("payload", payload);
+        data.put("duration", currentDuration);
         notifyListeners("durationChange", data);
     }
 
     private void emitError(JSObject errorData) {
-        JSObject data = new JSObject();
-        data.put("eventName", "error");
-        data.put("payload", errorData);
-        notifyListeners("error", data);
+        notifyListeners("error", errorData);
     }
 
     private void emitInterruption(String message) {
         JSObject data = new JSObject();
-        JSObject payload = new JSObject();
-        payload.put("message", message);
-        data.put("eventName", "recordingInterruption");
-        data.put("payload", payload);
+        data.put("message", message);
         notifyListeners("recordingInterruption", data);
     }
 
