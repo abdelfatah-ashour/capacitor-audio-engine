@@ -6,8 +6,13 @@ import type {
   RecordingStatus,
   AudioEventName,
   AudioFileInfo,
+  AudioPlayerInfo,
   AudioEventMap,
   RecordingOptions,
+  MicrophoneStatusResult,
+  AvailableMicrophonesResult,
+  SwitchMicrophoneResult,
+  SwitchMicrophoneOptions,
 } from './definitions';
 
 declare global {
@@ -31,7 +36,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with an object containing the permission status
    * @platform web Not supported - returns false
    */
-  async checkPermission(): Promise<{ granted: boolean }> {
+  async checkPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }> {
     console.warn(
       'checkPermission is not supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
     );
@@ -43,7 +48,11 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with an object containing the permission status
    * @platform web Not supported - returns false
    */
-  async requestPermission(): Promise<{ granted: boolean }> {
+  async requestPermission(): Promise<{
+    granted: boolean;
+    audioPermission?: boolean;
+    notificationPermission?: boolean;
+  }> {
     console.warn(
       'requestPermission is not supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
     );
@@ -167,7 +176,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with microphone status
    * @platform web Not supported
    */
-  async isMicrophoneBusy(): Promise<{ busy: boolean }> {
+  async isMicrophoneBusy(): Promise<MicrophoneStatusResult> {
     console.warn('isMicrophoneBusy is not supported on web platform.');
     throw new Error('isMicrophoneBusy is not supported on web platform');
   }
@@ -177,7 +186,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with available microphones
    * @platform web Not supported
    */
-  async getAvailableMicrophones(): Promise<{ microphones: any[] }> {
+  async getAvailableMicrophones(): Promise<AvailableMicrophonesResult> {
     console.warn('getAvailableMicrophones is not supported on web platform.');
     throw new Error('getAvailableMicrophones is not supported on web platform');
   }
@@ -188,7 +197,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with switch result
    * @platform web Not supported
    */
-  async switchMicrophone(options: { microphoneId: number }): Promise<{ success: boolean; microphoneId: number }> {
+  async switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult> {
     console.warn(
       `switchMicrophone is not supported on web platform. Attempted to switch to microphone ID: ${options.microphoneId}`,
     );
@@ -271,7 +280,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with the current playback status
    * @platform web Not supported
    */
-  async getPlaybackStatus(): Promise<any> {
+  async getPlaybackStatus(): Promise<AudioPlayerInfo> {
     console.warn(
       'getPlaybackStatus is not supported on web platform. For web implementation, consider using AudioContext API directly.',
     );
@@ -279,6 +288,10 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
       status: 'idle',
       currentTime: 0,
       duration: 0,
+      speed: 1.0,
+      volume: 1.0,
+      isLooping: false,
+      uri: '',
     };
   }
 

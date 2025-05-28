@@ -96,12 +96,14 @@ export interface MicrophoneInfo {
   id: number;
   name: string;
   type: 'internal' | 'external' | 'unknown';
-  description: string;
+  description?: string;
   uid?: string; // iOS only
+  isConnected?: boolean; // Android only
 }
 
 export interface MicrophoneStatusResult {
   busy: boolean;
+  reason?: string;
 }
 
 export interface AvailableMicrophonesResult {
@@ -148,13 +150,13 @@ export interface PreloadOptions {
 }
 
 export interface AudioPlayerInfo {
-  uri: string;
   status: PlaybackStatus;
-  duration: number;
   currentTime: number;
-  speed: number;
-  volume: number;
-  isLooping: boolean;
+  duration: number;
+  speed?: number;
+  volume?: number;
+  isLooping?: boolean;
+  uri?: string;
 }
 
 export interface PlaybackProgressData {
@@ -205,21 +207,25 @@ export interface CapacitorAudioEnginePlugin {
    * Check if the app has microphone permission.
    * @returns Promise that resolves with an object containing the permission status
    * @property {boolean} granted - Whether microphone permission is granted
+   * @property {boolean} audioPermission - Whether audio permission is granted
+   * @property {boolean} notificationPermission - Whether notification permission is granted (Android 13+ only)
    * @platform web Uses navigator.permissions.query API
    * @platform android Uses ContextCompat.checkSelfPermission with RECORD_AUDIO permission
    * @platform ios Uses AVAudioSession.recordPermission
    */
-  checkPermission(): Promise<{ granted: boolean }>;
+  checkPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
 
   /**
    * Request microphone permission from the user.
    * @returns Promise that resolves with an object containing the permission status
    * @property {boolean} granted - Whether microphone permission was granted
+   * @property {boolean} audioPermission - Whether audio permission was granted
+   * @property {boolean} notificationPermission - Whether notification permission was granted (Android 13+ only)
    * @platform web Uses navigator.mediaDevices.getUserMedia API
    * @platform android Uses ActivityCompat.requestPermissions with RECORD_AUDIO permission
    * @platform ios Uses AVAudioSession.requestRecordPermission
    */
-  requestPermission(): Promise<{ granted: boolean }>;
+  requestPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
 
   /**
    * Start recording audio from the device's microphone.
@@ -421,8 +427,12 @@ export interface CapacitorAudioEnginePlugin {
    * @property {PlaybackStatus} status - The current state of the player
    * @property {number} currentTime - The current playback position in seconds
    * @property {number} duration - The total duration of the audio in seconds
+   * @property {number} speed - The current playback speed
+   * @property {number} volume - The current volume level
+   * @property {boolean} isLooping - Whether the audio is looping
+   * @property {string} uri - The URI of the current audio file
    */
-  getPlaybackStatus(): Promise<PlaybackStatusData>;
+  getPlaybackStatus(): Promise<AudioPlayerInfo>;
 
   /**
    * Add a listener for playback events
