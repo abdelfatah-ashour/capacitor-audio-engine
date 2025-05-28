@@ -78,6 +78,15 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     // Background service for long-running recordings
     private boolean serviceStarted = false;
 
+    // Playback properties
+    private MediaPlayer mediaPlayer;
+    private boolean isPlaying = false;
+    private String currentPlaybackPath;
+    private Timer playbackProgressTimer;
+    private float playbackSpeed = 1.0f;
+    private float playbackVolume = 1.0f;
+    private boolean isLooping = false;
+
     @Override
     public void load() {
         mainHandler = new Handler(Looper.getMainLooper());
@@ -1627,6 +1636,315 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             this.filePath = filePath;
             this.duration = duration;
             this.fileSize = fileSize;
+        }
+    }
+
+    // ========== AUDIO PLAYBACK METHODS ==========
+
+    @PluginMethod
+    public void preload(PluginCall call) {
+        String uri = call.getString("uri");
+        if (uri == null) {
+            call.reject("URI is required");
+            return;
+        }
+
+        Boolean prepare = call.getBoolean("prepare", true);
+
+        try {
+            // Stop any current playback
+            if (mediaPlayer != null) {
+                mediaPlayer.release();
+                mediaPlayer = null;
+            }
+
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(uri);
+
+            if (prepare) {
+                mediaPlayer.setOnPreparedListener(mp -> {
+                    JSObject ret = new JSObject();
+                    ret.put("success", true);
+                    call.resolve(ret);
+                });
+
+                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                    call.reject("Failed to preload audio: " + what + ", " + extra);
+                    return true;
+                });
+
+                mediaPlayer.prepareAsync();
+            } else {
+                call.resolve();
+            }
+
+            currentPlaybackPath = uri;
+
+        } catch (Exception e) {
+            call.reject("Failed to preload audio", e);
+        }
+    }
+
+    @PluginMethod
+    public void startPlayback(PluginCall call) {
+        String uri = call.getString("uri");
+        if (uri == null) {
+            call.reject("URI is required");
+            return;
+        }
+
+        try {
+            // Stop any current playback
+            if (mediaPlayer != null) {
+                mediaPlayer.release();
+                mediaPlayer = null;
+            }
+
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(uri);
+
+            // Set playback options
+            Float speed = call.getFloat("speed", 1.0f);
+            Float volume = call.getFloat("volume", 1.0f);
+            Boolean loop = call.getBoolean("loop", false);
+            Integer startTime = call.getInt("startTime", 0);
+
+            playbackSpeed = speed;
+            playbackVolume = volume;
+            isLooping = loop;
+
+            mediaPlayer.setVolume(volume, volume);
+            mediaPlayer.setLooping(loop);
+
+            // Set playback speed (API 23+)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                mediaPlayer.setPlaybackParams(mediaPlayer.getPlaybackParams().setSpeed(speed));
+            }
+
+            mediaPlayer.setOnPreparedListener(mp -> {
+                if (startTime > 0) {
+                    mp.seekTo(startTime * 1000);
+                }
+                mp.start();
+                isPlaying = true;
+
+                // Start progress monitoring
+                startPlaybackProgressTimer();
+
+                // Notify listeners
+                JSObject eventData = new JSObject();
+                eventData.put("status", "playing");
+                eventData.put("currentTime", mp.getCurrentPosition() / 1000.0);
+                eventData.put("duration", mp.getDuration() / 1000.0);
+                notifyListeners("playbackStatusChange", eventData);
+
+                call.resolve();
+            });
+
+            mediaPlayer.setOnCompletionListener(mp -> {
+                isPlaying = false;
+                stopPlaybackProgressTimer();
+
+                // Notify listeners
+                JSObject eventData = new JSObject();
+                eventData.put("status", "completed");
+                eventData.put("duration", mp.getDuration() / 1000.0);
+                notifyListeners("playbackCompleted", eventData);
+                notifyListeners("playbackStatusChange", eventData);
+            });
+
+            mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                isPlaying = false;
+                stopPlaybackProgressTimer();
+
+                // Notify listeners
+                JSObject eventData = new JSObject();
+                eventData.put("message", "Playback error: " + what + ", " + extra);
+                eventData.put("code", what);
+                notifyListeners("playbackError", eventData);
+
+                return true;
+            });
+
+            mediaPlayer.prepareAsync();
+            currentPlaybackPath = uri;
+
+        } catch (Exception e) {
+            call.reject("Failed to start playback", e);
+        }
+    }
+
+    @PluginMethod
+    public void pausePlayback(PluginCall call) {
+        if (mediaPlayer == null || !isPlaying) {
+            call.reject("No active playback to pause");
+            return;
+        }
+
+        try {
+            mediaPlayer.pause();
+            isPlaying = false;
+            stopPlaybackProgressTimer();
+
+            // Notify listeners
+            JSObject eventData = new JSObject();
+            eventData.put("status", "paused");
+            eventData.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
+            eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
+            notifyListeners("playbackStatusChange", eventData);
+
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Failed to pause playback", e);
+        }
+    }
+
+    @PluginMethod
+    public void resumePlayback(PluginCall call) {
+        if (mediaPlayer == null) {
+            call.reject("No active playback to resume");
+            return;
+        }
+
+        if (isPlaying) {
+            call.reject("Playback is already active");
+            return;
+        }
+
+        try {
+            mediaPlayer.start();
+            isPlaying = true;
+            startPlaybackProgressTimer();
+
+            // Notify listeners
+            JSObject eventData = new JSObject();
+            eventData.put("status", "playing");
+            eventData.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
+            eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
+            notifyListeners("playbackStatusChange", eventData);
+
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Failed to resume playback", e);
+        }
+    }
+
+    @PluginMethod
+    public void stopPlayback(PluginCall call) {
+        if (mediaPlayer == null) {
+            call.reject("No active playback to stop");
+            return;
+        }
+
+        try {
+            mediaPlayer.stop();
+            isPlaying = false;
+            stopPlaybackProgressTimer();
+
+            // Notify listeners
+            JSObject eventData = new JSObject();
+            eventData.put("status", "stopped");
+            eventData.put("currentTime", 0);
+            if (mediaPlayer.getDuration() > 0) {
+                eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
+            }
+            notifyListeners("playbackStatusChange", eventData);
+
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Failed to stop playback", e);
+        }
+    }
+
+    @PluginMethod
+    public void seekTo(PluginCall call) {
+        Integer timeMs = call.getInt("time");
+        if (timeMs == null) {
+            call.reject("Time is required");
+            return;
+        }
+
+        if (mediaPlayer == null) {
+            call.reject("No active playback for seeking");
+            return;
+        }
+
+        try {
+            mediaPlayer.seekTo(timeMs * 1000);
+
+            // Notify listeners
+            JSObject eventData = new JSObject();
+            eventData.put("currentTime", timeMs);
+            eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
+            notifyListeners("playbackProgress", eventData);
+
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Failed to seek", e);
+        }
+    }
+
+    @PluginMethod
+    public void getPlaybackStatus(PluginCall call) {
+        JSObject ret = new JSObject();
+
+        if (mediaPlayer == null) {
+            ret.put("status", "idle");
+            ret.put("currentTime", 0);
+            ret.put("duration", 0);
+        } else {
+            try {
+                String status = isPlaying ? "playing" : "paused";
+                ret.put("status", status);
+                ret.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
+                ret.put("duration", mediaPlayer.getDuration() / 1000.0);
+                ret.put("speed", playbackSpeed);
+                ret.put("volume", playbackVolume);
+                ret.put("isLooping", isLooping);
+                ret.put("uri", currentPlaybackPath);
+            } catch (Exception e) {
+                ret.put("status", "error");
+                ret.put("currentTime", 0);
+                ret.put("duration", 0);
+            }
+        }
+
+        call.resolve(ret);
+    }
+
+    private void startPlaybackProgressTimer() {
+        stopPlaybackProgressTimer();
+
+        playbackProgressTimer = new Timer();
+        playbackProgressTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                if (mediaPlayer != null && isPlaying) {
+                    try {
+                        double currentTime = mediaPlayer.getCurrentPosition() / 1000.0;
+                        double duration = mediaPlayer.getDuration() / 1000.0;
+                        double position = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+                        JSObject eventData = new JSObject();
+                        eventData.put("currentTime", currentTime);
+                        eventData.put("duration", duration);
+                        eventData.put("position", position);
+
+                        mainHandler.post(() -> {
+                            notifyListeners("playbackProgress", eventData);
+                        });
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error in playback progress timer", e);
+                    }
+                }
+            }
+        }, 0, 1000); // Update every second
+    }
+
+    private void stopPlaybackProgressTimer() {
+        if (playbackProgressTimer != null) {
+            playbackProgressTimer.cancel();
+            playbackProgressTimer = null;
         }
     }
 }

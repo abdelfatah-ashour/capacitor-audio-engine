@@ -161,29 +161,109 @@
           </ion-card-title>
         </ion-card-header>
         <ion-card-content>
-          <audio [src]="recordingUrl()" controls class="audio-player">
-            Your browser does not support the audio element.
-          </audio>
+          <!-- Native Playback Controls -->
+          <div class="playback-controls">
+            <div class="control-buttons">
+              @if(!isPlaying()) {
+                <ion-button (click)="startPlayback()" color="primary" fill="solid">
+                  <ion-icon name="play-outline" slot="icon-only"></ion-icon>
+                </ion-button>
+              } @else {
+                <ion-button (click)="pausePlayback()" color="warning" fill="solid">
+                  <ion-icon name="pause-outline" slot="icon-only"></ion-icon>
+                </ion-button>
+              }
 
-          <div class="time-display">
-            <span>{{ formatTime(currentAudioTime()) }}</span>
-            <span> / </span>
-            <span>{{ formatTime(endAudioTime()) }}</span>
+              <ion-button (click)="stopPlayback()" color="danger" fill="outline">
+                <ion-icon name="stop-outline" slot="icon-only"></ion-icon>
+              </ion-button>
+            </div>
+
+            <!-- Playback Progress -->
+            <div class="playback-progress">
+              <span class="time-label">{{ formatTime(playbackCurrentTime()) }}</span>
+              <ion-range
+                [min]="0"
+                [max]="playbackDuration() || 100"
+                [value]="playbackCurrentTime()"
+                (ionChange)="onSeekChange($event)"
+                class="seek-range">
+              </ion-range>
+              <span class="time-label">{{ formatTime(playbackDuration()) }}</span>
+            </div>
+
+            <!-- Playback Settings -->
+            <div class="playback-settings">
+              <ion-item>
+                <ion-icon name="speedometer-outline" slot="start"></ion-icon>
+                <ion-label>Speed: {{ playbackSpeed().toFixed(1) }}x</ion-label>
+                <ion-range
+                  [min]="0.5"
+                  [max]="2.0"
+                  [step]="0.1"
+                  [value]="playbackSpeed()"
+                  (ionChange)="onPlaybackSpeedChange($event)"
+                  slot="end"
+                  class="speed-range">
+                </ion-range>
+              </ion-item>
+
+              <ion-item>
+                <ion-icon name="volume-high-outline" slot="start"></ion-icon>
+                <ion-label>Volume: {{ (playbackVolume() * 100).toFixed(0) }}%</ion-label>
+                <ion-range
+                  [min]="0"
+                  [max]="1"
+                  [step]="0.1"
+                  [value]="playbackVolume()"
+                  (ionChange)="onPlaybackVolumeChange($event)"
+                  slot="end"
+                  class="volume-range">
+                </ion-range>
+              </ion-item>
+
+              <ion-item>
+                <ion-icon name="repeat-outline" slot="start"></ion-icon>
+                <ion-label>Loop</ion-label>
+                <ion-checkbox
+                  [checked]="isLooping()"
+                  (ionChange)="toggleLooping()"
+                  slot="end">
+                </ion-checkbox>
+              </ion-item>
+            </div>
           </div>
 
-          <ion-range
-            [dualKnobs]="true"
-            [min]="0"
-            [max]="duration"
-            [value]="[startAudioTime(), endAudioTime()]"
-            (ionChange)="handleRangeChange($event)"
-            class="audio-range">
-          </ion-range>
+          <!-- Web Audio Fallback -->
+          <div class="web-audio-fallback">
+            <audio [src]="recordingUrl()" controls class="audio-player">
+              Your browser does not support the audio element.
+            </audio>
+          </div>
 
-          <ion-button expand="block" color="primary" (click)="trimAudio()">
-            <ion-icon name="cut-outline" slot="start"></ion-icon>
-            Trim Audio
-          </ion-button>
+          <!-- Audio Trimming -->
+          <div class="audio-trimming">
+            <h3>Audio Trimming</h3>
+            <div class="time-display">
+              <span>{{ formatTime(currentAudioTime()) }}</span>
+              <span> / </span>
+              <span>{{ formatTime(endAudioTime()) }}</span>
+            </div>
+
+            <ion-range
+              [dualKnobs]="true"
+              [min]="0"
+              [max]="duration"
+              [value]="[startAudioTime(), endAudioTime()]"
+              (ionChange)="handleRangeChange($event)"
+              class="audio-range">
+            </ion-range>
+
+            <ion-button expand="block" color="primary" (click)="trimAudio()">
+              <ion-icon name="cut-outline" slot="start"></ion-icon>
+              Trim Audio
+            </ion-button>
+          </div>
         </ion-card-content>
       </ion-card>
 

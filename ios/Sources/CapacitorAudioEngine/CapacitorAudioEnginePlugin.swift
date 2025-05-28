@@ -10,7 +10,7 @@ import ObjectiveC
  * here: https://capacitorjs.com/docs/plugins/ios
  */
 @objc(CapacitorAudioEnginePlugin)
-public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
+public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDelegate {
     public let identifier = "CapacitorAudioEnginePlugin"
     public let jsName = "CapacitorAudioEngine"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -28,6 +28,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "switchMicrophone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
         CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "preload", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "startPlayback", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "pausePlayback", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resumePlayback", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stopPlayback", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getPlaybackStatus", returnType: CAPPluginReturnPromise),
     ]
 
     // MARK: - Interruption monitoring properties
@@ -50,6 +57,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
     private var segmentTimer: Timer?
     private var segmentFiles = [URL]()
     private var currentSegment = 0
+
+    // Playback properties
+    private var audioPlayer: AVAudioPlayer?
+    private var isPlaying = false
+    private var currentPlaybackPath: String?
+    private var playbackProgressTimer: Timer?
+    private var playbackSpeed: Float = 1.0
+    private var playbackVolume: Float = 1.0
+    private var isLooping = false
 
     @objc func checkPermission(_ call: CAPPluginCall) {
         let status = AVAudioSession.sharedInstance().recordPermission
@@ -933,7 +949,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
                         // Process the final file and resolve the call
                         do {
                             // Get file attributes
-                            let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileToReturn.path)
+                            let file
                             let fileSize = fileAttributes[.size] as? Int64 ?? 0
                             let modificationDate = fileAttributes[.modificationDate] as? Date ?? Date() // Use modificationDate
 
@@ -1449,6 +1465,43 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    // MARK: - AVAudioPlayerDelegate Methods
+
+    public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        isPlaying = false
+        stopPlaybackProgressTimer()
+
+        if flag {
+            // Notify listeners of completion
+            let eventData: [String: Any] = [
+                "duration": player.duration
+            ]
+            notifyListeners("playbackCompleted", data: eventData)
+
+            // If not looping, update status
+            if !isLooping {
+                let statusData: [String: Any] = [
+                    "status": "completed",
+                    "currentTime": player.duration,
+                    "duration": player.duration
+                ]
+                notifyListeners("playbackStatusChange", data: statusData)
+            }
+        }
+    }
+
+    public func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        isPlaying = false
+        stopPlaybackProgressTimer()
+
+        // Notify listeners of error
+        let eventData: [String: Any] = [
+            "message": error?.localizedDescription ?? "Unknown playback error",
+            "code": "DECODE_ERROR"
+        ]
+        notifyListeners("playbackError", data: eventData)
+    }
+
     // Cleanup when plugin is destroyed
     deinit {
         print("Plugin is being destroyed, cleaning up resources")
@@ -1575,44 +1628,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
                             startSegmentTimer(maxDuration: maxDuration)
                         }
 
-                        // Restart duration monitoring when interruption ends
-                        startDurationMonitoring()
-                    } else {
-                        print("Failed to resume recording after interruption")
-                    }
-                }
-            } catch {
-                print("Failed to resume recording after interruption: \(error.localizedDescription)")
-            }
-        }
-        wasRecordingBeforeInterruption = false
-    }
-
-    @objc func isMicrophoneBusy(_ call: CAPPluginCall) {
-        let audioSession = AVAudioSession.sharedInstance()
-
-        // Check if another app is using the microphone
-        let isBusy = audioSession.isOtherAudioPlaying ||
-                     audioSession.secondaryAudioShouldBeSilencedHint
-
-        call.resolve([
-            "busy": isBusy
-        ])
-    }
-
-    @objc func getAvailableMicrophones(_ call: CAPPluginCall) {
-        let audioSession = AVAudioSession.sharedInstance()
-        var microphones: [[String: Any]] = []
-
-        // Get available audio inputs
-        guard let availableInputs = audioSession.availableInputs else {
-            call.resolve(["microphones": microphones])
-            return
-        }
-
-        for (index, input) in availableInputs.enumerated() {
-            var micType = "unknown"
-            var description = input.portName
+                        // Restart
 
             switch input.portType {
             case .builtInMic:
@@ -1714,4 +1730,274 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin {
             print("Failed to setup audio recorder: \(error)")
         }
     }
-}
+
+    // MARK: - Audio Playback Methods
+
+    @objc func preload(_ call: CAPPluginCall) {
+        guard let uri = call.getString("uri") else {
+            call.reject("URI is required")
+            return
+        }
+
+        let prepare = call.getBool("prepare") ?? true
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // Stop any current playback
+                self.audioPlayer?.stop()
+                self.audioPlayer = nil
+
+                let url = URL(string: uri) ?? URL(fileURLWithPath: uri)
+                self.audioPlayer = try AVAudioPlayer(contentsOf: url)
+                self.audioPlayer?.delegate = self
+
+                if prepare {
+                    let prepared = self.audioPlayer?.prepareToPlay() ?? false
+                    DispatchQueue.main.async {
+                        if prepared {
+                            call.resolve(["success": true])
+                        } else {
+                            call.reject("Failed to prepare audio for playback")
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        call.resolve(["success": true])
+                    }
+                }
+
+                self.currentPlaybackPath = uri
+
+            } catch {
+                DispatchQueue.main.async {
+                    call.reject("Failed to preload audio: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    @objc func startPlayback(_ call: CAPPluginCall) {
+        guard let uri = call.getString("uri") else {
+            call.reject("URI is required")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // Stop any current playback
+                self.audioPlayer?.stop()
+                self.audioPlayer = nil
+
+                let url = URL(string: uri) ?? URL(fileURLWithPath: uri)
+                self.audioPlayer = try AVAudioPlayer(contentsOf: url)
+                self.audioPlayer?.delegate = self
+
+                // Set playback options
+                let speed = call.getFloat("speed") ?? 1.0
+                let volume = call.getFloat("volume") ?? 1.0
+                let loop = call.getBool("loop") ?? false
+                let startTime = call.getDouble("startTime") ?? 0.0
+
+                self.playbackSpeed = speed
+                self.playbackVolume = volume
+                self.isLooping = loop
+
+                self.audioPlayer?.volume = volume
+                self.audioPlayer?.numberOfLoops = loop ? -1 : 0
+
+                // Enable rate control if available (iOS 11+)
+                if #available(iOS 11.0, *) {
+                    self.audioPlayer?.enableRate = true
+                    self.audioPlayer?.rate = speed
+                }
+
+                let prepared = self.audioPlayer?.prepareToPlay() ?? false
+                if !prepared {
+                    DispatchQueue.main.async {
+                        call.reject("Failed to prepare audio for playback")
+                    }
+                    return
+                }
+
+                if startTime > 0 {
+                    self.audioPlayer?.currentTime = startTime
+                }
+
+                let started = self.audioPlayer?.play() ?? false
+                if started {
+                    self.isPlaying = true
+                    self.currentPlaybackPath = uri
+                    self.startPlaybackProgressTimer()
+
+                    DispatchQueue.main.async {
+                        // Notify listeners
+                        let eventData: [String: Any] = [
+                            "status": "playing",
+                            "currentTime": self.audioPlayer?.currentTime ?? 0,
+                            "duration": self.audioPlayer?.duration ?? 0
+                        ]
+                        self.notifyListeners("playbackStatusChange", data: eventData)
+                        call.resolve()
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        call.reject("Failed to start playback")
+                    }
+                }
+
+            } catch {
+                DispatchQueue.main.async {
+                    call.reject("Failed to start playback: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    @objc func pausePlayback(_ call: CAPPluginCall) {
+        guard let audioPlayer = audioPlayer, isPlaying else {
+            call.reject("No active playback to pause")
+            return
+        }
+
+        audioPlayer.pause()
+        isPlaying = false
+        stopPlaybackProgressTimer()
+
+        // Notify listeners
+        let eventData: [String: Any] = [
+            "status": "paused",
+            "currentTime": audioPlayer.currentTime,
+            "duration": audioPlayer.duration
+        ]
+        notifyListeners("playbackStatusChange", data: eventData)
+        call.resolve()
+    }
+
+    @objc func resumePlayback(_ call: CAPPluginCall) {
+        guard let audioPlayer = audioPlayer else {
+            call.reject("No active playback to resume")
+            return
+        }
+
+        if isPlaying {
+            call.reject("Playback is already active")
+            return
+        }
+
+        let started = audioPlayer.play()
+        if started {
+            isPlaying = true
+            startPlaybackProgressTimer()
+
+            // Notify listeners
+            let eventData: [String: Any] = [
+                "status": "playing",
+                "currentTime": audioPlayer.currentTime,
+                "duration": audioPlayer.duration
+            ]
+            notifyListeners("playbackStatusChange", data: eventData)
+            call.resolve()
+        } else {
+            call.reject("Failed to resume playback")
+        }
+    }
+
+    @objc func stopPlayback(_ call: CAPPluginCall) {
+        guard let audioPlayer = audioPlayer else {
+            call.reject("No active playback to stop")
+            return
+        }
+
+        audioPlayer.stop()
+        isPlaying = false
+        stopPlaybackProgressTimer()
+
+        // Notify listeners
+        let eventData: [String: Any] = [
+            "status": "stopped",
+            "currentTime": 0,
+            "duration": audioPlayer.duration
+        ]
+        notifyListeners("playbackStatusChange", data: eventData)
+        call.resolve()
+    }
+
+    @objc func seekTo(_ call: CAPPluginCall) {
+        guard let time = call.getDouble("time") else {
+            call.reject("Time is required")
+            return
+        }
+
+        guard let audioPlayer = audioPlayer else {
+            call.reject("No active playback for seeking")
+            return
+        }
+
+        audioPlayer.currentTime = time
+
+        // Notify listeners
+        let eventData: [String: Any] = [
+            "currentTime": time,
+            "duration": audioPlayer.duration,
+            "position": audioPlayer.duration > 0 ? (time / audioPlayer.duration) * 100 : 0
+        ]
+        notifyListeners("playbackProgress", data: eventData)
+        call.resolve()
+    }
+
+    @objc func getPlaybackStatus(_ call: CAPPluginCall) {
+        var result: [String: Any] = [:]
+
+        if let audioPlayer = audioPlayer {
+            let status = isPlaying ? "playing" : "paused"
+            result = [
+                "status": status,
+                "currentTime": audioPlayer.currentTime,
+                "duration": audioPlayer.duration,
+                "speed": playbackSpeed,
+                "volume": playbackVolume,
+                "isLooping": isLooping,
+                "uri": currentPlaybackPath ?? ""
+            ]
+        } else {
+            result = [
+                "status": "idle",
+                "currentTime": 0,
+                "duration": 0,
+                "speed": 1.0,
+                "volume": 1.0,
+                "isLooping": false,
+                "uri": ""
+            ]
+        }
+
+        call.resolve(result)
+    }
+
+    // MARK: - Playback Helper Methods
+
+    private func startPlaybackProgressTimer() {
+        stopPlaybackProgressTimer()
+
+        playbackProgressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self,
+                  let audioPlayer = self.audioPlayer,
+                  self.isPlaying else { return }
+
+            let currentTime = audioPlayer.currentTime
+            let duration = audioPlayer.duration
+            let position = duration > 0 ? (currentTime / duration) * 100 : 0
+
+            let eventData: [String: Any] = [
+                "currentTime": currentTime,
+                "duration": duration,
+                "position": position
+            ]
+            self.notifyListeners("playbackProgress", data: eventData)
+        }
+    }
+
+    private func stopPlaybackProgressTimer() {
+        playbackProgressTimer?.invalidate()
+        playbackProgressTimer = nil
+    }

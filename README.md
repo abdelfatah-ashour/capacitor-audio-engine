@@ -46,6 +46,9 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 📝 Get detailed recording metadata
 - 🎙️ **Microphone management** - Detect and switch between available microphones
 - 🔍 **Microphone status** - Check if microphone is busy/in use by other apps
+- 🎵 **Audio playback** - Play, pause, stop, and control recorded audio files
+- 🎚️ **Playback controls** - Speed control, seeking, volume, and looping
+- 📡 **Real-time monitoring** - Track playback progress and status changes
 - 🌐 Cross-platform support (Web coming soon!)
 - 🎚️ Consistent audio quality:
   - Sample Rate: 44.1kHz
@@ -64,6 +67,8 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 | Segmented Recording  | ✅      | ✅  | 🔜  |
 | Microphone Detection | ✅      | ✅  | 🔜  |
 | Microphone Switching | ✅      | ✅  | 🔜  |
+| Audio Playback       | ✅      | ✅  | 🔜  |
+| Playback Controls    | ✅      | ✅  | 🔜  |
 
 > 💡 **Note:** Android and iOS are fully supported! Web support is coming soon - we're working on it! 🚧
 
@@ -226,6 +231,54 @@ export interface SwitchMicrophoneResult {
   microphoneId: number;
   message?: string;
 }
+```
+
+#### `PlaybackStatus`
+
+```typescript
+type PlaybackStatus = 'idle' | 'loaded' | 'playing' | 'paused' | 'stopped' | 'completed' | 'error';
+```
+
+#### `PlaybackOptions`
+
+```typescript
+export interface PlaybackOptions {
+  uri: string;
+  speed?: number;
+  startTime?: number;
+  loop?: boolean;
+  volume?: number;
+}
+```
+
+#### `PreloadOptions`
+
+```typescript
+export interface PreloadOptions {
+  uri: string;
+  prepare?: boolean;
+}
+```
+
+#### `AudioPlayerInfo`
+
+```typescript
+export interface AudioPlayerInfo {
+  status: PlaybackStatus;
+  currentTime: number;
+  duration: number;
+  speed: number;
+  volume: number;
+  isLooping: boolean;
+  isLoaded: boolean;
+  uri?: string;
+}
+```
+
+#### `AudioPlaybackEventName`
+
+```typescript
+type AudioPlaybackEventName = 'playbackProgress' | 'playbackStatusChange' | 'playbackCompleted' | 'playbackError';
 ```
 
 ### Methods
@@ -399,13 +452,110 @@ if (externalMic) {
 - **iOS**: Shows all available audio inputs from AVAudioSession
 - **Web**: Not supported (returns empty array)
 
+#### Audio Playback
+
+##### `preload()`
+
+Preload an audio file for playback to reduce latency when starting playback.
+
+```typescript
+preload(options: PreloadOptions): Promise<void>;
+```
+
+**Example:**
+
+```typescript
+await CapacitorAudioEngine.preload({
+  uri: 'file:///path/to/audio.m4a',
+  prepare: true,
+});
+```
+
+##### `startPlayback()`
+
+Start playing an audio file with optional playback controls.
+
+```typescript
+startPlayback(options: PlaybackOptions): Promise<void>;
+```
+
+**Example:**
+
+```typescript
+await CapacitorAudioEngine.startPlayback({
+  uri: 'file:///path/to/audio.m4a',
+  speed: 1.5, // 1.5x speed
+  startTime: 10, // Start at 10 seconds
+  loop: false, // Don't loop
+  volume: 0.8, // 80% volume
+});
+```
+
+##### `pausePlayback()`
+
+Pause the current audio playback.
+
+```typescript
+pausePlayback(): Promise<void>;
+```
+
+##### `resumePlayback()`
+
+Resume paused audio playback.
+
+```typescript
+resumePlayback(): Promise<void>;
+```
+
+##### `stopPlayback()`
+
+Stop the current audio playback completely.
+
+```typescript
+stopPlayback(): Promise<void>;
+```
+
+##### `seekTo()`
+
+Seek to a specific time position in the current audio.
+
+```typescript
+seekTo(options: { time: number }): Promise<void>;
+```
+
+**Example:**
+
+```typescript
+// Seek to 30 seconds
+await CapacitorAudioEngine.seekTo({ time: 30 });
+```
+
+##### `getPlaybackStatus()`
+
+Get the current playback status and information.
+
+```typescript
+getPlaybackStatus(): Promise<AudioPlayerInfo>;
+```
+
+**Example:**
+
+```typescript
+const status = await CapacitorAudioEngine.getPlaybackStatus();
+console.log('Current time:', status.currentTime);
+console.log('Duration:', status.duration);
+console.log('Status:', status.status);
+console.log('Speed:', status.speed);
+```
+
 #### Event Handling
 
 ##### `addListener()`
 
-Add a listener for recording events.
+Add a listener for recording or playback events.
 
 ```typescript
+// Recording events
 addListener(
   eventName: AudioRecordingEventName,
   callback: (
@@ -417,6 +567,42 @@ addListener(
       | ErrorEventData,
   ) => void,
 ): Promise<PluginListenerHandle>;
+
+// Playback events
+addListener(
+  eventName: AudioPlaybackEventName,
+  callback: (
+    data:
+      | PlaybackProgressData
+      | PlaybackStatusData
+      | PlaybackCompletedData
+      | PlaybackErrorData,
+  ) => void,
+): Promise<PluginListenerHandle>;
+```
+
+**Playback Event Examples:**
+
+```typescript
+// Listen for playback progress updates
+await CapacitorAudioEngine.addListener('playbackProgress', (data) => {
+  console.log('Progress:', data.currentTime, '/', data.duration);
+});
+
+// Listen for playback status changes
+await CapacitorAudioEngine.addListener('playbackStatusChange', (data) => {
+  console.log('Status changed to:', data.status);
+});
+
+// Listen for playback completion
+await CapacitorAudioEngine.addListener('playbackCompleted', (data) => {
+  console.log('Playback completed, duration:', data.duration);
+});
+
+// Listen for playback errors
+await CapacitorAudioEngine.addListener('playbackError', (data) => {
+  console.error('Playback error:', data.message);
+});
 ```
 
 ##### `removeAllListeners()`
@@ -516,6 +702,75 @@ class AudioRecorder {
     }
   }
 
+  async playRecording(audioFile: AudioFileInfo) {
+    try {
+      // Preload the audio file for better performance
+      await CapacitorAudioEngine.preload({
+        uri: audioFile.uri,
+        prepare: true,
+      });
+
+      // Start playback with custom options
+      await CapacitorAudioEngine.startPlayback({
+        uri: audioFile.uri,
+        speed: 1.0, // Normal speed
+        volume: 1.0, // Full volume
+        loop: false, // Don't loop
+        startTime: 0, // Start from beginning
+      });
+
+      console.log('Playback started');
+    } catch (error) {
+      console.error('Failed to start playback:', error);
+    }
+  }
+
+  async pausePlayback() {
+    try {
+      await CapacitorAudioEngine.pausePlayback();
+      console.log('Playback paused');
+    } catch (error) {
+      console.error('Failed to pause playback:', error);
+    }
+  }
+
+  async resumePlayback() {
+    try {
+      await CapacitorAudioEngine.resumePlayback();
+      console.log('Playback resumed');
+    } catch (error) {
+      console.error('Failed to resume playback:', error);
+    }
+  }
+
+  async stopPlayback() {
+    try {
+      await CapacitorAudioEngine.stopPlayback();
+      console.log('Playback stopped');
+    } catch (error) {
+      console.error('Failed to stop playback:', error);
+    }
+  }
+
+  async seekTo(time: number) {
+    try {
+      await CapacitorAudioEngine.seekTo({ time });
+      console.log(`Seeked to ${time} seconds`);
+    } catch (error) {
+      console.error('Failed to seek:', error);
+    }
+  }
+
+  async getPlaybackStatus() {
+    try {
+      const status = await CapacitorAudioEngine.getPlaybackStatus();
+      console.log('Playback status:', status);
+      return status;
+    } catch (error) {
+      console.error('Failed to get playback status:', error);
+    }
+  }
+
   async switchMicrophone(microphoneId: number) {
     try {
       const result = await CapacitorAudioEngine.switchMicrophone({ microphoneId });
@@ -527,19 +782,34 @@ class AudioRecorder {
   }
 
   private async setupEventListeners() {
-    // Listen for recording interruptions
+    // Recording event listeners
     await CapacitorAudioEngine.addListener('recordingInterruption', (data) => {
       console.log('Recording interrupted:', data.payload.message);
     });
 
-    // Listen for duration changes
     await CapacitorAudioEngine.addListener('durationChange', (data) => {
       console.log('Recording duration:', data.payload.duration);
     });
 
-    // Listen for errors
     await CapacitorAudioEngine.addListener('error', (data) => {
       console.error('Recording error:', data.payload.message);
+    });
+
+    // Playback event listeners
+    await CapacitorAudioEngine.addListener('playbackProgress', (data) => {
+      console.log(`Playback progress: ${data.currentTime}s / ${data.duration}s`);
+    });
+
+    await CapacitorAudioEngine.addListener('playbackStatusChange', (data) => {
+      console.log('Playback status changed to:', data.status);
+    });
+
+    await CapacitorAudioEngine.addListener('playbackCompleted', (data) => {
+      console.log('Playback completed, duration:', data.duration);
+    });
+
+    await CapacitorAudioEngine.addListener('playbackError', (data) => {
+      console.error('Playback error:', data.message);
     });
   }
 

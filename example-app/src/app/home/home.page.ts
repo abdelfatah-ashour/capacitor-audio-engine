@@ -1,9 +1,9 @@
 import { Component,  OnInit, signal, OnDestroy, inject } from '@angular/core';
-import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon, IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner } from '@ionic/angular/standalone';
+import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon, IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner, IonCheckbox } from '@ionic/angular/standalone';
 import { CapacitorAudioEngine,AudioFileInfo, MicrophoneInfo } from "capacitor-audio-engine";
 import { CommonModule } from '@angular/common';
 import { addIcons } from 'ionicons';
-import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline } from 'ionicons/icons';
+import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline } from 'ionicons/icons';
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
 import { AlertController } from '@ionic/angular';
@@ -12,7 +12,7 @@ import { AlertController } from '@ionic/angular';
   selector: 'app-home',
   templateUrl: 'home.page.html',
   styleUrls: ['home.page.scss'],
-  imports: [CommonModule, FormsModule, IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon,IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner],
+  imports: [CommonModule, FormsModule, IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon,IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner, IonCheckbox],
   standalone: true
 })
 export class HomePage implements OnInit, OnDestroy{
@@ -36,6 +36,14 @@ export class HomePage implements OnInit, OnDestroy{
   selectedMicrophoneId = signal<number | null>(null);
   microphoneBusy = signal<boolean>(false);
   isLoadingMicrophones = signal<boolean>(false);
+
+  // Playback properties
+  isPlaying = signal<boolean>(false);
+  playbackCurrentTime = signal<number>(0);
+  playbackDuration = signal<number>(0);
+  playbackSpeed = signal<number>(1.0);
+  playbackVolume = signal<number>(1.0);
+  isLooping = signal<boolean>(false);
 
   // Add channel configuration
   recordingChannels = 1;  // Default to mono
@@ -72,7 +80,12 @@ export class HomePage implements OnInit, OnDestroy{
       warningOutline,
       cutOutline,
       bugOutline,
-      shieldCheckmarkOutline
+      shieldCheckmarkOutline,
+      volumeHighOutline,
+      repeatOutline,
+      speedometerOutline,
+      playSkipForwardOutline,
+      playSkipBackOutline
     });
   }
 
@@ -100,9 +113,12 @@ export class HomePage implements OnInit, OnDestroy{
 
     // Set up duration change listener
     CapacitorAudioEngine.addListener("durationChange", (data) => {
-      console.log("🚀 ~ HomePage ~ CapacitorAudioEngine.addListener ~ data:", data.payload.duration)
-      this.currentDuration.set(data.payload.duration);
+      console.log("🚀 ~ HomePage ~ CapacitorAudioEngine.addListener ~ data:", data.duration)
+      this.currentDuration.set(data.duration);
     });
+
+    // Set up playback event listeners
+    this.setupPlaybackListeners();
   }
 
   ngOnDestroy() {
@@ -114,8 +130,8 @@ export class HomePage implements OnInit, OnDestroy{
     try {
       // First add the listener
       CapacitorAudioEngine.addListener('recordingInterruption', (data) => {
-        console.log("🚀 ~ HomePage ~ CapacitorAudioEngine.addListener ~ data:", data.payload.message)
-        this.handleRecordingInterruption(data.payload.message);
+        console.log("🚀 ~ HomePage ~ CapacitorAudioEngine.addListener ~ data:", data.message)
+        this.handleRecordingInterruption(data.message);
       });
       console.log('Interruption listener setup complete');
     } catch (error) {
@@ -452,5 +468,136 @@ export class HomePage implements OnInit, OnDestroy{
         buttons: ['OK']
       }).then(alert => alert.present());
     });
+  }
+
+  // ========== PLAYBACK METHODS ==========
+
+  private async setupPlaybackListeners() {
+    try {
+      // Listen for playback progress updates
+      CapacitorAudioEngine.addListener('playbackProgress', (data) => {
+        console.log('🚀 ~ Playback progress:', data.currentTime, '/', data.duration);
+        this.playbackCurrentTime.set(data.currentTime);
+        this.playbackDuration.set(data.duration);
+      });
+
+      // Listen for playback status changes
+      CapacitorAudioEngine.addListener('playbackStatusChange', (data) => {
+        console.log('🚀 ~ Playback status changed to:', data.status);
+        this.isPlaying.set(data.status === 'playing');
+      });
+
+      // Listen for playback completion
+      CapacitorAudioEngine.addListener('playbackCompleted', (data) => {
+        console.log('🚀 ~ Playback completed, duration:', data.duration);
+        this.isPlaying.set(false);
+        this.playbackCurrentTime.set(0);
+        this.showAlert('Playback Complete', 'Audio playback finished successfully.');
+      });
+
+      // Listen for playback errors
+      CapacitorAudioEngine.addListener('playbackError', (data) => {
+        console.error('🚀 ~ Playback error:', data.message);
+        this.isPlaying.set(false);
+        this.showAlert('Playback Error', `Error: ${data.message}`);
+      });
+
+      console.log('Playback listeners setup complete');
+    } catch (error) {
+      console.error('Failed to setup playback listeners:', error);
+    }
+  }
+
+  async startPlayback() {
+    const audioInfo = this.audioInfo();
+    if (!audioInfo) {
+      this.showAlert('No Recording', 'Please record audio first.');
+      return;
+    }
+
+    try {
+      await CapacitorAudioEngine.startPlayback({
+        uri: audioInfo.uri,
+        speed: this.playbackSpeed(),
+        volume: this.playbackVolume(),
+        loop: this.isLooping(),
+        startTime: 0
+      });
+      console.log('🚀 ~ Playback started');
+    } catch (error) {
+      console.error('Failed to start playback:', error);
+      this.showAlert('Playback Error', `Failed to start playback: ${error}`);
+    }
+  }
+
+  async pausePlayback() {
+    try {
+      await CapacitorAudioEngine.pausePlayback();
+      console.log('🚀 ~ Playback paused');
+    } catch (error) {
+      console.error('Failed to pause playback:', error);
+      this.showAlert('Playback Error', `Failed to pause playback: ${error}`);
+    }
+  }
+
+  async resumePlayback() {
+    try {
+      await CapacitorAudioEngine.resumePlayback();
+      console.log('🚀 ~ Playback resumed');
+    } catch (error) {
+      console.error('Failed to resume playback:', error);
+      this.showAlert('Playback Error', `Failed to resume playback: ${error}`);
+    }
+  }
+
+  async stopPlayback() {
+    try {
+      await CapacitorAudioEngine.stopPlayback();
+      console.log('🚀 ~ Playback stopped');
+    } catch (error) {
+      console.error('Failed to stop playback:', error);
+      this.showAlert('Playback Error', `Failed to stop playback: ${error}`);
+    }
+  }
+
+  async seekToTime(time: number) {
+    try {
+      await CapacitorAudioEngine.seekTo({ time });
+      console.log(`🚀 ~ Seeked to ${time} seconds`);
+    } catch (error) {
+      console.error('Failed to seek:', error);
+      this.showAlert('Seek Error', `Failed to seek: ${error}`);
+    }
+  }
+
+  async getPlaybackStatus() {
+    try {
+      const status = await CapacitorAudioEngine.getPlaybackStatus();
+      console.log('🚀 ~ Playback status:', status);
+      return status;
+    } catch (error) {
+      console.error('Failed to get playback status:', error);
+      throw error;
+    }
+  }
+
+  onPlaybackSpeedChange(event: any) {
+    this.playbackSpeed.set(event.detail.value);
+    console.log('🚀 ~ Playback speed changed to:', this.playbackSpeed());
+  }
+
+  onPlaybackVolumeChange(event: any) {
+    this.playbackVolume.set(event.detail.value);
+    console.log('🚀 ~ Playback volume changed to:', this.playbackVolume());
+  }
+
+  toggleLooping() {
+    this.isLooping.set(!this.isLooping());
+    console.log('🚀 ~ Looping toggled to:', this.isLooping());
+  }
+
+  onSeekChange(event: any) {
+    const seekTime = event.detail.value;
+    this.seekToTime(seekTime);
   }
 }

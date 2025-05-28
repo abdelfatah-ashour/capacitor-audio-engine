@@ -103,3 +103,73 @@
   color: var(--ion-color-medium);
 }
 
+// Playback controls styling
+.playback-controls {
+  .control-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin: 16px 0;
+
+    ion-button {
+      min-width: 56px;
+      height: 56px;
+      --border-radius: 50%;
+    }
+  }
+
+  .playback-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 16px 0;
+
+    .time-label {
+      font-size: 0.875rem;
+      color: var(--ion-color-medium);
+      font-weight: 500;
+      min-width: 45px;
+    }
+
+    .seek-range {
+      flex: 1;
+    }
+  }
+
+  .playback-settings {
+    margin-top: 24px;
+
+    ion-item {
+      --padding-start: 0;
+      --inner-padding-end: 0;
+
+      .speed-range, .volume-range {
+        width: 120px;
+        margin-left: 16px;
+      }
+    }
+  }
+}
+
+.web-audio-fallback {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--ion-color-light);
+  border-radius: 8px;
+
+  .audio-player {
+    width: 100%;
+  }
+}
+
+.audio-trimming {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--ion-color-light);
+
+  h3 {
+    margin: 0 0 16px 0;
+    color: var(--ion-color-primary);
+  }
+}
+
