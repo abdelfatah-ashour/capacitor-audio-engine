@@ -397,6 +397,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         // Round to 1 decimal place for better display
         let roundedDuration = round(durationInSeconds * 10) / 10
 
+        // Encode audio file to base64 with MIME prefix (Data URI format)
+        var base64Audio: String?
+        do {
+            let audioData = try Data(contentsOf: fileToReturn)
+            let base64String = audioData.base64EncodedString()
+            base64Audio = "data:audio/m4a;base64," + base64String
+        } catch {
+            print("Failed to encode audio file to base64: \(error.localizedDescription)")
+            base64Audio = nil
+        }
+
         return [
             "path": fileToReturn.path,
             "uri": fileToReturn.absoluteString,
@@ -408,7 +419,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             "channels": channels,
             "bitrate": bitrate,
             "createdAt": Int(modificationDate.timeIntervalSince1970 * 1000), // Milliseconds timestamp
-            "filename": fileToReturn.lastPathComponent
+            "filename": fileToReturn.lastPathComponent,
+            "base64": base64Audio
         ]
     }
 
@@ -910,29 +922,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                             print("Original recording duration: \(durationInSeconds) seconds")
 
-                            // Retrieve settings used for recording. Recorder instance is still valid here.
-                            let currentSettings = recorder.settings
-                            let sampleRate = currentSettings[AVSampleRateKey] as? Double ?? 44100.0
-                            let channels = currentSettings[AVNumberOfChannelsKey] as? Int ?? 1
-                            let bitrate = currentSettings[AVEncoderBitRateKey] as? Int ?? 128000
-
                             print("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
-                            // Round to 1 decimal place for better display
-                            let roundedDuration = round(durationInSeconds * 10) / 10
 
-                            let response: [String: Any] = [
-                                "path": fileToReturn.path,
-                                "uri": fileToReturn.absoluteString,
-                                "webPath": "capacitor://localhost/_capacitor_file_" + fileToReturn.path,
-                                "mimeType": "audio/m4a", // M4A container with AAC audio
-                                "size": fileSize,
-                                "duration": roundedDuration,
-                                "sampleRate": Int(sampleRate), // Cast to Int for consistency
-                                "channels": channels,
-                                "bitrate": bitrate,
-                                "createdAt": Int(modificationDate.timeIntervalSince1970 * 1000), // Milliseconds timestamp
-                                "filename": fileToReturn.lastPathComponent
-                            ]
+                            // Use the helper method to create response with base64 encoding
+                            let response = self.createRecordingResponse(
+                                fileToReturn: fileToReturn,
+                                fileSize: fileSize,
+                                modificationDate: modificationDate,
+                                durationInSeconds: durationInSeconds
+                            )
                             call.resolve(response)
                         } catch {
                             call.reject("Failed to get recording info: \(error.localizedDescription)")
@@ -978,29 +976,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                             print("Original recording duration: \(durationInSeconds) seconds")
 
-                            // Retrieve settings used for recording. Recorder instance is still valid here.
-                            let currentSettings = recorder.settings
-                            let sampleRate = currentSettings[AVSampleRateKey] as? Double ?? 44100.0
-                            let channels = currentSettings[AVNumberOfChannelsKey] as? Int ?? 1
-                            let bitrate = currentSettings[AVEncoderBitRateKey] as? Int ?? 128000
-
                             print("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
-                            // Round to 1 decimal place for better display
-                            let roundedDuration = round(durationInSeconds * 10) / 10
 
-                            let response: [String: Any] = [
-                                "path": fileToReturn.path,
-                                "uri": fileToReturn.absoluteString,
-                                "webPath": "capacitor://localhost/_capacitor_file_" + fileToReturn.path,
-                                "mimeType": "audio/m4a", // M4A container with AAC audio
-                                "size": fileSize,
-                                "duration": roundedDuration,
-                                "sampleRate": Int(sampleRate), // Cast to Int for consistency
-                                "channels": channels,
-                                "bitrate": bitrate,
-                                "createdAt": Int(modificationDate.timeIntervalSince1970 * 1000), // Milliseconds timestamp
-                                "filename": fileToReturn.lastPathComponent
-                            ]
+                            // Use the helper method to create response with base64 encoding
+                            let response = self.createRecordingResponse(
+                                fileToReturn: fileToReturn,
+                                fileSize: fileSize,
+                                modificationDate: modificationDate,
+                                durationInSeconds: durationInSeconds
+                            )
                             call.resolve(response)
                         } catch {
                             call.reject("Failed to get recording info: \(error.localizedDescription)")
@@ -1047,29 +1031,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                         print("Original recording duration: \(durationInSeconds) seconds")
 
-                        // Retrieve settings used for recording. Recorder instance is still valid here.
-                        let currentSettings = recorder.settings
-                        let sampleRate = currentSettings[AVSampleRateKey] as? Double ?? 44100.0
-                        let channels = currentSettings[AVNumberOfChannelsKey] as? Int ?? 1
-                        let bitrate = currentSettings[AVEncoderBitRateKey] as? Int ?? 128000
-
                         print("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
-                        // Round to 1 decimal place for better display
-                        let roundedDuration = round(durationInSeconds * 10) / 10
 
-                        let response: [String: Any] = [
-                            "path": fileToReturn.path,
-                            "uri": fileToReturn.absoluteString,
-                            "webPath": "capacitor://localhost/_capacitor_file_" + fileToReturn.path,
-                            "mimeType": "audio/m4a", // M4A container with AAC audio
-                            "size": fileSize,
-                            "duration": roundedDuration,
-                            "sampleRate": Int(sampleRate), // Cast to Int for consistency
-                            "channels": channels,
-                            "bitrate": bitrate,
-                            "createdAt": Int(modificationDate.timeIntervalSince1970 * 1000), // Milliseconds timestamp
-                            "filename": fileToReturn.lastPathComponent
-                        ]
+                        // Use the helper method to create response with base64 encoding
+                        let response = self.createRecordingResponse(
+                            fileToReturn: fileToReturn,
+                            fileSize: fileSize,
+                            modificationDate: modificationDate,
+                            durationInSeconds: durationInSeconds
+                        )
                         call.resolve(response)
                     } catch {
                         call.reject("Failed to get recording info: \(error.localizedDescription)")
@@ -1277,6 +1247,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                             // Retrieve settings used for recording. Recorder instance is still valid here.
                             let currentSettings = self.audioRecorder?.settings ?? [:]
 
+                            // Encode audio file to base64 with MIME prefix (Data URI format)
+                            var base64Audio: String?
+                            do {
+                                let audioData = try Data(contentsOf: outputURL)
+                                let base64String = audioData.base64EncodedString()
+                                base64Audio = "data:audio/m4a;base64," + base64String
+                            } catch {
+                                print("Failed to encode trimmed audio file to base64: \(error.localizedDescription)")
+                                base64Audio = nil
+                            }
+
                             // Create response object
                             let response: [String: Any] = [
                                 "path": outputURL.path,
@@ -1289,7 +1270,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                                 "channels": currentSettings[AVNumberOfChannelsKey] as? Int ?? 1, // Use original or default
                                 "bitrate": currentSettings[AVEncoderBitRateKey] as? Int ?? 128000, // Use original or default
                                 "createdAt": Int(Date().timeIntervalSince1970 * 1000), // Current timestamp in milliseconds
-                                "filename": outputURL.lastPathComponent
+                                "filename": outputURL.lastPathComponent,
+                                "base64": base64Audio
                             ]
 
                             call.resolve(response)

@@ -90,6 +90,11 @@ export interface AudioFileInfo {
   bitrate: number;
   createdAt: number;
   filename: string;
+  /**
+   * Base64-encoded audio data with MIME prefix (Data URI format)
+   * Format: "data:audio/m4a;base64,<base64-data>"
+   */
+  base64?: string;
 }
 
 export interface MicrophoneInfo {
