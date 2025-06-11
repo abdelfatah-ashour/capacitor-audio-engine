@@ -7,6 +7,7 @@ import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOut
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
 import { AlertController } from '@ionic/angular';
+import { Filesystem } from '@capacitor/filesystem';
 
 @Component({
   selector: 'app-home',
@@ -206,7 +207,15 @@ export class HomePage implements OnInit, OnDestroy{
   async stopRecording() {
     try {
       const res = await CapacitorAudioEngine.stopRecording();
+      const readfile = await Filesystem.readFile({
+        path: res.uri,
+      })
+      console.log(JSON.stringify(readfile,null,2))
       console.log("🚀 ~ HomePage ~ stopRecording ~ res:", res)
+
+      // Validate the base64 Data URI format
+      const validation = this.validateBase64Audio(res.base64);
+      console.log('🔍 Base64 validation result:', validation);
       const file = await Capacitor.convertFileSrc(res.uri);
       this.isRecording = false;
       this.hasRecording = true;
@@ -599,5 +608,59 @@ export class HomePage implements OnInit, OnDestroy{
   onSeekChange(event: any) {
     const seekTime = event.detail.value;
     this.seekToTime(seekTime);
+  }
+
+  // Base64 validation utility for Data URI format
+  validateBase64Audio(base64String?: string): {isValid: boolean, details: string} {
+    if (!base64String) {
+      return {
+        isValid: false,
+        details: 'Base64 string is null or undefined'
+      };
+    }
+
+    // Check if it has the correct MIME prefix (Data URI format)
+    const expectedPrefix = 'data:audio/m4a;base64,';
+    if (!base64String.startsWith(expectedPrefix)) {
+      return {
+        isValid: false,
+        details: `Missing MIME prefix. Expected: "${expectedPrefix}", got: "${base64String.substring(0, 30)}..."`
+      };
+    }
+
+    // Extract the actual base64 data
+    const base64Data = base64String.substring(expectedPrefix.length);
+
+    if (base64Data.length === 0) {
+      return {
+        isValid: false,
+        details: 'No base64 data found after MIME prefix'
+      };
+    }
+
+    // Basic base64 validation (should only contain valid base64 characters)
+    const base64Regex = /^[A-Za-z0-9+/=]*$/;
+    if (!base64Regex.test(base64Data)) {
+      return {
+        isValid: false,
+        details: 'Invalid base64 characters found'
+      };
+    }
+
+    // Check if length is reasonable (should be multiple of 4 for proper base64)
+    if (base64Data.length % 4 !== 0) {
+      return {
+        isValid: false,
+        details: `Invalid base64 length. Length: ${base64Data.length} (should be multiple of 4)`
+      };
+    }
+
+    // Calculate estimated file size
+    const estimatedBytes = (base64Data.length * 3) / 4;
+
+    return {
+      isValid: true,
+      details: `✓ Valid Data URI format with ${base64Data.length} base64 characters (~${Math.round(estimatedBytes)} bytes)`
+    };
   }
 }

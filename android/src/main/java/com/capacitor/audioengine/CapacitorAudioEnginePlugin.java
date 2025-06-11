@@ -1161,6 +1161,17 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             info.put("createdAt", System.currentTimeMillis());
             info.put("filename", file.getName());
 
+            // Add base64 encoding of the audio file with MIME prefix (Data URI format)
+            try {
+                byte[] audioBytes = java.nio.file.Files.readAllBytes(file.toPath());
+                String base64Audio = android.util.Base64.encodeToString(audioBytes, android.util.Base64.NO_WRAP);
+                String dataUri = "data:audio/m4a;base64," + base64Audio;
+                info.put("base64", dataUri);
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to encode audio file to base64", e);
+                info.put("base64", null);
+            }
+
             // Audio metadata
             MediaMetadataRetriever retriever = null;
             try {
@@ -1193,6 +1204,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             info.put("sampleRate", sampleRate);
             info.put("channels", channels);
             info.put("bitrate", bitrate);
+            info.put("base64", null);
         }
 
         return info;
