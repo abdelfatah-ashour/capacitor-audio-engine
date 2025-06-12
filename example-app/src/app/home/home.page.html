@@ -267,6 +267,38 @@
         </ion-card-content>
       </ion-card>
 
+      <!-- Audio Preload Section -->
+      <ion-card class="audio-preload">
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="play-skip-forward-outline"></ion-icon>
+            Audio Preload
+          </ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          <p>Preload audio into memory for faster playback start times. This is especially useful for sound effects and short audio clips.</p>
+
+          <div class="preload-controls">
+            <ion-button expand="block" color="primary" (click)="preloadAudio()" fill="solid">
+              <ion-icon name="play-skip-forward-outline" slot="start"></ion-icon>
+              Preload with Prepare
+            </ion-button>
+
+            <ion-button expand="block" color="secondary" (click)="preloadWithoutPrepare()" fill="outline">
+              <ion-icon name="headset-outline" slot="start"></ion-icon>
+              Preload without Prepare
+            </ion-button>
+          </div>
+
+          <ion-text color="medium">
+            <p class="preload-info">
+              <strong>With Prepare:</strong> Audio data is loaded and prepared for instant playback.<br>
+              <strong>Without Prepare:</strong> Player is initialized but audio data isn't preloaded.
+            </p>
+          </ion-text>
+        </ion-card-content>
+      </ion-card>
+
       <!-- Debug Section -->
       <ion-card class="debug-section">
         <ion-card-header>

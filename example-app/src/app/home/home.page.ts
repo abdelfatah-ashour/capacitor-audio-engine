@@ -613,6 +613,50 @@ export class HomePage implements OnInit, OnDestroy{
     this.seekToTime(seekTime);
   }
 
+  // ========== PRELOAD METHODS ==========
+
+  async preloadAudio() {
+    const audioInfo = this.audioInfo();
+    if (!audioInfo) {
+      this.showAlert('No Recording', 'Please record audio first.');
+      return;
+    }
+
+    try {
+      console.log('🚀 ~ Preloading audio...');
+      await CapacitorAudioEngine.preload({
+        uri: audioInfo.uri,
+        prepare: true // Load audio data into memory for faster playback
+      });
+      console.log('🚀 ~ Audio preloaded successfully');
+      this.showAlert('Preload Complete', 'Audio has been preloaded and is ready for instant playback.');
+    } catch (error) {
+      console.error('Failed to preload audio:', error);
+      this.showAlert('Preload Error', `Failed to preload audio: ${error}`);
+    }
+  }
+
+  async preloadWithoutPrepare() {
+    const audioInfo = this.audioInfo();
+    if (!audioInfo) {
+      this.showAlert('No Recording', 'Please record audio first.');
+      return;
+    }
+
+    try {
+      console.log('🚀 ~ Preloading audio (without prepare)...');
+      await CapacitorAudioEngine.preload({
+        uri: audioInfo.uri,
+        prepare: false // Just set up player without loading data
+      });
+      console.log('🚀 ~ Audio player setup completed');
+      this.showAlert('Player Setup Complete', 'Audio player is ready (data not preloaded).');
+    } catch (error) {
+      console.error('Failed to setup audio player:', error);
+      this.showAlert('Setup Error', `Failed to setup audio player: ${error}`);
+    }
+  }
+
   // Base64 validation utility for Data URI format
   validateBase64Audio(base64String?: string): {isValid: boolean, details: string} {
     if (!base64String) {
