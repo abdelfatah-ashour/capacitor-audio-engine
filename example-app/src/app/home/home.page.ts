@@ -210,12 +210,9 @@ export class HomePage implements OnInit, OnDestroy{
       const readfile = await Filesystem.readFile({
         path: res.uri,
       })
-      console.log(JSON.stringify(readfile,null,2))
-      console.log("🚀 ~ HomePage ~ stopRecording ~ res:", res)
 
       // Validate the base64 Data URI format
-      const validation = this.validateBase64Audio(res.base64);
-      console.log('🔍 Base64 validation result:', validation);
+       this.validateBase64Audio(res.base64);
       const file = await Capacitor.convertFileSrc(res.uri);
       this.isRecording = false;
       this.hasRecording = true;
@@ -273,6 +270,7 @@ export class HomePage implements OnInit, OnDestroy{
         start: this.startAudioTime(),
         end: this.endAudioTime()
       });
+      console.log("🚀 ~ HomePage ~ trimAudio ~ res:", res)
 
       const file = Capacitor.convertFileSrc(res.uri);
       // Update state
@@ -485,20 +483,17 @@ export class HomePage implements OnInit, OnDestroy{
     try {
       // Listen for playback progress updates
       CapacitorAudioEngine.addListener('playbackProgress', (data) => {
-        console.log('🚀 ~ Playback progress:', data.currentTime, '/', data.duration);
         this.playbackCurrentTime.set(data.currentTime);
         this.playbackDuration.set(data.duration);
       });
 
       // Listen for playback status changes
       CapacitorAudioEngine.addListener('playbackStatusChange', (data) => {
-        console.log('🚀 ~ Playback status changed to:', data.status);
         this.isPlaying.set(data.status === 'playing');
       });
 
       // Listen for playback completion
       CapacitorAudioEngine.addListener('playbackCompleted', (data) => {
-        console.log('🚀 ~ Playback completed, duration:', data.duration);
         this.isPlaying.set(false);
         this.playbackCurrentTime.set(0);
         this.showAlert('Playback Complete', 'Audio playback finished successfully.');
@@ -506,11 +501,9 @@ export class HomePage implements OnInit, OnDestroy{
 
       // Listen for playback errors
       CapacitorAudioEngine.addListener('playbackError', (data) => {
-        console.error('🚀 ~ Playback error:', data.message);
         this.isPlaying.set(false);
         this.showAlert('Playback Error', `Error: ${data.message}`);
       });
-
       console.log('Playback listeners setup complete');
     } catch (error) {
       console.error('Failed to setup playback listeners:', error);
@@ -525,17 +518,27 @@ export class HomePage implements OnInit, OnDestroy{
     }
 
     try {
-      await CapacitorAudioEngine.startPlayback({
-        uri: audioInfo.uri,
-        speed: this.playbackSpeed(),
-        volume: this.playbackVolume(),
-        loop: this.isLooping(),
-        startTime: 0
-      });
-      console.log('🚀 ~ Playback started');
+      // Check current playback status
+      const status = await CapacitorAudioEngine.getPlaybackStatus();
+
+      if (status.status === 'paused') {
+        // If playback is paused, resume it instead of starting new playback
+        await CapacitorAudioEngine.resumePlayback();
+        console.log('🚀 ~ Playback resumed');
+      } else {
+        // Start new playback
+        await CapacitorAudioEngine.startPlayback({
+          uri: audioInfo.uri,
+          speed: this.playbackSpeed(),
+          volume: this.playbackVolume(),
+          loop: this.isLooping(),
+          startTime: 0
+        });
+        console.log('🚀 ~ Playback started');
+      }
     } catch (error) {
-      console.error('Failed to start playback:', error);
-      this.showAlert('Playback Error', `Failed to start playback: ${error}`);
+      console.error('Failed to start/resume playback:', error);
+      this.showAlert('Playback Error', `Failed to start/resume playback: ${error}`);
     }
   }
 
