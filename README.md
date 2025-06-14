@@ -22,6 +22,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
       - [Status & Information](#status--information)
       - [Audio Processing](#audio-processing)
       - [Microphone Management](#microphone-management)
+      - [Audio Playback](#audio-playback)
       - [Event Handling](#event-handling)
       - [Usage Example](#usage-example)
   - [🔧 Troubleshooting](#-troubleshooting)
@@ -48,6 +49,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 🔍 **Microphone status** - Check if microphone is busy/in use by other apps
 - 🎵 **Audio playback** - Play, pause, stop, and control recorded audio files
 - 🎚️ **Playback controls** - Speed control, seeking, volume, and looping
+- ⚡ **Audio preloading** - Preload audio files for faster playback start times
 - 📡 **Real-time monitoring** - Track playback progress and status changes
 - 🌐 Cross-platform support (Web coming soon!)
 - 🎚️ Consistent audio quality:
@@ -69,6 +71,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 | Microphone Switching | ✅      | ✅  | 🔜  |
 | Audio Playback       | ✅      | ✅  | 🔜  |
 | Playback Controls    | ✅      | ✅  | 🔜  |
+| Audio Preloading     | ✅      | ✅  | ❌  |
 
 > 💡 **Note:** Android and iOS are fully supported! Web support is coming soon - we're working on it! 🚧
 
@@ -147,6 +150,11 @@ export interface AudioFileInfo {
   bitrate: number;
   createdAt: number;
   filename: string;
+  /**
+   * Base64-encoded audio data with MIME prefix (Data URI format)
+   * Format: "data:audio/m4a;base64,<base64-data>"
+   */
+  base64?: string;
 }
 ```
 
@@ -154,10 +162,25 @@ export interface AudioFileInfo {
 
 ```typescript
 export interface RecordingOptions {
+  /**
+   * Maximum duration in seconds to keep at the end of recording
+   */
   maxDuration?: number;
+  /**
+   * Audio sample rate (Hz). Default: 44100
+   */
   sampleRate?: number;
+  /**
+   * Number of audio channels. Default: 1 (mono)
+   */
   channels?: number;
+  /**
+   * Audio bitrate (bps). Default: 128000
+   */
   bitrate?: number;
+  /**
+   * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
+   */
 }
 ```
 
@@ -165,6 +188,9 @@ export interface RecordingOptions {
 
 ```typescript
 export interface SegmentedRecordingOptions extends RecordingOptions {
+  /**
+   * Duration of each segment in seconds (default: 30)
+   */
   segmentDuration?: number;
 }
 ```
@@ -178,13 +204,33 @@ type RecordingStatus = 'idle' | 'recording' | 'paused';
 #### `AudioRecordingEventName`
 
 ```typescript
-type AudioRecordingEventName =
-  | 'recordingInterruption'
-  | 'durationChange'
-  | 'progress'
-  | 'segmentProgress'
-  | 'segmentMetadata'
-  | 'error';
+type AudioRecordingEventName = 'recordingInterruption' | 'durationChange' | 'error';
+```
+
+#### `RecordingInterruptionData`
+
+```typescript
+export interface RecordingInterruptionData {
+  message: string;
+}
+```
+
+#### `DurationChangeData`
+
+```typescript
+export interface DurationChangeData {
+  duration: number;
+}
+```
+
+#### `ErrorEventData`
+
+```typescript
+export interface ErrorEventData {
+  message: string;
+  code?: string | number;
+  details?: any;
+}
 ```
 
 #### `MicrophoneInfo`
@@ -194,7 +240,9 @@ export interface MicrophoneInfo {
   id: number;
   name: string;
   type: 'internal' | 'external' | 'unknown';
-  isConnected: boolean;
+  description?: string;
+  uid?: string; // iOS only
+  isConnected?: boolean; // Android only
 }
 ```
 
@@ -229,7 +277,6 @@ export interface SwitchMicrophoneOptions {
 export interface SwitchMicrophoneResult {
   success: boolean;
   microphoneId: number;
-  message?: string;
 }
 ```
 
@@ -243,10 +290,21 @@ type PlaybackStatus = 'idle' | 'loaded' | 'playing' | 'paused' | 'stopped' | 'co
 
 ```typescript
 export interface PlaybackOptions {
-  uri: string;
+  /**
+   * Playback speed (0.5 - 2.0). Default: 1.0
+   */
   speed?: number;
+  /**
+   * Start time in seconds. Default: 0
+   */
   startTime?: number;
+  /**
+   * Whether to loop the audio. Default: false
+   */
   loop?: boolean;
+  /**
+   * Volume level (0.0 - 1.0). Default: 1.0
+   */
   volume?: number;
 }
 ```
@@ -255,7 +313,13 @@ export interface PlaybackOptions {
 
 ```typescript
 export interface PreloadOptions {
+  /**
+   * URI of the audio file to preload
+   */
   uri: string;
+  /**
+   * Whether to prepare for playback immediately. Default: true
+   */
   prepare?: boolean;
 }
 ```
@@ -267,10 +331,9 @@ export interface AudioPlayerInfo {
   status: PlaybackStatus;
   currentTime: number;
   duration: number;
-  speed: number;
-  volume: number;
-  isLooping: boolean;
-  isLoaded: boolean;
+  speed?: number;
+  volume?: number;
+  isLooping?: boolean;
   uri?: string;
 }
 ```
@@ -278,7 +341,45 @@ export interface AudioPlayerInfo {
 #### `AudioPlaybackEventName`
 
 ```typescript
-type AudioPlaybackEventName = 'playbackProgress' | 'playbackStatusChange' | 'playbackCompleted' | 'playbackError';
+type AudioPlaybackEventName = 'playbackStatusChange' | 'playbackProgress' | 'playbackCompleted' | 'playbackError';
+```
+
+#### `PlaybackProgressData`
+
+```typescript
+export interface PlaybackProgressData {
+  currentTime: number;
+  duration: number;
+  position: number; // Playback position as percentage (0-100)
+}
+```
+
+#### `PlaybackStatusData`
+
+```typescript
+export interface PlaybackStatusData {
+  status: PlaybackStatus;
+  currentTime?: number;
+  duration?: number;
+}
+```
+
+#### `PlaybackErrorData`
+
+```typescript
+export interface PlaybackErrorData {
+  message: string;
+  code?: string | number;
+  details?: any;
+}
+```
+
+#### `PlaybackCompletedData`
+
+```typescript
+export interface PlaybackCompletedData {
+  duration: number;
+}
 ```
 
 ### Methods
@@ -290,7 +391,7 @@ type AudioPlaybackEventName = 'playbackProgress' | 'playbackStatusChange' | 'pla
 Check if your app has permission to use the microphone.
 
 ```typescript
-checkPermission(): Promise<{ granted: boolean }>;
+checkPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
 ```
 
 ##### `requestPermission()`
@@ -298,7 +399,7 @@ checkPermission(): Promise<{ granted: boolean }>;
 Ask the user for microphone permission.
 
 ```typescript
-requestPermission(): Promise<{ granted: boolean }>;
+requestPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
 ```
 
 #### Recording Control
@@ -476,7 +577,7 @@ await CapacitorAudioEngine.preload({
 Start playing an audio file with optional playback controls.
 
 ```typescript
-startPlayback(options: PlaybackOptions): Promise<void>;
+startPlayback(options: PlaybackOptions & { uri: string }): Promise<void>;
 ```
 
 **Example:**
@@ -558,26 +659,13 @@ Add a listener for recording or playback events.
 // Recording events
 addListener(
   eventName: AudioRecordingEventName,
-  callback: (
-    data:
-      | RecordingInterruptionData
-      | DurationChangeData
-      | ProgressEventData
-      | SegmentMetadataEventData
-      | ErrorEventData,
-  ) => void,
+  callback: (data: RecordingInterruptionData | DurationChangeData | ErrorEventData) => void,
 ): Promise<PluginListenerHandle>;
 
 // Playback events
 addListener(
   eventName: AudioPlaybackEventName,
-  callback: (
-    data:
-      | PlaybackProgressData
-      | PlaybackStatusData
-      | PlaybackCompletedData
-      | PlaybackErrorData,
-  ) => void,
+  callback: (data: PlaybackProgressData | PlaybackStatusData | PlaybackCompletedData | PlaybackErrorData) => void,
 ): Promise<PluginListenerHandle>;
 ```
 
@@ -784,15 +872,15 @@ class AudioRecorder {
   private async setupEventListeners() {
     // Recording event listeners
     await CapacitorAudioEngine.addListener('recordingInterruption', (data) => {
-      console.log('Recording interrupted:', data.payload.message);
+      console.log('Recording interrupted:', data.message);
     });
 
     await CapacitorAudioEngine.addListener('durationChange', (data) => {
-      console.log('Recording duration:', data.payload.duration);
+      console.log('Recording duration:', data.duration);
     });
 
     await CapacitorAudioEngine.addListener('error', (data) => {
-      console.error('Recording error:', data.payload.message);
+      console.error('Recording error:', data.message);
     });
 
     // Playback event listeners

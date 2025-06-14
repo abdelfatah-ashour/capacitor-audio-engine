@@ -173,3 +173,31 @@
   }
 }
 
+// Audio preload section styles
+.audio-preload {
+  margin: 16px 0;
+
+  .preload-controls {
+    margin: 16px 0;
+
+    ion-button {
+      margin: 8px 0;
+      height: 48px;
+      font-weight: 600;
+    }
+  }
+
+  .preload-info {
+    font-size: 0.875rem;
+    line-height: 1.4;
+    margin-top: 16px;
+    padding: 12px;
+    background: var(--ion-color-light);
+    border-radius: 8px;
+
+    strong {
+      color: var(--ion-color-primary);
+    }
+  }
+}
+

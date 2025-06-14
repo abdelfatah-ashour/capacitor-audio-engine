@@ -1554,10 +1554,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             return
         }
 
-        // Validate event name
+        // Validate event name - include both recording and playback events
         switch eventName {
         case "recordingInterruption", "durationChange", "error":
-            print("Adding listener for \(eventName)")
+            print("Adding recording listener for \(eventName)")
             super.addListener(call)
 
             if eventName == "durationChange" {
@@ -1578,6 +1578,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 }
             }
 
+            call.resolve()
+        case "playbackProgress", "playbackStatusChange", "playbackCompleted", "playbackError":
+            print("Adding playback listener for \(eventName)")
+            super.addListener(call)
             call.resolve()
         default:
             call.reject("Unknown event name: \(eventName)")
@@ -1831,6 +1835,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
+                // Setup audio session for playback
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .default)
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+
                 // Stop any current playback
                 self.audioPlayer?.stop()
                 self.audioPlayer = nil
@@ -1872,6 +1881,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
+                // Setup audio session for playback
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .default)
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+
                 // Stop any current playback
                 self.audioPlayer?.stop()
                 self.audioPlayer = nil
@@ -2067,26 +2081,47 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     private func startPlaybackProgressTimer() {
         stopPlaybackProgressTimer()
 
-        playbackProgressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self = self,
-                  let audioPlayer = self.audioPlayer,
-                  self.isPlaying else { return }
+        // Ensure timer is created on main queue for proper execution
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
 
-            let currentTime = audioPlayer.currentTime
-            let duration = audioPlayer.duration
-            let position = duration > 0 ? (currentTime / duration) * 100 : 0
+            print("iOS: Starting playback progress timer")
 
-            let eventData: [String: Any] = [
-                "currentTime": currentTime,
-                "duration": duration,
-                "position": position
-            ]
-            self.notifyListeners("playbackProgress", data: eventData)
+            self.playbackProgressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+                guard let self = self,
+                      let audioPlayer = self.audioPlayer,
+                      self.isPlaying else {
+                    print("iOS: Timer fired but conditions not met - isPlaying: \(self?.isPlaying ?? false), audioPlayer: \(self?.audioPlayer != nil)")
+                    return
+                }
+
+                let currentTime = audioPlayer.currentTime
+                let duration = audioPlayer.duration
+                let position = duration > 0 ? (currentTime / duration) * 100 : 0
+
+                let eventData: [String: Any] = [
+                    "currentTime": currentTime,
+                    "duration": duration,
+                    "position": position
+                ]
+
+                print("iOS: Emitting playbackProgress - currentTime: \(currentTime), duration: \(duration), position: \(position)")
+                self.notifyListeners("playbackProgress", data: eventData)
+            }
+
+            // Ensure timer is added to the run loop
+            if let timer = self.playbackProgressTimer {
+                RunLoop.main.add(timer, forMode: .common)
+                print("iOS: Timer added to main run loop")
+            }
         }
     }
 
     private func stopPlaybackProgressTimer() {
-        playbackProgressTimer?.invalidate()
-        playbackProgressTimer = nil
+        DispatchQueue.main.async { [weak self] in
+            print("iOS: Stopping playback progress timer")
+            self?.playbackProgressTimer?.invalidate()
+            self?.playbackProgressTimer = nil
+        }
     }
 }
