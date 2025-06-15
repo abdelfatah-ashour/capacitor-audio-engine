@@ -15,6 +15,8 @@ import android.media.AudioManager;
 import android.media.AudioDeviceInfo;
 import android.media.AudioRecord;
 import android.media.AudioFormat;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -24,7 +26,9 @@ import androidx.core.app.ActivityCompat;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
 
@@ -1654,45 +1658,9 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
         Boolean prepare = call.getBoolean("prepare", true);
 
-        try {
-            // Stop any current playback
-            if (mediaPlayer != null) {
-                mediaPlayer.release();
-                mediaPlayer = null;
-            }
-
-            mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(uri);
-
-            if (prepare) {
-                mediaPlayer.setOnPreparedListener(mp -> {
-                    JSObject ret = new JSObject();
-                    ret.put("success", true);
-                    call.resolve(ret);
-                });
-
-                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                    call.reject("Failed to preload audio: " + what + ", " + extra);
-                    return true;
-                });
-
-                mediaPlayer.prepareAsync();
-            } else {
-                call.resolve();
-            }
-
-            currentPlaybackPath = uri;
-
-        } catch (Exception e) {
-            call.reject("Failed to preload audio", e);
-        }
-    }
-
-    @PluginMethod
-    public void startPlayback(PluginCall call) {
-        String uri = call.getString("uri");
-        if (uri == null) {
-            call.reject("URI is required");
+        // Check network connectivity for remote URLs
+        if (isRemoteUrl(uri) && !isNetworkAvailable()) {
+            call.reject("Network is not available for remote audio URL");
             return;
         }
 
@@ -1704,6 +1672,74 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             }
 
             mediaPlayer = new MediaPlayer();
+
+            // Configure for CDN URLs if needed
+            if (isRemoteUrl(uri)) {
+                configureMediaPlayerForRemoteUrl(mediaPlayer);
+            }
+
+            mediaPlayer.setDataSource(uri);
+
+            if (prepare) {
+                mediaPlayer.setOnPreparedListener(mp -> {
+                    JSObject ret = new JSObject();
+                    ret.put("success", true);
+                    ret.put("duration", mp.getDuration() / 1000.0);
+                    call.resolve(ret);
+                });
+
+                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                    String errorMessage = getDetailedErrorMessage(what, extra, uri);
+                    call.reject("Failed to preload audio: " + errorMessage);
+                    return true;
+                });
+
+                mediaPlayer.prepareAsync();
+            } else {
+                JSObject ret = new JSObject();
+                ret.put("success", true);
+                call.resolve(ret);
+            }
+
+            currentPlaybackPath = uri;
+
+        } catch (Exception e) {
+            String errorMessage = "Failed to preload audio: " + e.getMessage();
+            if (isRemoteUrl(uri)) {
+                errorMessage += " (Check URL accessibility and network connection)";
+            }
+            call.reject(errorMessage);
+        }
+    }
+
+    @PluginMethod
+    public void startPlayback(PluginCall call) {
+        String uri = call.getString("uri");
+        if (uri == null) {
+            call.reject("URI is required");
+            return;
+        }
+
+        // Check network connectivity for remote URLs
+        if (isRemoteUrl(uri) && !isNetworkAvailable()) {
+            call.reject("Network is not available for remote audio URL");
+            return;
+        }
+
+        try {
+            // Stop any current playback
+            if (mediaPlayer != null) {
+                mediaPlayer.release();
+                mediaPlayer = null;
+            }
+
+            mediaPlayer = new MediaPlayer();
+
+            // Configure for CDN URLs if needed
+            if (isRemoteUrl(uri)) {
+                configureMediaPlayerForRemoteUrl(mediaPlayer);
+            }
+
             mediaPlayer.setDataSource(uri);
 
             // Set playback options
@@ -1760,10 +1796,12 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 isPlaying = false;
                 stopPlaybackProgressTimer();
 
-                // Notify listeners
+                // Notify listeners with detailed error information
                 JSObject eventData = new JSObject();
-                eventData.put("message", "Playback error: " + what + ", " + extra);
+                String errorMessage = getDetailedErrorMessage(what, extra, uri);
+                eventData.put("message", "Playback error: " + errorMessage);
                 eventData.put("code", what);
+                eventData.put("extra", extra);
                 notifyListeners("playbackError", eventData);
 
                 return true;
@@ -1773,7 +1811,11 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             currentPlaybackPath = uri;
 
         } catch (Exception e) {
-            call.reject("Failed to start playback", e);
+            String errorMessage = "Failed to start playback: " + e.getMessage();
+            if (isRemoteUrl(uri)) {
+                errorMessage += " (Check URL accessibility and network connection)";
+            }
+            call.reject(errorMessage);
         }
     }
 
@@ -1949,5 +1991,119 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             playbackProgressTimer.cancel();
             playbackProgressTimer = null;
         }
+    }
+
+    // ========== CDN AUDIO HELPER METHODS ==========
+
+    /**
+     * Check if the given URI is a remote URL (HTTP/HTTPS)
+     */
+    private boolean isRemoteUrl(String uri) {
+        return uri != null && (uri.startsWith("http://") || uri.startsWith("https://"));
+    }
+
+    /**
+     * Check if network is available for remote audio playback
+     */
+    private boolean isNetworkAvailable() {
+        try {
+            ConnectivityManager connectivityManager =
+                (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+
+            if (connectivityManager != null) {
+                NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
+                return activeNetworkInfo != null && activeNetworkInfo.isConnected();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking network availability", e);
+        }
+        return false; // Assume no network if we can't check
+    }
+
+    /**
+     * Configure MediaPlayer with optimal settings for remote URLs
+     */
+    private void configureMediaPlayerForRemoteUrl(MediaPlayer mediaPlayer) {
+        try {
+            // Set audio stream type for playback
+            mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+
+            // Configure data source headers for CDN compatibility
+            Map<String, String> headers = new HashMap<>();
+            headers.put("User-Agent", "CapacitorAudioEngine/1.0 (Android)");
+            headers.put("Accept", "audio/*");
+            headers.put("Accept-Ranges", "bytes");
+
+            // Note: MediaPlayer.setDataSource() with headers is available but
+            // we'll use the simpler version for broader compatibility.
+            // The headers approach would require calling setDataSource(uri, headers)
+
+            Log.d(TAG, "MediaPlayer configured for remote URL playback");
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to configure MediaPlayer headers for remote URL", e);
+            // Continue without custom headers - MediaPlayer will still work
+        }
+    }
+
+    /**
+     * Get detailed error message for MediaPlayer errors
+     */
+    private String getDetailedErrorMessage(int what, int extra, String uri) {
+        String baseMessage = "";
+
+        // Decode 'what' parameter
+        switch (what) {
+            case MediaPlayer.MEDIA_ERROR_UNKNOWN:
+                baseMessage = "Unknown media error";
+                break;
+            case MediaPlayer.MEDIA_ERROR_SERVER_DIED:
+                baseMessage = "Media server died";
+                break;
+            default:
+                baseMessage = "Media error (code: " + what + ")";
+                break;
+        }
+
+        // Decode 'extra' parameter for more specific info
+        String extraInfo = "";
+        switch (extra) {
+            case MediaPlayer.MEDIA_ERROR_IO:
+                extraInfo = "File or network related operation error";
+                if (isRemoteUrl(uri)) {
+                    extraInfo += " - Check network connection and URL accessibility";
+                }
+                break;
+            case MediaPlayer.MEDIA_ERROR_MALFORMED:
+                extraInfo = "Media framework parsing error";
+                if (isRemoteUrl(uri)) {
+                    extraInfo += " - URL may be invalid or audio format unsupported";
+                }
+                break;
+            case MediaPlayer.MEDIA_ERROR_UNSUPPORTED:
+                extraInfo = "Unsupported media format";
+                break;
+            case MediaPlayer.MEDIA_ERROR_TIMED_OUT:
+                extraInfo = "Operation timed out";
+                if (isRemoteUrl(uri)) {
+                    extraInfo += " - Network timeout, check connection speed";
+                }
+                break;
+            default:
+                if (extra != 0) {
+                    extraInfo = "Additional error code: " + extra;
+                }
+                break;
+        }
+
+        String fullMessage = baseMessage;
+        if (!extraInfo.isEmpty()) {
+            fullMessage += " - " + extraInfo;
+        }
+
+        if (isRemoteUrl(uri)) {
+            fullMessage += " (Remote URL: " + uri + ")";
+        }
+
+        return fullMessage;
     }
 }

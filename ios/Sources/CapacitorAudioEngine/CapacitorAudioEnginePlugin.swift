@@ -67,6 +67,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     private var playbackSpeed: Float = 1.0
     private var playbackVolume: Float = 1.0
     private var isLooping = false
+    private var urlSessionTask: URLSessionDataTask?
 
     @objc func checkPermission(_ call: CAPPluginCall) {
         let audioStatus = AVAudioSession.sharedInstance().recordPermission
@@ -1545,6 +1546,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         }
         segmentFiles.removeAll()
 
+        // Clean up playback resources
+        audioPlayer?.stop()
+        audioPlayer = nil
+        urlSessionTask?.cancel()
+        urlSessionTask = nil
+        stopPlaybackProgressTimer()
+
         print("Plugin cleanup completed")
     }
 
@@ -1840,35 +1848,117 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 try audioSession.setCategory(.playback, mode: .default)
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
 
-                // Stop any current playback
+                // Stop any current playback and network tasks
                 self.audioPlayer?.stop()
                 self.audioPlayer = nil
+                self.urlSessionTask?.cancel()
+                self.urlSessionTask = nil
 
-                let url = URL(string: uri) ?? URL(fileURLWithPath: uri)
-                self.audioPlayer = try AVAudioPlayer(contentsOf: url)
-                self.audioPlayer?.delegate = self
-
-                if prepare {
-                    let prepared = self.audioPlayer?.prepareToPlay() ?? false
-                    DispatchQueue.main.async {
-                        if prepared {
-                            call.resolve(["success": true])
-                        } else {
-                            call.reject("Failed to prepare audio for playback")
-                        }
-                    }
+                // Check if it's a remote URL
+                if uri.hasPrefix("http://") || uri.hasPrefix("https://") {
+                    self.preloadRemoteAudio(uri: uri, prepare: prepare, call: call)
                 } else {
-                    DispatchQueue.main.async {
-                        call.resolve(["success": true])
-                    }
+                    self.preloadLocalAudio(uri: uri, prepare: prepare, call: call)
                 }
-
-                self.currentPlaybackPath = uri
 
             } catch {
                 DispatchQueue.main.async {
+                    call.reject("Failed to setup audio session for preload: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func preloadRemoteAudio(uri: String, prepare: Bool, call: CAPPluginCall) {
+        guard let url = URL(string: uri) else {
+            DispatchQueue.main.async {
+                call.reject("Invalid remote URL")
+            }
+            return
+        }
+
+        // Create URLRequest with proper headers for CDN compatibility
+        var request = URLRequest(url: url)
+        request.setValue("CapacitorAudioEngine/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("audio/*", forHTTPHeaderField: "Accept")
+        request.setValue("bytes", forHTTPHeaderField: "Accept-Ranges")
+        request.timeoutInterval = 30.0
+
+        // Download audio for preloading
+        self.urlSessionTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+
+                if let error = error {
+                    call.reject("Failed to preload audio: \(error.localizedDescription)")
+                    return
+                }
+
+                guard let data = data else {
+                    call.reject("No audio data received for preload")
+                    return
+                }
+
+                // Check HTTP response
+                if let httpResponse = response as? HTTPURLResponse {
+                    guard 200...299 ~= httpResponse.statusCode else {
+                        call.reject("Failed to preload audio: HTTP error \(httpResponse.statusCode)")
+                        return
+                    }
+                }
+
+                // Create audio player from downloaded data
+                do {
+                    self.audioPlayer = try AVAudioPlayer(data: data)
+                    self.audioPlayer?.delegate = self
+                    self.currentPlaybackPath = uri
+
+                    if prepare {
+                        let prepared = self.audioPlayer?.prepareToPlay() ?? false
+                        if prepared {
+                            call.resolve(["success": true])
+                        } else {
+                            call.reject("Failed to prepare remote audio for playback")
+                        }
+                    } else {
+                        call.resolve(["success": true])
+                    }
+
+                } catch {
                     call.reject("Failed to preload audio: \(error.localizedDescription)")
                 }
+            }
+        }
+
+        self.urlSessionTask?.resume()
+    }
+
+    private func preloadLocalAudio(uri: String, prepare: Bool, call: CAPPluginCall) {
+        let url = URL(string: uri) ?? URL(fileURLWithPath: uri)
+
+        do {
+            self.audioPlayer = try AVAudioPlayer(contentsOf: url)
+            self.audioPlayer?.delegate = self
+            self.currentPlaybackPath = uri
+
+            if prepare {
+                let prepared = self.audioPlayer?.prepareToPlay() ?? false
+                DispatchQueue.main.async {
+                    if prepared {
+                        call.resolve(["success": true])
+                    } else {
+                        call.reject("Failed to prepare local audio for playback")
+                    }
+                }
+            } else {
+                DispatchQueue.main.async {
+                    call.resolve(["success": true])
+                }
+            }
+
+        } catch {
+            DispatchQueue.main.async {
+                call.reject("Failed to preload audio: \(error.localizedDescription)")
             }
         }
     }
@@ -1886,15 +1976,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 try audioSession.setCategory(.playback, mode: .default)
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
 
-                // Stop any current playback
+                // Stop any current playback and network tasks
                 self.audioPlayer?.stop()
                 self.audioPlayer = nil
+                self.urlSessionTask?.cancel()
+                self.urlSessionTask = nil
 
-                let url = URL(string: uri) ?? URL(fileURLWithPath: uri)
-                self.audioPlayer = try AVAudioPlayer(contentsOf: url)
-                self.audioPlayer?.delegate = self
-
-                // Set playback options
+                // Get playback options
                 let speed = call.getFloat("speed") ?? 1.0
                 let volume = call.getFloat("volume") ?? 1.0
                 let loop = call.getBool("loop") ?? false
@@ -1904,34 +1992,90 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 self.playbackVolume = volume
                 self.isLooping = loop
 
-                self.audioPlayer?.volume = volume
-                self.audioPlayer?.numberOfLoops = loop ? -1 : 0
-
-                // Enable rate control if available (iOS 11+)
-                if #available(iOS 11.0, *) {
-                    self.audioPlayer?.enableRate = true
-                    self.audioPlayer?.rate = speed
+                // Check if it's a remote URL
+                if uri.hasPrefix("http://") || uri.hasPrefix("https://") {
+                    self.playRemoteAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: startTime, call: call)
+                } else {
+                    self.playLocalAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: startTime, call: call)
                 }
 
-                let prepared = self.audioPlayer?.prepareToPlay() ?? false
-                if !prepared {
-                    DispatchQueue.main.async {
-                        call.reject("Failed to prepare audio for playback")
-                    }
+            } catch {
+                DispatchQueue.main.async {
+                    call.reject("Failed to setup audio session: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func playRemoteAudio(uri: String, speed: Float, volume: Float, loop: Bool, startTime: Double, call: CAPPluginCall) {
+        guard let url = URL(string: uri) else {
+            DispatchQueue.main.async {
+                call.reject("Invalid remote URL")
+            }
+            return
+        }
+
+        // Create URLRequest with proper headers for CDN compatibility
+        var request = URLRequest(url: url)
+        request.setValue("CapacitorAudioEngine/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("audio/*", forHTTPHeaderField: "Accept")
+        request.setValue("bytes", forHTTPHeaderField: "Accept-Ranges")
+        request.timeoutInterval = 30.0
+
+        // Download and play audio
+        self.urlSessionTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+
+                if let error = error {
+                    call.reject("Network error: \(error.localizedDescription)")
                     return
                 }
 
-                if startTime > 0 {
-                    self.audioPlayer?.currentTime = startTime
+                guard let data = data else {
+                    call.reject("No audio data received")
+                    return
                 }
 
-                let started = self.audioPlayer?.play() ?? false
-                if started {
-                    self.isPlaying = true
-                    self.currentPlaybackPath = uri
-                    self.startPlaybackProgressTimer()
+                // Check HTTP response
+                if let httpResponse = response as? HTTPURLResponse {
+                    guard 200...299 ~= httpResponse.statusCode else {
+                        call.reject("HTTP error: \(httpResponse.statusCode)")
+                        return
+                    }
+                }
 
-                    DispatchQueue.main.async {
+                // Create audio player from downloaded data
+                do {
+                    self.audioPlayer = try AVAudioPlayer(data: data)
+                    self.audioPlayer?.delegate = self
+
+                    // Configure playback settings
+                    self.audioPlayer?.volume = volume
+                    self.audioPlayer?.numberOfLoops = loop ? -1 : 0
+
+                    // Enable rate control if available (iOS 11+)
+                    if #available(iOS 11.0, *) {
+                        self.audioPlayer?.enableRate = true
+                        self.audioPlayer?.rate = speed
+                    }
+
+                    let prepared = self.audioPlayer?.prepareToPlay() ?? false
+                    if !prepared {
+                        call.reject("Failed to prepare audio for playback")
+                        return
+                    }
+
+                    if startTime > 0 {
+                        self.audioPlayer?.currentTime = startTime
+                    }
+
+                    let started = self.audioPlayer?.play() ?? false
+                    if started {
+                        self.isPlaying = true
+                        self.currentPlaybackPath = uri
+                        self.startPlaybackProgressTimer()
+
                         // Notify listeners
                         let eventData: [String: Any] = [
                             "status": "playing",
@@ -1940,17 +2084,73 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         ]
                         self.notifyListeners("playbackStatusChange", data: eventData)
                         call.resolve()
+                    } else {
+                        call.reject("Failed to start remote audio playback")
                     }
-                } else {
-                    DispatchQueue.main.async {
-                        call.reject("Failed to start playback")
-                    }
-                }
 
-            } catch {
-                DispatchQueue.main.async {
-                    call.reject("Failed to start playback: \(error.localizedDescription)")
+                } catch {
+                    call.reject("Failed to create audio player from remote data: \(error.localizedDescription)")
                 }
+            }
+        }
+
+        self.urlSessionTask?.resume()
+    }
+
+    private func playLocalAudio(uri: String, speed: Float, volume: Float, loop: Bool, startTime: Double, call: CAPPluginCall) {
+        let url = URL(string: uri) ?? URL(fileURLWithPath: uri)
+
+        do {
+            self.audioPlayer = try AVAudioPlayer(contentsOf: url)
+            self.audioPlayer?.delegate = self
+
+            // Configure playback settings
+            self.audioPlayer?.volume = volume
+            self.audioPlayer?.numberOfLoops = loop ? -1 : 0
+
+            // Enable rate control if available (iOS 11+)
+            if #available(iOS 11.0, *) {
+                self.audioPlayer?.enableRate = true
+                self.audioPlayer?.rate = speed
+            }
+
+            let prepared = self.audioPlayer?.prepareToPlay() ?? false
+            if !prepared {
+                DispatchQueue.main.async {
+                    call.reject("Failed to prepare local audio for playback")
+                }
+                return
+            }
+
+            if startTime > 0 {
+                self.audioPlayer?.currentTime = startTime
+            }
+
+            let started = self.audioPlayer?.play() ?? false
+            if started {
+                self.isPlaying = true
+                self.currentPlaybackPath = uri
+                self.startPlaybackProgressTimer()
+
+                DispatchQueue.main.async {
+                    // Notify listeners
+                    let eventData: [String: Any] = [
+                        "status": "playing",
+                        "currentTime": self.audioPlayer?.currentTime ?? 0,
+                        "duration": self.audioPlayer?.duration ?? 0
+                    ]
+                    self.notifyListeners("playbackStatusChange", data: eventData)
+                    call.resolve()
+                }
+            } else {
+                DispatchQueue.main.async {
+                    call.reject("Failed to start local audio playback")
+                }
+            }
+
+        } catch {
+            DispatchQueue.main.async {
+                call.reject("Failed to play local audio: \(error.localizedDescription)")
             }
         }
     }
@@ -2013,6 +2213,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         audioPlayer.stop()
         isPlaying = false
         stopPlaybackProgressTimer()
+
+        // Cancel any ongoing network downloads
+        urlSessionTask?.cancel()
+        urlSessionTask = nil
 
         // Notify listeners
         let eventData: [String: Any] = [

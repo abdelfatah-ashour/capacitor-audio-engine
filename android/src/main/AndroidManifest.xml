@@ -16,6 +16,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Permission to wake lock for background processing -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Network permissions for CDN audio support -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <application>
         <!-- Background audio recording service -->
         <service
