@@ -13,6 +13,7 @@ import type {
   AvailableMicrophonesResult,
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
+  GetAudioInfoOptions,
 } from './definitions';
 
 declare global {
@@ -331,5 +332,19 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
       'preload is not supported on web platform. For web implementation, consider using AudioContext API directly.',
     );
     throw new Error('preload is not supported on web platform');
+  }
+
+  /**
+   * Get information about an audio file.
+   * @param options - Options for getting audio info
+   * @returns Promise that resolves with audio file information
+   * @platform web Not supported
+   */
+  async getAudioInfo(_options: GetAudioInfoOptions): Promise<AudioFileInfo> {
+    void _options; // Parameter for API compatibility
+    console.warn(
+      'getAudioInfo is not supported on web platform. For web implementation, consider using Web Audio API directly.',
+    );
+    throw new Error('getAudioInfo is not supported on web platform');
   }
 }

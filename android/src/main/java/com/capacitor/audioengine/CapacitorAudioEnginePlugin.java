@@ -2106,4 +2106,177 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
         return fullMessage;
     }
+
+    @PluginMethod
+    public void getAudioInfo(PluginCall call) {
+        String uri = call.getString("uri");
+        if (uri == null || uri.isEmpty()) {
+            call.reject("URI is required");
+            return;
+        }
+
+        try {
+            JSObject audioInfo = extractAudioInfo(uri);
+            call.resolve(audioInfo);
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting audio info: " + e.getMessage(), e);
+            call.reject("Failed to get audio info: " + e.getMessage());
+        }
+    }
+
+    private JSObject extractAudioInfo(String uri) throws Exception {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        JSObject result = new JSObject();
+
+        try {
+            // Set data source based on URI type
+            if (isRemoteUrl(uri)) {
+                // Remote URL - check network availability first
+                if (!isNetworkAvailable()) {
+                    throw new Exception("Network is not available for remote audio URL");
+                }
+
+                // Set timeout and retry policy for remote URLs
+                HashMap<String, String> headers = new HashMap<>();
+                headers.put("User-Agent", "CapacitorAudioEngine/1.0");
+                retriever.setDataSource(uri, headers);
+            } else {
+                // Local file
+                String filePath = uri;
+                if (uri.startsWith("file://")) {
+                    filePath = uri.substring(7); // Remove "file://" prefix
+                }
+
+                File file = new File(filePath);
+                if (!file.exists()) {
+                    throw new Exception("File does not exist: " + filePath);
+                }
+
+                retriever.setDataSource(filePath);
+            }
+
+            // Extract metadata
+            String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            String bitrateStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
+            String sampleRateStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE);
+            String mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
+
+            // For audio files, we need to try different approaches for sample rate and channels
+            String channelsStr = null;
+            if (sampleRateStr == null || channelsStr == null) {
+                // Try to get sample rate and channels from audio format using MediaExtractor
+                MediaExtractor extractor = new MediaExtractor();
+                try {
+                    if (isRemoteUrl(uri)) {
+                        HashMap<String, String> headers = new HashMap<>();
+                        headers.put("User-Agent", "CapacitorAudioEngine/1.0");
+                        extractor.setDataSource(uri, headers);
+                    } else {
+                        String filePath = uri.startsWith("file://") ? uri.substring(7) : uri;
+                        extractor.setDataSource(filePath);
+                    }
+
+                    for (int i = 0; i < extractor.getTrackCount(); i++) {
+                        MediaFormat format = extractor.getTrackFormat(i);
+                        String formatMimeType = format.getString(MediaFormat.KEY_MIME);
+                        if (formatMimeType != null && formatMimeType.startsWith("audio/")) {
+                            if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE) && sampleRateStr == null) {
+                                sampleRateStr = String.valueOf(format.getInteger(MediaFormat.KEY_SAMPLE_RATE));
+                            }
+                            if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT) && channelsStr == null) {
+                                channelsStr = String.valueOf(format.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
+                            }
+                            break;
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not extract audio format using MediaExtractor: " + e.getMessage());
+                } finally {
+                    try {
+                        extractor.release();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
+                }
+            }
+
+            // Parse values with defaults
+            long duration = durationStr != null ? Long.parseLong(durationStr) : 0;
+            int bitrate = bitrateStr != null ? Integer.parseInt(bitrateStr) : 128000;
+            double sampleRate = sampleRateStr != null ? Double.parseDouble(sampleRateStr) : 44100.0;
+
+            // Default values
+            int channels = channelsStr != null ? Integer.parseInt(channelsStr) : 1; // Use extracted channels or default to mono
+            long fileSize = 0;
+            long createdAt = System.currentTimeMillis();
+            String filename = "";
+
+            // For local files, get additional file information
+            if (!isRemoteUrl(uri)) {
+                String filePath = uri.startsWith("file://") ? uri.substring(7) : uri;
+                File file = new File(filePath);
+
+                if (file.exists()) {
+                    fileSize = file.length();
+                    createdAt = file.lastModified();
+                    filename = file.getName();
+                }
+            } else {
+                // For remote URLs, extract filename from URL
+                try {
+                    java.net.URL url = new java.net.URL(uri);
+                    String path = url.getPath();
+                    if (path != null && !path.isEmpty()) {
+                        int lastSlash = path.lastIndexOf('/');
+                        if (lastSlash >= 0 && lastSlash < path.length() - 1) {
+                            filename = path.substring(lastSlash + 1);
+                        }
+                    }
+                    if (filename.isEmpty()) {
+                        filename = "remote_audio.m4a";
+                    }
+                } catch (Exception e) {
+                    filename = "remote_audio.m4a";
+                }
+            }
+
+            // Determine MIME type if not available
+            if (mimeType == null || mimeType.isEmpty()) {
+                String lowerUri = uri.toLowerCase();
+                if (lowerUri.endsWith(".m4a")) {
+                    mimeType = "audio/m4a";
+                } else if (lowerUri.endsWith(".mp3")) {
+                    mimeType = "audio/mpeg";
+                } else if (lowerUri.endsWith(".wav")) {
+                    mimeType = "audio/wav";
+                } else if (lowerUri.endsWith(".aac")) {
+                    mimeType = "audio/aac";
+                } else {
+                    mimeType = "audio/m4a"; // Default
+                }
+            }
+
+            // Build result object
+            result.put("path", uri);
+            result.put("webPath", uri);
+            result.put("uri", uri);
+            result.put("mimeType", mimeType);
+            result.put("size", fileSize);
+            result.put("duration", Math.round((duration / 1000.0) * 10.0) / 10.0); // Convert to seconds and round to 1 decimal
+            result.put("sampleRate", sampleRate);
+            result.put("channels", channels);
+            result.put("bitrate", bitrate);
+            result.put("createdAt", createdAt);
+            result.put("filename", filename);
+
+            return result;
+
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception e) {
+                // Ignore cleanup errors
+            }
+        }
+    }
 }

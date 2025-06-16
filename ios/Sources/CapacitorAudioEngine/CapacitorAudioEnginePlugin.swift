@@ -36,6 +36,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         CAPPluginMethod(name: "stopPlayback", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPlaybackStatus", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getAudioInfo", returnType: CAPPluginReturnPromise),
     ]
 
     // MARK: - Interruption monitoring properties
@@ -421,7 +422,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             "bitrate": bitrate,
             "createdAt": Int(modificationDate.timeIntervalSince1970 * 1000), // Milliseconds timestamp
             "filename": fileToReturn.lastPathComponent,
-            "base64": base64Audio
+            "base64": base64Audio ?? ""
         ]
     }
 
@@ -503,6 +504,31 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         segmentTimer = nil
 
         print("Segment timer stopped")
+    }
+
+    private func startPlaybackProgressTimer() {
+        // Stop any existing timer
+        stopPlaybackProgressTimer()
+
+        // Start a new timer that fires every 0.1 seconds
+        playbackProgressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, let player = self.audioPlayer, self.isPlaying else {
+                return
+            }
+
+            // Notify listeners of progress
+            let eventData: [String: Any] = [
+                "status": "playing",
+                "currentTime": player.currentTime,
+                "duration": player.duration
+            ]
+            self.notifyListeners("playbackProgress", data: eventData)
+        }
+    }
+
+    private func stopPlaybackProgressTimer() {
+        playbackProgressTimer?.invalidate()
+        playbackProgressTimer = nil
     }
 
     @objc func startRecording(_ call: CAPPluginCall) {
@@ -1272,7 +1298,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                                 "bitrate": currentSettings[AVEncoderBitRateKey] as? Int ?? 128000, // Use original or default
                                 "createdAt": Int(Date().timeIntervalSince1970 * 1000), // Current timestamp in milliseconds
                                 "filename": outputURL.lastPathComponent,
-                                "base64": base64Audio
+                                "base64": base64Audio ?? "",
                             ]
 
                             call.resolve(response)
@@ -1716,7 +1742,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     @objc func isMicrophoneBusy(_ call: CAPPluginCall) {
         var isBusy = false
 
-        do {
+
             let audioSession = AVAudioSession.sharedInstance()
 
             // Check if another app is currently using the microphone
@@ -1756,9 +1782,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 "busy": isBusy,
                 "reason": isBusy ? "Microphone is currently in use by another application" : "Microphone is available"
             ])
-        } catch {
-            call.reject("Failed to check microphone status: \(error.localizedDescription)")
-        }
     }
 
     @objc func getAvailableMicrophones(_ call: CAPPluginCall) {
@@ -2079,7 +2102,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         // Notify listeners
                         let eventData: [String: Any] = [
                             "status": "playing",
-                            "currentTime": self.audioPlayer?.currentTime ?? 0,
+                            "currentTime": self.audioPlayer?.currentTime ??  0,
                             "duration": self.audioPlayer?.duration ?? 0
                         ]
                         self.notifyListeners("playbackStatusChange", data: eventData)
@@ -2280,52 +2303,173 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         call.resolve(result)
     }
 
-    // MARK: - Playback Helper
+    @objc func getAudioInfo(_ call: CAPPluginCall) {
+        guard let uri = call.getString("uri") else {
+            call.reject("URI is required")
+            return
+        }
 
-    private func startPlaybackProgressTimer() {
-        stopPlaybackProgressTimer()
-
-        // Ensure timer is created on main queue for proper execution
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-
-            print("iOS: Starting playback progress timer")
-
-            self.playbackProgressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
-                guard let self = self,
-                      let audioPlayer = self.audioPlayer,
-                      self.isPlaying else {
-                    print("iOS: Timer fired but conditions not met - isPlaying: \(self?.isPlaying ?? false), audioPlayer: \(self?.audioPlayer != nil)")
-                    return
-                }
-
-                let currentTime = audioPlayer.currentTime
-                let duration = audioPlayer.duration
-                let position = duration > 0 ? (currentTime / duration) * 100 : 0
-
-                let eventData: [String: Any] = [
-                    "currentTime": currentTime,
-                    "duration": duration,
-                    "position": position
-                ]
-
-                print("iOS: Emitting playbackProgress - currentTime: \(currentTime), duration: \(duration), position: \(position)")
-                self.notifyListeners("playbackProgress", data: eventData)
-            }
-
-            // Ensure timer is added to the run loop
-            if let timer = self.playbackProgressTimer {
-                RunLoop.main.add(timer, forMode: .common)
-                print("iOS: Timer added to main run loop")
+        Task {
+            do {
+                let audioInfo = try await extractAudioInfo(from: uri)
+                call.resolve(audioInfo)
+            } catch {
+                call.reject("Failed to get audio info: \(error.localizedDescription)")
             }
         }
     }
 
-    private func stopPlaybackProgressTimer() {
-        DispatchQueue.main.async { [weak self] in
-            print("iOS: Stopping playback progress timer")
-            self?.playbackProgressTimer?.invalidate()
-            self?.playbackProgressTimer = nil
+    private func extractAudioInfo(from uri: String) async throws -> [String: Any] {
+        let asset: AVAsset
+
+        // Check if it's a remote URL or local file
+        if uri.hasPrefix("http://") || uri.hasPrefix("https://") {
+            // Remote URL
+            guard let url = URL(string: uri) else {
+                throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])
+            }
+
+            // Create asset with options for better remote handling
+            let options = [AVURLAssetPreferPreciseDurationAndTimingKey: true]
+            asset = AVURLAsset(url: url, options: options)
+        } else {
+            // Local file URI
+            let fileURL: URL
+            if uri.hasPrefix("file://") {
+                guard let url = URL(string: uri) else {
+                    throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
+                }
+                fileURL = url
+            } else {
+                // Assume it's a path
+                fileURL = URL(fileURLWithPath: uri)
+            }
+
+            // Check if file exists
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "File does not exist"])
+            }
+
+            asset = AVAsset(url: fileURL)
         }
+
+        // Load asset properties with iOS version compatibility
+        let duration: CMTime
+        let tracks: [AVAssetTrack]
+
+        if #available(iOS 15.0, *) {
+            // Use async loading for iOS 15+
+            duration = try await asset.load(.duration)
+            tracks = try await asset.load(.tracks)
+        } else {
+            // Use synchronous loading for older iOS versions
+            duration = asset.duration
+            tracks = asset.tracks
+        }
+
+        // Find the audio track
+        var audioTrack: AVAssetTrack?
+
+        if #available(iOS 15.0, *) {
+            // Use async loading for iOS 15+
+            var audioTracks: [AVAssetTrack] = []
+            for track in tracks {
+                // For mediaType, we can still use the synchronous property as it's available immediately
+                let mediaType = track.mediaType
+                if mediaType == AVMediaType.audio {
+                    audioTracks.append(track)
+                }
+            }
+            audioTrack = audioTracks.first
+        } else {
+            // Use synchronous loading for older iOS versions
+            audioTrack = tracks.first { track in
+                return track.mediaType == AVMediaType.audio
+            }
+        }
+
+        guard let audioTrack = audioTrack else {
+            throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "No audio track found"])
+        }
+
+        // Load audio track properties with version compatibility
+        var formatDescriptions: [CMFormatDescription]
+
+        if #available(iOS 15.0, *) {
+            let loadedDescriptions = try await audioTrack.load(.formatDescriptions)
+            formatDescriptions = loadedDescriptions
+        } else {
+            formatDescriptions = audioTrack.formatDescriptions as! [CMFormatDescription]
+        }
+
+        var sampleRate: Double = 44100.0
+        var channels: Int = 1
+        var bitrate: Int = 128000
+
+        if let formatDescription = formatDescriptions.first {
+            let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
+            if let basicDescription = audioStreamBasicDescription?.pointee {
+                sampleRate = basicDescription.mSampleRate
+                channels = Int(basicDescription.mChannelsPerFrame)
+            }
+        }
+
+        // Get file size and creation date for local files
+        var fileSize: Int64 = 0
+        var createdAt: TimeInterval = Date().timeIntervalSince1970
+        var filename = ""
+        var mimeType = "audio/m4a"
+
+        if !uri.hasPrefix("http") {
+            let fileURL = uri.hasPrefix("file://") ? URL(string: uri)! : URL(fileURLWithPath: uri)
+
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path) {
+                fileSize = attributes[.size] as? Int64 ?? 0
+                if let creationDate = attributes[.creationDate] as? Date {
+                    createdAt = creationDate.timeIntervalSince1970
+                }
+            }
+
+            filename = fileURL.lastPathComponent
+
+            // Determine MIME type based on file extension
+            let pathExtension = fileURL.pathExtension.lowercased()
+            switch pathExtension {
+            case "m4a":
+                mimeType = "audio/m4a"
+            case "mp3":
+                mimeType = "audio/mpeg"
+            case "wav":
+                mimeType = "audio/wav"
+            case "aac":
+                mimeType = "audio/aac"
+            default:
+                mimeType = "audio/m4a"
+            }
+        } else {
+            // For remote URLs, extract filename from URL
+            if let url = URL(string: uri) {
+                filename = url.lastPathComponent
+                if filename.isEmpty {
+                    filename = "remote_audio.m4a"
+                }
+            }
+        }
+
+        let durationInSeconds = CMTimeGetSeconds(duration)
+
+        return [
+            "path": uri,
+            "webPath": uri,
+            "uri": uri,
+            "mimeType": mimeType,
+            "size": fileSize,
+            "duration": round(durationInSeconds * 10) / 10, // Round to 1 decimal place
+            "sampleRate": sampleRate,
+            "channels": channels,
+            "bitrate": bitrate,
+            "createdAt": Int64(createdAt * 1000), // Convert to milliseconds
+            "filename": filename
+        ]
     }
 }

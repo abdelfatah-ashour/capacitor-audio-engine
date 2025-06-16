@@ -186,6 +186,16 @@ export interface PlaybackCompletedData {
   duration: number;
 }
 
+export interface GetAudioInfoOptions {
+  /**
+   * URI of the audio file to analyze
+   * Supports:
+   * - Local file URIs (from stopRecording)
+   * - Remote CDN URLs (HTTP/HTTPS)
+   */
+  uri: string;
+}
+
 /**
  * Interface for the Native Audio Plugin that provides audio recording and playback capabilities.
  *
@@ -468,4 +478,16 @@ export interface CapacitorAudioEnginePlugin {
    * @platform ios Uses AVAudioPlayer.prepareToPlay()
    */
   preload(options: PreloadOptions): Promise<void>;
+
+  /**
+   * Get information about an audio file.
+   * @param options - Options for getting audio info
+   * @param options.uri - URI of the audio file (local file or CDN URL)
+   * @returns Promise that resolves with audio file information
+   * @throws {Error} If file cannot be accessed or analyzed
+   * @platform web Not supported
+   * @platform android Uses MediaMetadataRetriever to extract audio metadata
+   * @platform ios Uses AVAsset to extract audio metadata
+   */
+  getAudioInfo(options: GetAudioInfoOptions): Promise<AudioFileInfo>;
 }

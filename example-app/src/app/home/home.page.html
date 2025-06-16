@@ -263,6 +263,11 @@
               <ion-icon name="cut-outline" slot="start"></ion-icon>
               Trim Audio
             </ion-button>
+
+            <ion-button expand="block" color="secondary" (click)="getAudioInfo()" [disabled]="!hasRecording">
+              <ion-icon name="information-circle-outline" slot="start"></ion-icon>
+              Get Audio Info
+            </ion-button>
           </div>
         </ion-card-content>
       </ion-card>
@@ -313,6 +318,24 @@
           <ion-button expand="block" color="secondary" (click)="checkPermission()" fill="outline">
             <ion-icon name="shield-checkmark-outline" slot="start"></ion-icon>
             Check Permission Status
+          </ion-button>
+        </ion-card-content>
+      </ion-card>
+
+      <!-- Audio Information Section -->
+      <ion-card class="audio-info">
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="information-circle-outline"></ion-icon>
+            Audio Information
+          </ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          <p>Get detailed metadata from audio files, including local recordings and remote CDN URLs.</p>
+
+          <ion-button expand="block" color="tertiary" (click)="testRemoteAudioInfo()">
+            <ion-icon name="information-circle-outline" slot="start"></ion-icon>
+            Test Remote Audio Info
           </ion-button>
         </ion-card-content>
       </ion-card>

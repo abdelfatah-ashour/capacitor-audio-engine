@@ -50,6 +50,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 🎵 **Audio playback** - Play, pause, stop, and control recorded audio files
 - 🎚️ **Playback controls** - Speed control, seeking, volume, and looping
 - ⚡ **Audio preloading** - Preload audio files for faster playback start times
+- 📋 **Audio information** - Get detailed metadata from local and remote audio files
 - 📡 **Real-time monitoring** - Track playback progress and status changes
 - 🌐 Cross-platform support (Web coming soon!)
 - 🎚️ Consistent audio quality:
@@ -72,6 +73,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 | Audio Playback       | ✅      | ✅  | 🔜  |
 | Playback Controls    | ✅      | ✅  | 🔜  |
 | Audio Preloading     | ✅      | ✅  | ❌  |
+| Audio Information    | ✅      | ✅  | 🔜  |
 
 > 💡 **Note:** Android and iOS are fully supported! Web support is coming soon - we're working on it! 🚧
 
@@ -382,6 +384,20 @@ export interface PlaybackCompletedData {
 }
 ```
 
+#### `GetAudioInfoOptions`
+
+```typescript
+export interface GetAudioInfoOptions {
+  /**
+   * URI of the audio file to analyze
+   * Supports:
+   * - Local file URIs (from stopRecording)
+   * - Remote CDN URLs (HTTP/HTTPS)
+   */
+  uri: string;
+}
+```
+
 ### Methods
 
 #### Permission Management
@@ -481,6 +497,38 @@ Trim an audio file to a specific duration.
 ```typescript
 trimAudio(options: { uri: string; start: number; end: number }): Promise<AudioFileInfo>;
 ```
+
+##### `getAudioInfo()`
+
+Get detailed information about an audio file (local or remote).
+
+```typescript
+getAudioInfo(options: GetAudioInfoOptions): Promise<AudioFileInfo>;
+```
+
+**Example:**
+
+```typescript
+// Get info for a local recording
+const localInfo = await CapacitorAudioEngine.getAudioInfo({
+  uri: 'file:///path/to/recording.m4a',
+});
+
+// Get info for a remote CDN file
+const remoteInfo = await CapacitorAudioEngine.getAudioInfo({
+  uri: 'https://example.com/audio/sample.mp3',
+});
+
+console.log('Duration:', localInfo.duration, 'seconds');
+console.log('File size:', localInfo.size, 'bytes');
+console.log('Sample rate:', localInfo.sampleRate, 'Hz');
+```
+
+**Platform Notes:**
+
+- **Android**: Uses MediaMetadataRetriever to extract metadata from local and remote files
+- **iOS**: Uses AVAsset to extract metadata from local and remote files
+- **Web**: Not supported
 
 #### Microphone Management
 

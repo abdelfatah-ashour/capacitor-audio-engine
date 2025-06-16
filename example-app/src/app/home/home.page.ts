@@ -3,7 +3,7 @@ import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIco
 import { CapacitorAudioEngine,AudioFileInfo, MicrophoneInfo } from "capacitor-audio-engine";
 import { CommonModule } from '@angular/common';
 import { addIcons } from 'ionicons';
-import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline } from 'ionicons/icons';
+import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline, informationCircleOutline } from 'ionicons/icons';
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
 import { AlertController } from '@ionic/angular';
@@ -86,7 +86,8 @@ export class HomePage implements OnInit, OnDestroy{
       repeatOutline,
       speedometerOutline,
       playSkipForwardOutline,
-      playSkipBackOutline
+      playSkipBackOutline,
+      informationCircleOutline
     });
   }
 
@@ -709,5 +710,79 @@ export class HomePage implements OnInit, OnDestroy{
       isValid: true,
       details: `✓ Valid Data URI format with ${base64Data.length} base64 characters (~${Math.round(estimatedBytes)} bytes)`
     };
+  }
+
+  async getAudioInfo() {
+    if (!this.audioInfo()) {
+      console.error('No audio available to get info from.');
+      return;
+    }
+
+    try {
+      const res = await CapacitorAudioEngine.getAudioInfo({
+        uri: this.audioInfo()!.uri
+      });
+      console.log("🚀 ~ HomePage ~ getAudioInfo ~ res:", res);
+
+      const alert = await this.alertController.create({
+        header: 'Audio Information',
+        message: `
+          <strong>Filename:</strong> ${res.filename}<br>
+          <strong>Duration:</strong> ${res.duration}s<br>
+          <strong>Size:</strong> ${(res.size / 1024).toFixed(1)} KB<br>
+          <strong>Sample Rate:</strong> ${res.sampleRate} Hz<br>
+          <strong>Channels:</strong> ${res.channels}<br>
+          <strong>Bitrate:</strong> ${res.bitrate} bps<br>
+          <strong>MIME Type:</strong> ${res.mimeType}
+        `,
+        buttons: ['OK']
+      });
+
+      await alert.present();
+    } catch (error) {
+      console.error("Error getting audio info:", error);
+      const alert = await this.alertController.create({
+        header: 'Error',
+        message: `Failed to get audio info: ${error}`,
+        buttons: ['OK']
+      });
+      await alert.present();
+    }
+  }
+
+  async testRemoteAudioInfo() {
+    try {
+      // Test with a remote audio URL (you can replace this with any valid audio URL)
+      const remoteUrl = 'https://www.soundjay.com/misc/sounds/bell-ringing-05.wav';
+
+      const res = await CapacitorAudioEngine.getAudioInfo({
+        uri: remoteUrl
+      });
+      console.log("🚀 ~ HomePage ~ testRemoteAudioInfo ~ res:", res);
+
+      const alert = await this.alertController.create({
+        header: 'Remote Audio Information',
+        message: `
+          <strong>URL:</strong> ${remoteUrl}<br>
+          <strong>Filename:</strong> ${res.filename}<br>
+          <strong>Duration:</strong> ${res.duration}s<br>
+          <strong>MIME Type:</strong> ${res.mimeType}<br>
+          <strong>Sample Rate:</strong> ${res.sampleRate} Hz<br>
+          <strong>Channels:</strong> ${res.channels}<br>
+          <strong>Bitrate:</strong> ${res.bitrate} bps
+        `,
+        buttons: ['OK']
+      });
+
+      await alert.present();
+    } catch (error) {
+      console.error("Error getting remote audio info:", error);
+      const alert = await this.alertController.create({
+        header: 'Error',
+        message: `Failed to get remote audio info: ${error}`,
+        buttons: ['OK']
+      });
+      await alert.present();
+    }
   }
 }
