@@ -2,6 +2,7 @@
   "name": "capacitor-audio-engine",
   "version": "1.0.12",
   "description": "A Capacitor plugin for high-quality audio recording using native device capabilities on iOS and Android.",
+  "type": "module",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
@@ -10,7 +11,8 @@
     ".": {
       "types": "./dist/esm/index.d.ts",
       "import": "./dist/esm/index.js",
-      "require": "./dist/plugin.cjs.js"
+      "require": "./dist/plugin.cjs.js",
+      "default": "./dist/esm/index.js"
     }
   },
   "publishConfig": {
