@@ -39,6 +39,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPlaybackStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getAudioInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clearPreloadedAudio", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getPreloadedAudio", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "isAudioPreloaded", returnType: CAPPluginReturnPromise),
     ]
 
     // MARK: - Interruption monitoring properties
@@ -71,6 +74,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     private var playbackVolume: Float = 1.0
     private var isLooping = false
     private var urlSessionTask: URLSessionDataTask?
+
+    // Preloaded audio storage
+    private var preloadedAudioPlayers: [String: AVAudioPlayer] = [:]
+    private var preloadedAudioData: [String: Data] = [:]
 
     // Network monitoring
     private var networkMonitor: NWPathMonitor?
@@ -1605,6 +1612,59 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         notifyListeners("playbackError", data: eventData)
     }
 
+    // MARK: - Preloaded Audio Management
+
+    @objc func clearPreloadedAudio(_ call: CAPPluginCall) {
+        let uri = call.getString("uri")
+
+        if let uri = uri {
+            // Clear specific preloaded audio
+            if let player = preloadedAudioPlayers[uri] {
+                player.stop()
+                preloadedAudioPlayers.removeValue(forKey: uri)
+                preloadedAudioData.removeValue(forKey: uri)
+                call.resolve(["success": true, "message": "Cleared preloaded audio for: \(uri)"])
+            } else {
+                call.resolve(["success": false, "message": "No preloaded audio found for: \(uri)"])
+            }
+        } else {
+            // Clear all preloaded audio
+            let count = preloadedAudioPlayers.count
+            for (_, player) in preloadedAudioPlayers {
+                player.stop()
+            }
+            preloadedAudioPlayers.removeAll()
+            preloadedAudioData.removeAll()
+            call.resolve(["success": true, "message": "Cleared \(count) preloaded audio files"])
+        }
+    }
+
+    @objc func getPreloadedAudio(_ call: CAPPluginCall) {
+        let preloadedUris = Array(preloadedAudioPlayers.keys)
+        let sizes = preloadedAudioData.mapValues { $0.count }
+
+        call.resolve([
+            "success": true,
+            "preloadedAudio": preloadedUris,
+            "sizes": sizes,
+            "count": preloadedUris.count
+        ])
+    }
+
+    @objc func isAudioPreloaded(_ call: CAPPluginCall) {
+        guard let uri = call.getString("uri") else {
+            call.reject("URI is required")
+            return
+        }
+
+        let isPreloaded = preloadedAudioPlayers[uri] != nil
+        call.resolve([
+            "success": true,
+            "preloaded": isPreloaded,
+            "uri": uri
+        ])
+    }
+
     // Cleanup when plugin is destroyed
     deinit {
         print("Plugin is being destroyed, cleaning up resources")
@@ -1653,6 +1713,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         urlSessionTask?.cancel()
         urlSessionTask = nil
         stopPlaybackProgressTimer()
+
+        // Clean up preloaded audio resources
+        print("Cleaning up \(preloadedAudioPlayers.count) preloaded audio players")
+        for (uri, player) in preloadedAudioPlayers {
+            player.stop()
+            print("Stopped preloaded audio: \(uri)")
+        }
+        preloadedAudioPlayers.removeAll()
+        preloadedAudioData.removeAll()
 
         print("Plugin cleanup completed")
     }
@@ -2032,7 +2101,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         let prepare = call.getBool("prepare") ?? true
 
-        // Check if it's a remote URL and verify network connectivity
+        // Check if already preloaded
+        if preloadedAudioPlayers[uri] != nil {
+            call.resolve(["success": true, "cached": true, "message": "Audio already preloaded"])
+            return
+        }
+
+        // Check if it's a remote
         if isRemoteURL(uri) {
             guard checkNetworkAvailability() else {
                 call.reject("Network is not available for remote audio URL")
@@ -2047,9 +2122,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 try audioSession.setCategory(.playback, mode: .default)
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
 
-                // Stop any current playback and network tasks
-                self.audioPlayer?.stop()
-                self.audioPlayer = nil
+                // Cancel any ongoing network tasks (but don't stop current playback)
                 self.urlSessionTask?.cancel()
                 self.urlSessionTask = nil
 
@@ -2167,12 +2240,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                 // Create audio player from downloaded data with enhanced error handling
                 do {
-                    self.audioPlayer = try AVAudioPlayer(data: data)
-                    self.audioPlayer?.delegate = self
-                    self.currentPlaybackPath = uri
+                    let preloadedPlayer = try AVAudioPlayer(data: data)
+                    preloadedPlayer.delegate = self
+
+                    // Store in preloaded dictionary instead of overwriting current player
+                    self.preloadedAudioPlayers[uri] = preloadedPlayer
+                    self.preloadedAudioData[uri] = data
 
                     if prepare {
-                        let prepared = self.audioPlayer?.prepareToPlay() ?? false ;
+                        let prepared = preloadedPlayer.prepareToPlay()
                         if prepared {
                             print("Successfully prepared remote audio for playback")
                             call.resolve(["success": true, "size": data.count])
@@ -2212,12 +2288,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         let url = URL(string: uri) ?? URL(fileURLWithPath: uri)
 
         do {
-            self.audioPlayer = try AVAudioPlayer(contentsOf: url)
-            self.audioPlayer?.delegate = self
-            self.currentPlaybackPath = uri
+            let preloadedPlayer = try AVAudioPlayer(contentsOf: url)
+            preloadedPlayer.delegate = self
+
+            // Store in preloaded dictionary instead of overwriting current player
+            self.preloadedAudioPlayers[uri] = preloadedPlayer
 
             if prepare {
-                let prepared = self.audioPlayer?.prepareToPlay() ?? false
+                let prepared = preloadedPlayer.prepareToPlay()
                 DispatchQueue.main.async {
                     if prepared {
                         call.resolve(["success": true])
@@ -2244,7 +2322,50 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             return
         }
 
-        // Check if it's a remote URL and verify network connectivity
+        // Get playback options
+        let speed = call.getFloat("speed") ?? 1.0
+        let volume = call.getFloat("volume") ?? 1.0
+        let loop = call.getBool("loop") ?? false
+        let startTime = call.getDouble("startTime") ?? 0.0
+
+        // Check if this URI is already preloaded (PERFORMANCE ENHANCEMENT)
+        if let preloadedPlayer = preloadedAudioPlayers[uri] {
+            print("Using preloaded audio for: \(uri)")
+
+            DispatchQueue.main.async {
+                // Stop any current playback
+                self.audioPlayer?.stop()
+
+                // Use the preloaded player
+                self.audioPlayer = preloadedPlayer
+                self.currentPlaybackPath = uri
+                self.playbackSpeed = speed
+                self.playbackVolume = volume
+                self.isLooping = loop
+
+                // Configure playback settings
+                preloadedPlayer.currentTime = startTime
+                preloadedPlayer.rate = speed
+                preloadedPlayer.volume = volume
+                preloadedPlayer.numberOfLoops = loop ? -1 : 0
+
+                // Start playback
+                if preloadedPlayer.play() {
+                    self.isPlaying = true
+                    self.startPlaybackProgressTimer()
+                    call.resolve([
+                        "success": true,
+                        "preloaded": true,
+                        "message": "Started playback from preloaded audio"
+                    ])
+                } else {
+                    call.reject("Failed to start playback of preloaded audio")
+                }
+            }
+            return
+        }
+
+        // If not preloaded, check network connectivity for remote URLs
         if isRemoteURL(uri) {
             guard checkNetworkAvailability() else {
                 call.reject("Network is not available for remote audio URL")
@@ -2265,17 +2386,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 self.urlSessionTask?.cancel()
                 self.urlSessionTask = nil
 
-                // Get playback options
-                let speed = call.getFloat("speed") ?? 1.0
-                let volume = call.getFloat("volume") ?? 1.0
-                let loop = call.getBool("loop") ?? false
-                let startTime = call.getDouble("startTime") ?? 0.0
-
                 self.playbackSpeed = speed
                 self.playbackVolume = volume
                 self.isLooping = loop
 
-                // Check if it's a remote URL
+                // Load and play audio (since it's not preloaded)
+                print("Loading audio on-demand for: \(uri)")
                 if self.isRemoteURL(uri) {
                     self.playRemoteAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: startTime, call: call)
                 } else {

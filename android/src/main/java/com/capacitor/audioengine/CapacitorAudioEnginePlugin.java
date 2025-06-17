@@ -94,6 +94,33 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     private float playbackVolume = 1.0f;
     private boolean isLooping = false;
 
+    // Preloaded audio storage - thread-safe with proper state tracking
+    private final Map<String, PreloadedAudio> preloadedAudioPlayers = new java.util.concurrent.ConcurrentHashMap<>();
+
+    // Preload state tracking
+    private enum PreloadState {
+        LOADING, LOADED, ERROR
+    }
+
+    // Helper class to track preloaded audio with state
+    private static class PreloadedAudio {
+        final MediaPlayer player;
+        final PreloadState state;
+        final String errorMessage;
+        final long loadedAt;
+
+        PreloadedAudio(MediaPlayer player, PreloadState state, String errorMessage) {
+            this.player = player;
+            this.state = state;
+            this.errorMessage = errorMessage;
+            this.loadedAt = System.currentTimeMillis();
+        }
+
+        PreloadedAudio(MediaPlayer player) {
+            this(player, PreloadState.LOADED, null);
+        }
+    }
+
     @Override
     public void load() {
         mainHandler = new Handler(Looper.getMainLooper());
@@ -1307,6 +1334,33 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
         isRecording = false;
 
+        // Clean up playback resources
+        if (mediaPlayer != null) {
+            try {
+                mediaPlayer.release();
+            } catch (Exception e) {
+                Log.w(TAG, "Error cleaning up MediaPlayer", e);
+            }
+            mediaPlayer = null;
+        }
+
+        stopPlaybackProgressTimer();
+
+        // Clean up preloaded audio resources
+        Log.d(TAG, "Cleaning up " + preloadedAudioPlayers.size() + " preloaded audio players");
+        for (Map.Entry<String, PreloadedAudio> entry : preloadedAudioPlayers.entrySet()) {
+            try {
+                PreloadedAudio audio = entry.getValue();
+                if (audio != null && audio.player != null) {
+                    audio.player.release();
+                    Log.d(TAG, "Released preloaded audio: " + entry.getKey());
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Error releasing preloaded audio: " + entry.getKey(), e);
+            }
+        }
+        preloadedAudioPlayers.clear();
+
         // Clean up segment files
         for (String segmentPath : segmentFiles) {
             new File(segmentPath).delete();
@@ -1655,147 +1709,190 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     @PluginMethod
     public void preload(PluginCall call) {
         String uri = call.getString("uri");
-        if (uri == null) {
-            call.reject("URI is required");
+        if (uri == null || uri.trim().isEmpty()) {
+            call.reject("URI is required and cannot be empty");
             return;
         }
 
         Boolean prepare = call.getBoolean("prepare", true);
 
+        // Check if already preloaded
+        PreloadedAudio existingAudio = preloadedAudioPlayers.get(uri);
+        if (existingAudio != null) {
+            if (existingAudio.state == PreloadState.LOADED) {
+                JSObject result = new JSObject();
+                result.put("success", true);
+                result.put("cached", true);
+                result.put("message", "Audio already preloaded");
+                result.put("duration", existingAudio.player.getDuration() / 1000.0);
+                call.resolve(result);
+                return;
+            } else if (existingAudio.state == PreloadState.LOADING) {
+                call.reject("Audio is currently being preloaded");
+                return;
+            } else if (existingAudio.state == PreloadState.ERROR) {
+                // Remove failed preload and try again
+                cleanupPreloadedAudio(uri);
+            }
+        }
+
+        // Mark as loading to prevent concurrent preload attempts
+        preloadedAudioPlayers.put(uri, new PreloadedAudio(null, PreloadState.LOADING, null));
+
         // Check network connectivity for remote URLs
         if (isRemoteUrl(uri) && !isNetworkAvailable()) {
+            preloadedAudioPlayers.remove(uri);
             call.reject("Network is not available for remote audio URL");
             return;
         }
 
-        // For CDN URLs, use enhanced approach first
-        if (isRemoteUrl(uri)) {
-            preloadWithEnhancedCDNSupport(uri, prepare, call);
-        } else {
-            preloadWithBasicApproach(uri, prepare, call);
-        }
+        // Use basic approach for all URLs - enhanced CDN support was causing issues
+        preloadWithBasicApproach(uri, prepare, call);
     }
 
-    /**
-     * Enhanced CDN preload with HTTP validation and better error handling
-     */
-    private void preloadWithEnhancedCDNSupport(String uri, Boolean prepare, PluginCall call) {
-        new Thread(() -> {
-            try {
-                // First, validate the CDN URL with a HEAD request
-                java.net.URL url = new java.net.URL(uri);
-                java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
-
-                // Set enhanced headers for CDN compatibility
-                connection.setRequestProperty("User-Agent", "CapacitorAudioEngine/1.0 (Android)");
-                connection.setRequestProperty("Accept", "audio/*");
-                connection.setRequestProperty("Accept-Ranges", "bytes");
-                connection.setRequestProperty("Cache-Control", "no-cache");
-                connection.setRequestProperty("Connection", "keep-alive");
-
-                // Use HEAD request to validate without downloading
-                connection.setRequestMethod("HEAD");
-                connection.setConnectTimeout(15000); // 15 seconds for validation
-                connection.setReadTimeout(15000);
-
-                int responseCode = connection.getResponseCode();
-                Log.d(TAG, "CDN Validation - HTTP Response Code: " + responseCode + " for URL: " + uri);
-
-                if (responseCode >= 200 && responseCode < 300) {
-                    // Success - check content type
-                    String contentType = connection.getContentType();
-                    if (contentType != null) {
-                        Log.d(TAG, "Content-Type: " + contentType);
-                        if (!contentType.contains("audio") && !contentType.contains("application/octet-stream") && !contentType.contains("video")) {
-                            Log.w(TAG, "Warning: Unexpected content type " + contentType + " for audio file");
-                        }
-                    }
-
-                    // Get content length for logging
-                    int contentLength = connection.getContentLength();
-                    if (contentLength > 0) {
-                        Log.d(TAG, "Content-Length: " + contentLength + " bytes");
-                    }
-
-                    connection.disconnect();
-
-                    // Now use MediaPlayer with the validated URL
-                    getActivity().runOnUiThread(() -> {
-                        preloadWithBasicApproach(uri, prepare, call);
-                    });
-
-                } else {
-                    // Handle HTTP error codes with detailed messages
-                    String errorMessage = getHttpErrorMessage(responseCode);
-                    connection.disconnect();
-                    getActivity().runOnUiThread(() -> call.reject("CDN validation failed: " + errorMessage));
-                }
-
-            } catch (java.net.MalformedURLException e) {
-                getActivity().runOnUiThread(() -> call.reject("Invalid CDN URL format"));
-            } catch (java.net.SocketTimeoutException e) {
-                getActivity().runOnUiThread(() -> call.reject("CDN validation timed out - server may be slow or unreachable"));
-            } catch (java.net.UnknownHostException e) {
-                getActivity().runOnUiThread(() -> call.reject("Cannot find CDN host"));
-            } catch (java.net.ConnectException e) {
-                getActivity().runOnUiThread(() -> call.reject("Cannot connect to CDN host"));
-            } catch (java.io.IOException e) {
-                getActivity().runOnUiThread(() -> call.reject("Network error during CDN validation: " + e.getMessage()));
-            } catch (Exception e) {
-                getActivity().runOnUiThread(() -> call.reject("Failed to validate CDN URL: " + e.getMessage()));
-            }
-        }).start();
-    }
+    // Enhanced CDN support removed - was causing issues
+    // Using basic approach for all URLs for better reliability
 
     /**
-     * Basic preload approach using MediaPlayer directly
+     * Basic preload approach using MediaPlayer directly - improved with proper error handling
      */
     private void preloadWithBasicApproach(String uri, Boolean prepare, PluginCall call) {
-        try {
-            // Stop any current playback
-            if (mediaPlayer != null) {
-                mediaPlayer.release();
-                mediaPlayer = null;
-            }
+        MediaPlayer preloadPlayer = null;
 
-            mediaPlayer = new MediaPlayer();
+        try {
+            // Create a new MediaPlayer for preloading (don't interfere with current playback)
+            preloadPlayer = new MediaPlayer();
+            final MediaPlayer finalPlayer = preloadPlayer;
 
             // Configure for CDN URLs if needed
             if (isRemoteUrl(uri)) {
-                configureMediaPlayerForRemoteUrl(mediaPlayer, uri);
+                configureMediaPlayerForRemoteUrl(preloadPlayer, uri);
             } else {
-                mediaPlayer.setDataSource(uri);
+                // Handle local file URI formats
+                String actualPath = uri;
+                if (uri.startsWith("file://")) {
+                    actualPath = uri.substring(7);
+                } else if (uri.startsWith("capacitor://localhost/_capacitor_file_")) {
+                    actualPath = uri.replace("capacitor://localhost/_capacitor_file_", "");
+                }
+
+                // Validate local file exists
+                File localFile = new File(actualPath);
+                if (!localFile.exists()) {
+                    preloadedAudioPlayers.remove(uri);
+                    call.reject("Local audio file not found: " + actualPath);
+                    return;
+                }
+
+                preloadPlayer.setDataSource(actualPath);
             }
 
             if (prepare) {
-                mediaPlayer.setOnPreparedListener(mp -> {
-                    JSObject ret = new JSObject();
-                    ret.put("success", true);
-                    ret.put("duration", mp.getDuration() / 1000.0);
-                    call.resolve(ret);
+                preloadPlayer.setOnPreparedListener(mp -> {
+                    try {
+                        // Store the preloaded player with LOADED state
+                        preloadedAudioPlayers.put(uri, new PreloadedAudio(mp));
+
+                        Log.d(TAG, "Successfully preloaded audio: " + uri + " (duration: " + (mp.getDuration() / 1000.0) + "s)");
+
+                        JSObject ret = new JSObject();
+                        ret.put("success", true);
+                        ret.put("duration", mp.getDuration() / 1000.0);
+                        ret.put("prepared", true);
+                        call.resolve(ret);
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error in onPrepared callback", e);
+                        cleanupFailedPreload(uri, mp);
+                        call.reject("Failed to complete preload: " + e.getMessage());
+                    }
                 });
 
-                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                preloadPlayer.setOnErrorListener((mp, what, extra) -> {
                     String errorMessage = getDetailedErrorMessage(what, extra, uri);
+                    Log.e(TAG, "MediaPlayer error during preload: " + errorMessage);
+
+                    // Clean up failed preload
+                    cleanupFailedPreload(uri, mp);
                     call.reject("Failed to preload audio: " + errorMessage);
                     return true;
                 });
 
-                mediaPlayer.prepareAsync();
+                // Set timeout for preparation
+                Handler timeoutHandler = new Handler(Looper.getMainLooper());
+                Runnable timeoutRunnable = () -> {
+                    if (preloadedAudioPlayers.containsKey(uri)) {
+                        PreloadedAudio audio = preloadedAudioPlayers.get(uri);
+                        if (audio != null && audio.state == PreloadState.LOADING) {
+                            Log.w(TAG, "Preload timeout for: " + uri);
+                            cleanupFailedPreload(uri, finalPlayer);
+                            call.reject("Preload timeout - audio took too long to prepare");
+                        }
+                    }
+                };
+
+                // 30 second timeout for preparation
+                timeoutHandler.postDelayed(timeoutRunnable, 30000);
+
+                preloadPlayer.prepareAsync();
             } else {
+                // Store the player without preparing (just set data source)
+                preloadedAudioPlayers.put(uri, new PreloadedAudio(preloadPlayer));
+
+                Log.d(TAG, "Audio data source set (not prepared): " + uri);
+
                 JSObject ret = new JSObject();
                 ret.put("success", true);
+                ret.put("prepared", false);
                 call.resolve(ret);
             }
 
-            currentPlaybackPath = uri;
-
         } catch (Exception e) {
+            Log.e(TAG, "Exception during preload setup", e);
+
+            // Clean up on exception
+            if (preloadPlayer != null) {
+                try {
+                    preloadPlayer.release();
+                } catch (Exception releaseEx) {
+                    Log.e(TAG, "Error releasing MediaPlayer after exception", releaseEx);
+                }
+            }
+            preloadedAudioPlayers.remove(uri);
+
             String errorMessage = "Failed to preload audio: " + e.getMessage();
             if (isRemoteUrl(uri)) {
                 errorMessage += " (Check URL accessibility and network connection)";
             }
             call.reject(errorMessage);
+        }
+    }
+
+    /**
+     * Helper method to clean up failed preload attempts
+     */
+    private void cleanupFailedPreload(String uri, MediaPlayer player) {
+        try {
+            preloadedAudioPlayers.put(uri, new PreloadedAudio(null, PreloadState.ERROR, "Preload failed"));
+            if (player != null) {
+                player.release();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error during failed preload cleanup", e);
+        }
+    }
+
+    /**
+     * Helper method to clean up preloaded audio
+     */
+    private void cleanupPreloadedAudio(String uri) {
+        PreloadedAudio audio = preloadedAudioPlayers.remove(uri);
+        if (audio != null && audio.player != null) {
+            try {
+                audio.player.release();
+                Log.d(TAG, "Cleaned up preloaded audio: " + uri);
+            } catch (Exception e) {
+                Log.e(TAG, "Error cleaning up preloaded audio: " + uri, e);
+            }
         }
     }
 
@@ -1807,11 +1904,112 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             return;
         }
 
-        // Check network connectivity for remote URLs
+        // Get playback options
+        Float speed = call.getFloat("speed", 1.0f);
+        Float volume = call.getFloat("volume", 1.0f);
+        Boolean loop = call.getBoolean("loop", false);
+        Integer startTime = call.getInt("startTime", 0);
+
+        // Check if this URI is already preloaded (PERFORMANCE ENHANCEMENT)
+        PreloadedAudio preloadedAudio = preloadedAudioPlayers.get(uri);
+        if (preloadedAudio != null && preloadedAudio.state == PreloadState.LOADED && preloadedAudio.player != null) {
+            Log.d(TAG, "Using preloaded audio for: " + uri);
+
+            try {
+                // Stop any current playback
+                if (mediaPlayer != null && mediaPlayer != preloadedAudio.player) {
+                    mediaPlayer.release();
+                }
+
+                // Use the preloaded player
+                mediaPlayer = preloadedAudio.player;
+
+                // Remove from preloaded cache since we're now using it for playback
+                preloadedAudioPlayers.remove(uri);
+
+                currentPlaybackPath = uri;
+                playbackSpeed = speed;
+                playbackVolume = volume;
+                isLooping = loop;
+
+                // Configure playback settings
+                mediaPlayer.setVolume(volume, volume);
+                mediaPlayer.setLooping(loop);
+
+                // Set playback speed (API 23+)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    try {
+                        mediaPlayer.setPlaybackParams(mediaPlayer.getPlaybackParams().setSpeed(speed));
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to set playback speed", e);
+                    }
+                }
+
+                // Seek to start time if specified
+                if (startTime > 0) {
+                    mediaPlayer.seekTo(startTime * 1000);
+                }
+
+                // Set up completion listener
+                mediaPlayer.setOnCompletionListener(mp -> {
+                    isPlaying = false;
+                    stopPlaybackProgressTimer();
+
+                    JSObject eventData = new JSObject();
+                    eventData.put("status", "completed");
+                    eventData.put("currentTime", mp.getDuration() / 1000.0);
+                    eventData.put("duration", mp.getDuration() / 1000.0);
+                    notifyListeners("playbackStatusChange", eventData);
+                });
+
+                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                    isPlaying = false;
+                    stopPlaybackProgressTimer();
+
+                    String errorMessage = getDetailedErrorMessage(what, extra, uri);
+                    JSObject errorData = new JSObject();
+                    errorData.put("message", errorMessage);
+                    notifyListeners("playbackError", errorData);
+                    return true;
+                });
+
+                // Start playback
+                mediaPlayer.start();
+                isPlaying = true;
+                startPlaybackProgressTimer();
+
+                // Notify listeners
+                JSObject eventData = new JSObject();
+                eventData.put("status", "playing");
+                eventData.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
+                eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
+                notifyListeners("playbackStatusChange", eventData);
+
+                JSObject result = new JSObject();
+                result.put("success", true);
+                result.put("preloaded", true);
+                result.put("duration", mediaPlayer.getDuration() / 1000.0);
+                result.put("message", "Started playback from preloaded audio");
+                call.resolve(result);
+                return;
+
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to start preloaded audio: " + e.getMessage());
+                // Clean up the failed preloaded audio
+                cleanupPreloadedAudio(uri);
+                call.reject("Failed to start playback of preloaded audio: " + e.getMessage());
+                return;
+            }
+        }
+
+        // If not preloaded, check network connectivity for remote URLs
         if (isRemoteUrl(uri) && !isNetworkAvailable()) {
             call.reject("Network is not available for remote audio URL");
             return;
         }
+
+        // Load and play audio on-demand (since it's not preloaded)
+        Log.d(TAG, "Loading audio on-demand for: " + uri);
 
         try {
             // Stop any current playback
@@ -1828,12 +2026,6 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             } else {
                 mediaPlayer.setDataSource(uri);
             }
-
-            // Set playback options
-            Float speed = call.getFloat("speed", 1.0f);
-            Float volume = call.getFloat("volume", 1.0f);
-            Boolean loop = call.getBoolean("loop", false);
-            Integer startTime = call.getInt("startTime", 0);
 
             playbackSpeed = speed;
             playbackVolume = volume;
@@ -1864,7 +2056,11 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 eventData.put("duration", mp.getDuration() / 1000.0);
                 notifyListeners("playbackStatusChange", eventData);
 
-                call.resolve();
+                JSObject result = new JSObject();
+                result.put("success", true);
+                result.put("preloaded", false);
+                result.put("message", "Started playback after loading on-demand");
+                call.resolve(result);
             });
 
             mediaPlayer.setOnCompletionListener(mp -> {
@@ -2078,6 +2274,107 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             playbackProgressTimer.cancel();
             playbackProgressTimer = null;
         }
+    }
+
+    // ========== PRELOADED AUDIO MANAGEMENT METHODS ==========
+
+    @PluginMethod
+    public void clearPreloadedAudio(PluginCall call) {
+        String uri = call.getString("uri");
+
+        if (uri != null) {
+            // Clear specific preloaded audio
+            PreloadedAudio audio = preloadedAudioPlayers.remove(uri);
+            if (audio != null) {
+                try {
+                    if (audio.player != null) {
+                        audio.player.release();
+                    }
+                    JSObject result = new JSObject();
+                    result.put("success", true);
+                    result.put("message", "Cleared preloaded audio for: " + uri);
+                    call.resolve(result);
+                } catch (Exception e) {
+                    call.reject("Failed to clear preloaded audio: " + e.getMessage());
+                }
+            } else {
+                JSObject result = new JSObject();
+                result.put("success", false);
+                result.put("message", "No preloaded audio found for: " + uri);
+                call.resolve(result);
+            }
+        } else {
+            // Clear all preloaded audio
+            int count = preloadedAudioPlayers.size();
+            for (PreloadedAudio audio : preloadedAudioPlayers.values()) {
+                try {
+                    if (audio != null && audio.player != null) {
+                        audio.player.release();
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Error releasing preloaded audio player", e);
+                }
+            }
+            preloadedAudioPlayers.clear();
+
+            JSObject result = new JSObject();
+            result.put("success", true);
+            result.put("message", "Cleared " + count + " preloaded audio files");
+            call.resolve(result);
+        }
+    }
+
+    @PluginMethod
+    public void getPreloadedAudio(PluginCall call) {
+        List<String> preloadedUris = new ArrayList<>();
+        List<JSObject> preloadedDetails = new ArrayList<>();
+
+        for (Map.Entry<String, PreloadedAudio> entry : preloadedAudioPlayers.entrySet()) {
+            preloadedUris.add(entry.getKey());
+
+            JSObject detail = new JSObject();
+            detail.put("uri", entry.getKey());
+            detail.put("state", entry.getValue().state.toString());
+            detail.put("loadedAt", entry.getValue().loadedAt);
+            if (entry.getValue().errorMessage != null) {
+                detail.put("error", entry.getValue().errorMessage);
+            }
+            preloadedDetails.add(detail);
+        }
+
+        JSObject result = new JSObject();
+        result.put("success", true);
+        result.put("preloadedAudio", new JSArray(preloadedUris));
+        result.put("details", new JSArray(preloadedDetails));
+        result.put("count", preloadedUris.size());
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void isAudioPreloaded(PluginCall call) {
+        String uri = call.getString("uri");
+        if (uri == null) {
+            call.reject("URI is required");
+            return;
+        }
+
+        PreloadedAudio audio = preloadedAudioPlayers.get(uri);
+        boolean isPreloaded = audio != null && audio.state == PreloadState.LOADED;
+
+        JSObject result = new JSObject();
+        result.put("success", true);
+        result.put("preloaded", isPreloaded);
+        result.put("uri", uri);
+
+        if (audio != null) {
+            result.put("state", audio.state.toString());
+            result.put("loadedAt", audio.loadedAt);
+            if (audio.errorMessage != null) {
+                result.put("error", audio.errorMessage);
+            }
+        }
+
+        call.resolve(result);
     }
 
     // ========== CDN AUDIO HELPER METHODS ==========
