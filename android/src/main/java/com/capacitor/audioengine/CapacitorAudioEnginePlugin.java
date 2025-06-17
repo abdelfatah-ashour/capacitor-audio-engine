@@ -221,50 +221,58 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     @PluginMethod
     public void startRecording(PluginCall call) {
         synchronized (recordingLock) {
-            if (mediaRecorder != null) {
-                call.reject("Recording is already in progress");
-                return;
-            }
-
-            // Check permissions
-            if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-                call.reject("Microphone permission not granted");
-                return;
-            }
-
-            // Check notification permission for Android 13+ (required for foreground service)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                    call.reject("Notification permission not granted (required for background recording on Android 13+)");
+            try {
+                // Validate state
+                if (mediaRecorder != null) {
+                    call.reject(AudioEngineError.RECORDING_IN_PROGRESS.getCode(),
+                               AudioEngineError.RECORDING_IN_PROGRESS.getMessage());
                     return;
                 }
-            }
 
-            // Reset segment tracking
-            segmentFiles.clear();
-            currentSegment = 0;
-            currentDuration = 0.0;
+                // Check permissions
+                if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                    call.reject(AudioEngineError.MICROPHONE_PERMISSION_DENIED.getCode(),
+                               AudioEngineError.MICROPHONE_PERMISSION_DENIED.getMessage());
+                    return;
+                }
 
-            // Emit initial duration
-            emitDurationChange();
+                // Check notification permission for Android 13+ (required for foreground service)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+                        call.reject(AudioEngineError.NOTIFICATION_PERMISSION_DENIED.getCode(),
+                                   AudioEngineError.NOTIFICATION_PERMISSION_DENIED.getMessage());
+                        return;
+                    }
+                }
 
-            // Get recording options - maxDuration in SECONDS
-            Integer maxDurationSeconds = call.getInt("maxDuration");
-            if (maxDurationSeconds != null && maxDurationSeconds > 0) {
-                // Use seconds directly for internal use
-                maxDuration = maxDurationSeconds;
-                Log.d(TAG, "Setting maxDuration: " + maxDurationSeconds + " seconds");
-            } else {
-                maxDuration = null;
-            }
+                // Reset segment tracking
+                segmentFiles.clear();
+                currentSegment = 0;
+                currentDuration = 0.0;
 
-            sampleRate = call.getInt("sampleRate", 44100);
-            channels = call.getInt("channels", 1);
-            bitrate = call.getInt("bitrate", 128000);
+                // Emit initial duration
+                emitDurationChange();
 
-            try {
+                // Get and validate recording options
+                Integer maxDurationSeconds = call.getInt("maxDuration");
+                ValidationUtils.validateMaxDuration(maxDurationSeconds);
+
+                if (maxDurationSeconds != null && maxDurationSeconds > 0) {
+                    maxDuration = maxDurationSeconds;
+                    Log.d(TAG, "Setting maxDuration: " + maxDurationSeconds + " seconds");
+                } else {
+                    maxDuration = null;
+                }
+
+                sampleRate = call.getInt("sampleRate", 44100);
+                channels = call.getInt("channels", 1);
+                bitrate = call.getInt("bitrate", 128000);
+
+                // Validate audio parameters
+                ValidationUtils.validateAudioParameters(sampleRate, channels, bitrate);
+
                 File recordingsDir = getRecordingsDirectory();
 
                 if (maxDuration != null && maxDuration > 0) {
@@ -276,12 +284,23 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                     startLinearRecording(recordingsDir);
                     call.resolve();
                 }
+            } catch (SecurityException e) {
+                Log.e(TAG, "Security error in startRecording", e);
+                call.reject(AudioEngineError.PERMISSION_DENIED.getCode(), e.getMessage());
+            } catch (IllegalArgumentException e) {
+                Log.e(TAG, "Validation error in startRecording", e);
+                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), e.getMessage());
             } catch (Exception e) {
                 Log.e(TAG, "Failed to start recording", e);
+
+                // Cleanup any partial state
+                cleanupRecordingState();
+
                 JSObject errorData = new JSObject();
                 errorData.put("message", "Failed to start recording: " + e.getMessage());
                 emitError(errorData);
-                call.reject("Failed to start recording: " + e.getMessage());
+                call.reject(AudioEngineError.INITIALIZATION_FAILED.getCode(),
+                           AudioEngineError.INITIALIZATION_FAILED.getDetailedMessage(e.getMessage()));
             }
         }
     }
@@ -422,21 +441,21 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
     @PluginMethod
     public void trimAudio(PluginCall call) {
-        String sourcePath = call.getString("uri");
-        Double startTime = call.getDouble("start", 0.0);
-        Double endTime = call.getDouble("end", 0.0);
-
-        if (sourcePath == null) {
-            call.reject("Source URI is required");
-            return;
-        }
-
-        if (endTime <= startTime) {
-            call.reject("End time must be greater than start time");
-            return;
-        }
-
         try {
+            // Validate input parameters
+            String sourcePath = call.getString("uri");
+            if (sourcePath == null) {
+                call.reject(AudioEngineError.INVALID_URI.getCode(),
+                           AudioEngineError.INVALID_URI.getMessage());
+                return;
+            }
+
+            Double startTime = call.getDouble("start", 0.0);
+            Double endTime = call.getDouble("end", 0.0);
+
+            // Validate time range
+            ValidationUtils.validateTimeRange(startTime, endTime);
+
             // Handle Capacitor file URI format
             String actualPath = sourcePath;
             if (sourcePath.contains("capacitor://localhost/_capacitor_file_")) {
@@ -445,31 +464,39 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 actualPath = sourcePath.substring(7);
             }
 
-            File sourceFile = new File(actualPath);
-            if (!sourceFile.exists()) {
-                call.reject("Source audio file does not exist at path: " + actualPath);
+            // Validate file exists and is accessible
+            ValidationUtils.validateFileExists(actualPath);
+
+            // Create output directory
+            File trimmedDir = new File(getContext().getExternalFilesDir(null), "Trimmed");
+            if (!trimmedDir.exists() && !trimmedDir.mkdirs()) {
+                call.reject(AudioEngineError.DIRECTORY_CREATION_FAILED.getCode(),
+                           AudioEngineError.DIRECTORY_CREATION_FAILED.getMessage());
                 return;
             }
 
-            // Create output file
-            File trimmedDir = new File(getContext().getExternalFilesDir(null), "Trimmed");
-            if (!trimmedDir.exists()) {
-                trimmedDir.mkdirs();
-            }
-
+            // Create output file with sanitized name
             long timestamp = System.currentTimeMillis();
-            File outputFile = new File(trimmedDir, "trimmed_" + timestamp + ".m4a");
+            String outputFileName = ValidationUtils.sanitizeFilename("trimmed_" + timestamp + ".m4a");
+            File outputFile = new File(trimmedDir, outputFileName);
 
             // Perform trimming using MediaExtractor and MediaMuxer
-            trimAudioFile(sourceFile, outputFile, startTime, endTime);
+            trimAudioFile(new File(actualPath), outputFile, startTime, endTime);
 
             // Return file info
             JSObject response = getAudioFileInfo(outputFile.getAbsolutePath());
             call.resolve(response);
 
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security error in trimAudio", e);
+            call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(), e.getMessage());
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Validation error in trimAudio", e);
+            call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), e.getMessage());
         } catch (Exception e) {
             Log.e(TAG, "Failed to trim audio", e);
-            call.reject("Failed to trim audio: " + e.getMessage());
+            call.reject(AudioEngineError.TRIMMING_FAILED.getCode(),
+                       AudioEngineError.TRIMMING_FAILED.getDetailedMessage(e.getMessage()));
         }
     }
 
@@ -1113,11 +1140,13 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     }
 
     private void trimAudioFile(File sourceFile, File outputFile, double startTime, double endTime) throws IOException {
-        MediaExtractor extractor = null;
-        MediaMuxer muxer = null;
+        try (ResourceManager.SafeMediaExtractor safeExtractor = new ResourceManager.SafeMediaExtractor();
+             ResourceManager.SafeMediaMuxer safeMuxer = new ResourceManager.SafeMediaMuxer(
+                 outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)) {
 
-        try {
-            extractor = new MediaExtractor();
+            MediaExtractor extractor = safeExtractor.getExtractor();
+            MediaMuxer muxer = safeMuxer.getMuxer();
+
             extractor.setDataSource(sourceFile.getAbsolutePath());
 
             // Find audio track
@@ -1139,19 +1168,19 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
             extractor.selectTrack(audioTrack);
 
-            // Create muxer
-            muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            // Create muxer track
             int muxerTrack = muxer.addTrack(audioFormat);
             muxer.start();
 
             // Seek to start time
             extractor.seekTo((long)(startTime * 1000000), MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
 
-            // Extract and write data
-            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(1024 * 1024);
+            // Extract and write data with smaller buffer for better memory management
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(64 * 1024); // 64KB instead of 1MB
             android.media.MediaCodec.BufferInfo bufferInfo = new android.media.MediaCodec.BufferInfo();
 
             long endTimeUs = (long)(endTime * 1000000);
+            long samplesProcessed = 0;
 
             while (true) {
                 int sampleSize = extractor.readSampleData(buffer, 0);
@@ -1171,33 +1200,28 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
                 muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
                 extractor.advance();
+
+                samplesProcessed++;
+
+                // Log progress periodically
+                if (samplesProcessed % 1000 == 0) {
+                    double currentTime = presentationTimeUs / 1000000.0;
+                    double progress = (currentTime - startTime) / (endTime - startTime) * 100;
+                    Log.d(TAG, String.format("Trimming progress: %.1f%% (%.2fs/%.2fs)",
+                           progress, currentTime - startTime, endTime - startTime));
+                }
             }
 
-            Log.d(TAG, "Audio trimmed successfully from " + startTime + "s to " + endTime + "s");
+            Log.d(TAG, "Audio trimmed successfully from " + startTime + "s to " + endTime + "s, processed " + samplesProcessed + " samples");
 
         } catch (Exception e) {
             // Clean up output file if trimming failed
             if (outputFile.exists()) {
-                outputFile.delete();
+                if (!outputFile.delete()) {
+                    Log.w(TAG, "Failed to delete partial output file: " + outputFile.getAbsolutePath());
+                }
             }
             throw new IOException("Failed to trim audio file: " + e.getMessage(), e);
-        } finally {
-            // Ensure resources are always cleaned up
-            if (muxer != null) {
-                try {
-                    muxer.stop();
-                    muxer.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing MediaMuxer", e);
-                }
-            }
-            if (extractor != null) {
-                try {
-                    extractor.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing MediaExtractor", e);
-                }
-            }
         }
     }
 
@@ -1413,6 +1437,20 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             }
         }
         segmentFiles.clear();
+    }
+
+    private void cleanupRecordingState() {
+        if (mediaRecorder != null) {
+            ResourceManager.releaseMediaRecorder(mediaRecorder);
+            mediaRecorder = null;
+        }
+        isRecording = false;
+        currentRecordingPath = null;
+        stopDurationMonitoring();
+        stopSegmentTimer();
+        if (serviceStarted) {
+            stopRecordingService();
+        }
     }
 
     // Background service management methods
