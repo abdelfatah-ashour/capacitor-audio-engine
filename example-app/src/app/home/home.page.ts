@@ -347,15 +347,15 @@ export class HomePage implements OnInit, OnDestroy{
   // New microphone management methods
   async initializeMicrophoneManagement() {
       await this.loadAvailableMicrophones();
-      await this.checkMicrophoneBusy();
   }
 
   async loadAvailableMicrophones() {
+    this.checkMicrophoneBusy()
     if (Capacitor.isNativePlatform()) {
       this.isLoadingMicrophones.set(true);
       try {
         const result = await CapacitorAudioEngine.getAvailableMicrophones();
-        console.log("🚀 ~ HomePage ~ loadAvailableMicrophones ~ result:", JSON.stringify(result,null,2))
+        console.log("🚀 ~ HomePage ~ loadAvailableMicrophones ~ result:", result)
         this.availableMicrophones.set(result.microphones);
 
         // Set default to first internal microphone if none selected
@@ -380,6 +380,7 @@ export class HomePage implements OnInit, OnDestroy{
     if (Capacitor.isNativePlatform()) {
       try {
         const result = await CapacitorAudioEngine.isMicrophoneBusy();
+        console.log("🚀 ~ HomePage ~ checkMicrophoneBusy ~ result:", result)
         this.microphoneBusy.set(result.busy);
       } catch (error) {
         console.error('Failed to check microphone status:', error);

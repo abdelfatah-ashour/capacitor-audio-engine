@@ -1779,47 +1779,119 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
     @objc func isMicrophoneBusy(_ call: CAPPluginCall) {
         var isBusy = false
+        var reason = "Microphone is available"
 
+        let audioSession = AVAudioSession.sharedInstance()
 
-            let audioSession = AVAudioSession.sharedInstance()
+        // Method 1: Check if we're already recording
+        if audioRecorder?.isRecording == true {
+            isBusy = true
+            reason = "Currently recording with this app"
+            call.resolve(["busy": isBusy, "reason": reason])
+            return
+        }
 
-            // Check if another app is currently using the microphone
-            if audioSession.isOtherAudioPlaying {
+        // Method 2: Use system APIs to check microphone availability
+        let systemCheck = checkMicrophoneAvailabilityWithSystemAPIs()
+        if systemCheck.isBusy {
+            call.resolve(["busy": systemCheck.isBusy, "reason": systemCheck.reason])
+            return
+        }
+
+        // Method 3: Check if other audio is playing (indicates another app might be using audio)
+        if audioSession.isOtherAudioPlaying {
+            isBusy = true
+            reason = "Another app is playing audio"
+            call.resolve(["busy": isBusy, "reason": reason])
+            return
+        }
+
+        // Method 4: Use AVAudioEngine to test microphone access without recording
+        let audioEngine = AVAudioEngine()
+        let inputNode = audioEngine.inputNode
+
+        // Store original audio session settings
+        let originalCategory = audioSession.category
+        let originalMode = audioSession.mode
+        let originalOptions = audioSession.categoryOptions
+
+        do {
+            // Set recording category to test microphone access
+            try audioSession.setCategory(.record, mode: .measurement, options: [.allowBluetooth])
+            try audioSession.setActive(true)
+
+            // Try to get the input format - this will fail if mic is busy
+            let format = inputNode.outputFormat(forBus: 0)
+
+            // Verify we have a valid format
+            if format.sampleRate == 0 || format.channelCount == 0 {
                 isBusy = true
-            }
-
-            // Check if we're currently recording
-            if audioRecorder?.isRecording == true {
-                isBusy = true
-            }
-
-            // Additional check: try to create a temporary audio recorder to test availability
-            if !isBusy {
-                let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("temp_test.m4a")
-                let settings = [
-                    AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                    AVSampleRateKey: 44100,
-                    AVNumberOfChannelsKey: 1,
-                    AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
-                ]
-
-                do {
-                    let tempRecorder = try AVAudioRecorder(url: tempURL, settings: settings)
-                    if !tempRecorder.prepareToRecord() {
-                        isBusy = true
-                    }
-
-                    // Clean up temp file
-                    try? FileManager.default.removeItem(at: tempURL)
-                } catch {
-                    isBusy = true
+                reason = "Microphone format unavailable - may be in use"
+            } else {
+                // Try to install a tap on the input node
+                // This is a lightweight way to test mic access without actually recording
+                inputNode.installTap(onBus: 0, bufferSize: 512, format: format) { (buffer, time) in
+                    // We don't process the buffer, just test that we can access it
                 }
+
+                // Try to prepare the engine (but don't start it)
+                audioEngine.prepare()
+
+                // If we get here, the microphone should be available
+                isBusy = false
+                reason = "Microphone is available"
+
+                // Clean up immediately
+                inputNode.removeTap(onBus: 0)
             }
 
-            call.resolve([
-                "busy": isBusy,
-                "reason": isBusy ? "Microphone is currently in use by another application" : "Microphone is available"
-            ])
+        } catch let error {
+            // Analyze the error to determine if microphone is busy
+            if let nsError = error as NSError? {
+                switch nsError.code {
+                case 1718449215: // 'what' - hardware not available (busy)
+                    isBusy = true
+                    reason = "Microphone hardware is busy with another app"
+                case 560030580: // '!dev' - device not available
+                    isBusy = true
+                    reason = "Microphone device is not available"
+                case 561145203: // '!pla' - session interruption
+                    isBusy = true
+                    reason = "Audio session interrupted by another app"
+                case 1936290409: // 'auth' - authorization error
+                    isBusy = true
+                    reason = "Microphone access denied - check permissions"
+                case 2003329396: // 'fmt?' - format not supported
+                    isBusy = true
+                    reason = "Microphone format not available - may be in use"
+                case -50: // Invalid parameter
+                    isBusy = false
+                    reason = "Microphone is available"
+                default:
+                    // Most errors indicate the microphone is not available
+                    isBusy = true
+                    reason = "Microphone may be busy: \(error.localizedDescription) (Code: \(nsError.code))"
+                }
+            } else {
+                isBusy = true
+                reason = "Microphone access error: \(error.localizedDescription)"
+            }
+        }
+
+        // Always restore original audio session settings
+        do {
+            try audioSession.setCategory(originalCategory, mode: originalMode, options: originalOptions)
+            if audioSession.isOtherAudioPlaying {
+                // Don't deactivate if other audio is playing
+                try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+            } else {
+                try audioSession.setActive(false)
+            }
+        } catch {
+            print("Failed to restore audio session: \(error)")
+        }
+
+        call.resolve(["busy": isBusy, "reason": reason])
     }
 
     @objc func getAvailableMicrophones(_ call: CAPPluginCall) {
@@ -1985,7 +2057,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         call.resolve(["success": true])
                     }
 
-                } catch {
+                               } catch {
                     call.reject("Failed to preload audio: \(error.localizedDescription)")
                 }
             }
@@ -2509,5 +2581,100 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             "createdAt": Int64(createdAt * 1000), // Convert to milliseconds
             "filename": filename
         ]
+    }
+
+    // MARK: - Microphone Availability Detection
+
+    /**
+     * Checks if the microphone is currently busy without using test recordings.
+     * Uses built-in iOS APIs to detect microphone usage by other apps or system processes.
+     *
+     * This implementation replaces the previous approach that used test recordings,
+     * providing a more efficient and less intrusive way to check microphone availability.
+     *
+     * Detection methods used:
+     * 1. Check if this app is already recording
+     * 2. Use system APIs with iOS version-specific checks
+     * 3. Check if other audio is playing
+     * 4. Use AVAudioEngine to test microphone access without actually recording
+     */
+    private func checkMicrophoneAvailabilityWithSystemAPIs() -> (isBusy: Bool, reason: String) {
+        let audioSession = AVAudioSession.sharedInstance()
+
+        // Check if recording permission is granted
+        guard audioSession.recordPermission == .granted else {
+            return (true, "Microphone permission not granted")
+        }
+
+        // Check for iOS 14+ APIs
+        if #available(iOS 14.0, *) {
+            // Check if there are any active recording sessions
+            // This is a more modern approach using iOS 14+ APIs
+            do {
+                try audioSession.setCategory(.record, mode: .measurement, options: [.allowBluetooth])
+                try audioSession.setActive(true)
+
+                // Check available inputs
+                let availableInputs = audioSession.availableInputs ?? []
+                let preferredInput = audioSession.preferredInput
+
+                if availableInputs.isEmpty {
+                    return (true, "No microphone inputs available")
+                }
+
+                // Check if we can set a preferred input (this often fails if mic is busy)
+                for input in availableInputs {
+                    if input.portType == .builtInMic {
+                        do {
+                            try audioSession.setPreferredInput(input)
+                            // If we can set it, mic is likely available
+                            return (false, "Microphone is available")
+                        } catch {
+                            // If we can't set it, mic might be busy
+                            return (true, "Cannot set preferred microphone input - may be in use")
+                        }
+                    }
+                }
+
+                return (false, "Microphone appears available")
+
+            } catch {
+                return (true, "Failed to configure audio session for microphone check")
+            }
+        } else {
+            // Fallback for older iOS versions
+            return checkMicrophoneAvailabilityLegacy()
+        }
+    }
+
+    private func checkMicrophoneAvailabilityLegacy() -> (isBusy: Bool, reason: String) {
+        let audioSession = AVAudioSession.sharedInstance()
+
+        // Check basic audio session properties
+        if audioSession.isOtherAudioPlaying {
+            return (true, "Another app is playing audio")
+        }
+
+        // Check current route
+        let currentRoute = audioSession.currentRoute
+        let inputs = currentRoute.inputs
+
+        if inputs.isEmpty {
+            return (true, "No audio inputs available")
+        }
+
+        // Check if any input is a microphone and is available
+        for input in inputs {
+            if input.portType == .builtInMic || input.portType == .headsetMic {
+                // Check if the input has available data sources
+                let dataSources = input.dataSources ?? []
+                if dataSources.isEmpty && input.selectedDataSource == nil {
+                    // This might indicate the mic is busy
+                    return (true, "Microphone input may be in use by another app")
+                }
+            }
+        }
+
+        return (false, "Microphone appears available")
     }
 }
