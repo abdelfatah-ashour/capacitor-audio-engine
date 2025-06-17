@@ -6,12 +6,30 @@ import UIKit
 import ObjectiveC
 import UserNotifications
 import Network
-import Network
 
 /**
  * Please read the Capacitor iOS Plugin Development Guide
  * here: https://capacitorjs.com/docs/plugins/ios
  */
+
+// MARK: - Constants
+private struct AudioEngineConstants {
+    static let defaultSampleRate: Double = 44100.0
+    static let defaultChannels = 1
+    static let defaultBitrate = 128000
+    static let timerInterval: TimeInterval = 1.0
+    static let crossfadeDuration: TimeInterval = 0.02
+    static let networkTimeout: TimeInterval = 60.0
+    static let resourceTimeout: TimeInterval = 120.0
+    static let networkCheckTimeout: TimeInterval = 2.0
+    static let defaultFileExtension = ".m4a"
+    static let mimeTypeM4A = "audio/m4a"
+    static let bufferSize: AVAudioFrameCount = 512
+    static let maxSegments = 2
+    static let timestampMultiplier = 1000.0
+    static let durationRoundingFactor = 10.0
+}
+
 @objc(CapacitorAudioEnginePlugin)
 public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDelegate {
     public let identifier = "CapacitorAudioEnginePlugin"
@@ -83,6 +101,22 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     private var networkMonitor: NWPathMonitor?
     private var isNetworkAvailable = true
 
+    // MARK: - Thread Safety
+
+    private let stateQueue = DispatchQueue(label: "audio-engine-state", qos: .userInteractive)
+
+    private func performStateOperation<T>(_ operation: () throws -> T) rethrows -> T {
+        return try stateQueue.sync { try operation() }
+    }
+
+    // MARK: - Logging Utility
+
+    private func log(_ message: String) {
+        #if DEBUG
+        print("[AudioEngine] \(message)")
+        #endif
+    }
+
     // MARK: - Network Utility Methods
 
     private func checkNetworkAvailability() -> Bool {
@@ -99,7 +133,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             let queue = DispatchQueue(label: "NetworkMonitor")
             monitor.start(queue: queue)
 
-            _ = semaphore.wait(timeout: .now() + 2.0) // 2 second timeout
+            _ = semaphore.wait(timeout: .now() + AudioEngineConstants.networkCheckTimeout) // 2 second timeout
             monitor.cancel()
 
             return isConnected
@@ -126,7 +160,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         request.setValue("keep-alive", forHTTPHeaderField: "Connection")
 
         // Set appropriate timeout for CDN files
-        request.timeoutInterval = 60.0 // Increased timeout for large files
+        request.timeoutInterval = AudioEngineConstants.networkTimeout // Increased timeout for large files
 
         // Add range header for partial content support (useful for large files)
         // This allows for progressive download and better error recovery
@@ -165,7 +199,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
     public func startInterruptionMonitoring() {
         hasInterruptionListeners = true
-        print("Starting interruption monitoring") // Debug log
+        log("Starting interruption monitoring")
 
         // Audio session interruption notifications
         let interruptionObserver = NotificationCenter.default.addObserver(
@@ -173,7 +207,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             object: AVAudioSession.sharedInstance(),
             queue: .main
         ) { [weak self] notification in
-            print("Received interruption notification") // Debug log
+            self?.log("Received interruption notification")
             self?.handleInterruption(notification)
         }
         interruptionObservers.append(interruptionObserver)
@@ -184,7 +218,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             object: AVAudioSession.sharedInstance(),
             queue: .main
         ) { [weak self] notification in
-            print("Received route change notification") // Debug log
+            self?.log("Received route change notification")
             self?.handleRouteChange(notification)
         }
         interruptionObservers.append(routeChangeObserver)
@@ -195,7 +229,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            print("App will resign active") // Debug log
+            self?.log("App will resign active")
             self?.handleAppStateChange(isBackground: true)
         }
         interruptionObservers.append(willResignActiveObserver)
@@ -205,7 +239,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            print("App did enter background") // Debug log
+            self?.log("App did enter background")
             self?.handleAppStateChange(isBackground: true)
         }
         interruptionObservers.append(didEnterBackgroundObserver)
@@ -215,14 +249,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            print("App did become active") // Debug log
+            self?.log("App did become active")
             self?.handleAppStateChange(isBackground: false)
         }
         interruptionObservers.append(didBecomeActiveObserver)
     }
 
     public func stopInterruptionMonitoring() {
-        print("Stopping interruption monitoring") // Debug log
+        log("Stopping interruption monitoring")
         hasInterruptionListeners = false
         interruptionObservers.forEach { NotificationCenter.default.removeObserver($0) }
         interruptionObservers.removeAll()
@@ -232,11 +266,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         guard let userInfo = notification.userInfo,
               let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-            print("Failed to get interruption type") // Debug log
+            log("Failed to get interruption type")
             return
         }
 
-        print("Handling interruption type: \(type)") // Debug log
+        log("Handling interruption type: \(type)")
 
         switch type {
         case .began:
@@ -303,7 +337,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             if isRecording {
                 // For background recording, don't pause - let it continue
                 // iOS with background audio mode should allow continuous recording
-                print("App entered background - continuing recording with background audio mode")
+                log("App entered background - continuing recording with background audio mode")
 
                 // Notify listeners that recording continues in background
                 notifyListeners("recordingInterruption", data: [
@@ -321,14 +355,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                     // Verify recording is still active
                     if let recorder = audioRecorder, !recorder.isRecording {
-                        print("Warning: Recorder was paused during background transition, attempting to resume")
+                        log("Warning: Recorder was paused during background transition, attempting to resume")
                         if !recorder.record() {
-                            print("Failed to maintain recording in background")
+                            log("Failed to maintain recording in background")
                             wasRecordingBeforeInterruption = true
                         }
                     }
                 } catch {
-                    print("Failed to maintain background audio session: \(error.localizedDescription)")
+                    log("Failed to maintain background audio session: \(error.localizedDescription)")
                     // If background setup fails, store state for resume
                     wasRecordingBeforeInterruption = true
 
@@ -346,7 +380,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             }
         } else {
             // App returned to foreground
-            print("App returned to foreground")
+            log("App returned to foreground")
 
             if wasRecordingBeforeInterruption {
                 do {
@@ -356,11 +390,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     // Resume recording if possible
                     if let recorder = audioRecorder, isRecording {
                         if recorder.record() {
-                            print("Successfully resumed recording after app state change")
+                            log("Successfully resumed recording after app state change")
 
                             // Restart segment timer if maxDuration is set
                             if let maxDuration = maxDuration, maxDuration > 0 {
-                                print("Restarting segment timer after app state change")
+                                log("Restarting segment timer after app state change")
                                 startSegmentTimer(maxDuration: maxDuration)
                             }
 
@@ -371,11 +405,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                                 "message": "Recording resumed after returning to foreground"
                             ])
                         } else {
-                            print("Failed to resume recording after app state change")
+                            log("Failed to resume recording after app state change")
                         }
                     }
                 } catch {
-                    print("Failed to resume recording after app state change: \(error.localizedDescription)")
+                    log("Failed to resume recording after app state change: \(error.localizedDescription)")
                 }
                 wasRecordingBeforeInterruption = false
             } else if isRecording {
@@ -432,26 +466,26 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         // Ensure default values are provided if settings are missing
         var result: [String: Any] = [:]
-        result[AVSampleRateKey] = settings[AVSampleRateKey] as? Double ?? 44100.0
-        result[AVNumberOfChannelsKey] = settings[AVNumberOfChannelsKey] as? Int ?? 1
-        result[AVEncoderBitRateKey] = settings[AVEncoderBitRateKey] as? Int ?? 128000
+        result[AVSampleRateKey] = settings[AVSampleRateKey] as? Double ?? AudioEngineConstants.defaultSampleRate
+        result[AVNumberOfChannelsKey] = settings[AVNumberOfChannelsKey] as? Int ?? AudioEngineConstants.defaultChannels
+        result[AVEncoderBitRateKey] = settings[AVEncoderBitRateKey] as? Int ?? AudioEngineConstants.defaultBitrate
 
         return result
     }
 
     // Helper method to get sample rate from settings
     private func getSampleRate() -> Double {
-        return getRecorderSettings()[AVSampleRateKey] as? Double ?? 44100.0
+        return getRecorderSettings()[AVSampleRateKey] as? Double ?? AudioEngineConstants.defaultSampleRate
     }
 
     // Helper method to get channels from settings
     private func getChannels() -> Int {
-        return getRecorderSettings()[AVNumberOfChannelsKey] as? Int ?? 1
+        return getRecorderSettings()[AVNumberOfChannelsKey] as? Int ?? AudioEngineConstants.defaultChannels
     }
 
     // Helper method to get bitrate from settings
     private func getBitrate() -> Int {
-        return getRecorderSettings()[AVEncoderBitRateKey] as? Int ?? 128000
+        return getRecorderSettings()[AVEncoderBitRateKey] as? Int ?? AudioEngineConstants.defaultBitrate
     }
 
     // Helper method to create recording response
@@ -462,7 +496,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         let bitrate = getBitrate()
 
         // Round to 1 decimal place for better display
-        let roundedDuration = round(durationInSeconds * 10) / 10
+        let roundedDuration = round(durationInSeconds * AudioEngineConstants.durationRoundingFactor) / AudioEngineConstants.durationRoundingFactor
 
         // Encode audio file to base64 with MIME prefix (Data URI format)
         var base64Audio: String?
@@ -471,7 +505,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             let base64String = audioData.base64EncodedString()
             base64Audio = "data:audio/m4a;base64," + base64String
         } catch {
-            print("Failed to encode audio file to base64: \(error.localizedDescription)")
+            log("Failed to encode audio file to base64: \(error.localizedDescription)")
             base64Audio = nil
         }
 
@@ -479,13 +513,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             "path": fileToReturn.path,
             "uri": fileToReturn.absoluteString,
             "webPath": "capacitor://localhost/_capacitor_file_" + fileToReturn.path,
-            "mimeType": "audio/m4a", // M4A container with AAC audio
+            "mimeType": AudioEngineConstants.mimeTypeM4A, // M4A container with AAC audio
             "size": fileSize,
             "duration": roundedDuration,
             "sampleRate": Int(sampleRate), // Cast to Int for consistency
             "channels": channels,
             "bitrate": bitrate,
-            "createdAt": Int(modificationDate.timeIntervalSince1970 * 1000), // Milliseconds timestamp
+            "createdAt": Int(modificationDate.timeIntervalSince1970 * AudioEngineConstants.timestampMultiplier), // Milliseconds timestamp
             "filename": fileToReturn.lastPathComponent,
             "base64": base64Audio ?? ""
         ]
@@ -495,14 +529,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         // Stop any existing timer
         stopDurationMonitoring()
 
-        print("Starting duration monitoring")
+        log("Starting duration monitoring")
 
         // Use dispatch queue for more reliable timing
         let dispatchQueue = DispatchQueue.global(qos: .userInteractive)
         let dispatchSource = DispatchSource.makeTimerSource(queue: dispatchQueue)
 
         // Configure timer to fire every 1000ms (1 second)
-        dispatchSource.schedule(deadline: .now(), repeating: .seconds(1))
+        dispatchSource.schedule(deadline: .now(), repeating: .seconds(Int(AudioEngineConstants.timerInterval)))
 
         // Set event handler
         dispatchSource.setEventHandler { [weak self] in
@@ -515,17 +549,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
             // Increment currentDuration by 1 second each time the timer fires
             // This ensures consistent duration tracking across segments
-            self.currentDuration += 1.0
+            self.currentDuration += AudioEngineConstants.timerInterval
 
             self.lastReportedDuration = duration
 
-            print("[iOS] Duration changed: \(duration) seconds, currentDuration: \(self.currentDuration) seconds")
+            log("[iOS] Duration changed: \(duration) seconds, currentDuration: \(self.currentDuration) seconds")
 
             // Must dispatch to main queue for UI updates
             DispatchQueue.main.async {
                 // Convert to integer by truncating decimal places
                 let integerDuration = Int(self.currentDuration)
-                print("Emitting durationChange event with integer duration: \(integerDuration)")
+                self.log("Emitting durationChange event with integer duration: \(integerDuration)")
                 self.notifyListeners("durationChange", data: [
                     "duration": integerDuration
                 ])
@@ -536,11 +570,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         self.durationDispatchSource = dispatchSource
         dispatchSource.resume()
 
-        print("Duration monitoring started with dispatch source timer")
+        log("Duration monitoring started with dispatch source timer")
     }
 
     private func stopDurationMonitoring() {
-        print("Stopping duration monitoring")
+        log("Stopping duration monitoring")
 
         // Clean up timer (if using Timer)
         durationTimer?.invalidate()
@@ -556,7 +590,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     private func stopSegmentTimer() {
-        print("Stopping segment timer")
+        log("Stopping segment timer")
 
         // Get associated dispatch source
         if let timer = segmentTimer,
@@ -568,7 +602,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         segmentTimer?.invalidate()
         segmentTimer = nil
 
-        print("Segment timer stopped")
+        log("Segment timer stopped")
     }
 
     private func startPlaybackProgressTimer() {
@@ -579,7 +613,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
-            print("Starting playback progress timer")
+            log("Starting playback progress timer")
 
             // Start a new timer that fires every 1 second (matching Android)
             self.playbackProgressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -592,7 +626,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 let duration = player.duration
                 let position = duration > 0 ? (currentTime / duration) * 100 : 0
 
-                print("Playback progress: \(currentTime)/\(duration) (\(position)%)")
+                self.log("Playback progress: \(currentTime)/\(duration) (\(position)%)")
 
                 // Notify listeners of progress
                 let eventData: [String: Any] = [
@@ -606,7 +640,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     private func stopPlaybackProgressTimer() {
-        print("Stopping playback progress timer")
+        log("Stopping playback progress timer")
         DispatchQueue.main.async { [weak self] in
             self?.playbackProgressTimer?.invalidate()
             self?.playbackProgressTimer = nil
@@ -614,6 +648,27 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     @objc func startRecording(_ call: CAPPluginCall) {
+        // Input validation
+        if let sampleRate = call.getInt("sampleRate"), sampleRate <= 0 {
+            call.reject("Invalid sample rate: must be positive")
+            return
+        }
+
+        if let channels = call.getInt("channels"), channels <= 0 || channels > 2 {
+            call.reject("Invalid channels: must be 1 or 2")
+            return
+        }
+
+        if let bitrate = call.getInt("bitrate"), bitrate <= 0 {
+            call.reject("Invalid bitrate: must be positive")
+            return
+        }
+
+        if let maxDuration = call.getInt("maxDuration"), maxDuration < 0 {
+            call.reject("Invalid maxDuration: must be non-negative")
+            return
+        }
+
         if audioRecorder != nil {
             call.reject("Recording is already in progress")
             return
@@ -635,9 +690,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         self.maxDuration = call.getInt("maxDuration")
 
         // --- Enforce .m4a format ---
-        let sampleRate = call.getInt("sampleRate") ?? 44100
-        let channels = call.getInt("channels") ?? 1
-        let bitrate = call.getInt("bitrate") ?? 128000
+        let sampleRate = call.getInt("sampleRate") ?? Int(AudioEngineConstants.defaultSampleRate)
+        let channels = call.getInt("channels") ?? AudioEngineConstants.defaultChannels
+        let bitrate = call.getInt("bitrate") ?? AudioEngineConstants.defaultBitrate
         let fileManager = FileManager.default
         let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let recordingsPath = documentsPath.appendingPathComponent("Recordings", isDirectory: true)
@@ -676,8 +731,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             // Set maxDuration to nil to ensure no segment rolling happens
             self.maxDuration = nil
 
-            let ext = ".m4a"
-            let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+            let ext = AudioEngineConstants.defaultFileExtension
+            let timestamp = Int(Date().timeIntervalSince1970 * AudioEngineConstants.timestampMultiplier)
             let audioFilename = recordingsPath.appendingPathComponent("recording_\(timestamp)\(ext)")
             recordingPath = audioFilename
 
@@ -716,30 +771,34 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     private func startNextSegment(recordingsPath: URL, sampleRate: Int, channels: Int, bitrate: Int) {
-        print("Starting next segment. Current segment count: \(segmentFiles.count)")
+        log("Starting next segment. Current segment count: \(segmentFiles.count)")
 
         // Stop current recorder if exists
         if let recorder = audioRecorder, recorder.isRecording {
-            print("Stopping current recorder")
+            log("Stopping current recorder")
             recorder.stop()
         }
 
         // Create new segment file
-        let ext = ".m4a"
-        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let ext = AudioEngineConstants.defaultFileExtension
+        let timestamp = Int(Date().timeIntervalSince1970 * AudioEngineConstants.timestampMultiplier)
         let segmentFilename = recordingsPath.appendingPathComponent("segment_\(timestamp)\(ext)")
-        print("Creating new segment file: \(segmentFilename.lastPathComponent)")
+        log("Creating new segment file: \(segmentFilename.lastPathComponent)")
 
         // Add to segments list
-        segmentFiles.append(segmentFilename)
-        currentSegment += 1
-        print("Current segment number: \(currentSegment)")
+        performStateOperation {
+            segmentFiles.append(segmentFilename)
+            currentSegment += 1
+        }
+        log("Current segment number: \(currentSegment)")
 
         // Keep only last 2 segments
-        while segmentFiles.count > 2 {
-            let oldSegmentURL = segmentFiles.removeFirst()
-            try? FileManager.default.removeItem(at: oldSegmentURL)
-            print("Removed old segment: \(oldSegmentURL.lastPathComponent)")
+        performStateOperation {
+            while segmentFiles.count > AudioEngineConstants.maxSegments {
+                let oldSegmentURL = segmentFiles.removeFirst()
+                try? FileManager.default.removeItem(at: oldSegmentURL)
+                log("Removed old segment: \(oldSegmentURL.lastPathComponent)")
+            }
         }
 
         // Set as current recording path
@@ -759,14 +818,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             audioRecorder = try AVAudioRecorder(url: segmentFilename, settings: settings)
             guard let recorder = audioRecorder else {
                 let errorMsg = "Failed to initialize segment recorder"
-                print(errorMsg)
+                log(errorMsg)
                 notifyListeners("error", data: ["message": errorMsg])
                 return
             }
 
             if !recorder.prepareToRecord() {
                 let errorMsg = "Failed to prepare segment recorder"
-                print(errorMsg)
+                log(errorMsg)
                 notifyListeners("error", data: ["message": errorMsg])
                 return
             }
@@ -774,14 +833,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             let recordingStarted = recorder.record()
             if !recordingStarted {
                 let errorMsg = "Failed to start segment recording"
-                print(errorMsg)
+                log(errorMsg)
                 notifyListeners("error", data: ["message": errorMsg])
             } else {
-                print("Successfully started recording segment: \(segmentFilename.lastPathComponent)")
+                log("Successfully started recording segment: \(segmentFilename.lastPathComponent)")
             }
         } catch {
             let errorMsg = "Failed to create segment recorder: \(error.localizedDescription)"
-            print(errorMsg)
+            log(errorMsg)
             notifyListeners("error", data: ["message": errorMsg])
         }
     }
@@ -790,7 +849,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         // Cancel existing timer
         segmentTimer?.invalidate()
 
-        print("Starting segment timer with maxDuration: \(maxDuration) seconds")
+        log("Starting segment timer with maxDuration: \(maxDuration) seconds")
 
         // Use dispatch queue for more reliable timing
         let dispatchQueue = DispatchQueue.global(qos: .userInteractive)
@@ -802,17 +861,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         // Set event handler
         dispatchSource.setEventHandler { [weak self] in
             guard let self = self, self.isRecording else {
-                print("Timer fired but recording is not active, ignoring")
+                self?.log("Timer fired but recording is not active, ignoring")
                 return
             }
 
-            print("Segment timer fired after \(maxDuration) seconds")
+            self.log("Segment timer fired after \(maxDuration) seconds")
 
             // Execute on main thread since we're modifying UI-related state
             DispatchQueue.main.async {
                 // Get current recording settings
                 guard let recorder = self.audioRecorder else {
-                    print("Timer fired but recorder is nil, ignoring")
+                    self.log("Timer fired but recorder is nil, ignoring")
                     return
                 }
 
@@ -826,7 +885,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let recordingsPath = documentsPath.appendingPathComponent("Recordings", isDirectory: true)
 
-                print("Creating next segment after timer interval")
+                self.log("Creating next segment after timer interval")
                 // Start next segment
                 self.startNextSegment(recordingsPath: recordingsPath, sampleRate: sampleRate, channels: channels, bitrate: bitrate)
             }
@@ -842,15 +901,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         dispatchSource.resume()
 
         // Keep a reference to the dispatch source using associated objects
-        objc_setAssociatedObject(self.segmentTimer!, "dispatchSource", dispatchSource, .OBJC_ASSOCIATION_RETAIN)
+        if let timer = self.segmentTimer {
+            objc_setAssociatedObject(timer, "dispatchSource", dispatchSource, .OBJC_ASSOCIATION_RETAIN)
+        }
 
-        print("Segment timer started successfully")
+        log("Segment timer started successfully")
     }
 
     @objc func pauseRecording(_ call: CAPPluginCall) {
         if let recorder = audioRecorder, isRecording { // isRecording is the plugin's overall session state
             if recorder.isRecording { // Check if it's actually recording (not already paused)
-                print("Pausing recording")
+                log("Pausing recording")
 
                 // Pause the segment timer when recording is paused
                 stopSegmentTimer()
@@ -882,7 +943,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             return
         }
 
-        print("Resuming recording")
+        log("Resuming recording")
 
         // If it's paused (plugin's isRecording is true, but recorder.isRecording is false)
         do {
@@ -895,7 +956,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                 // Restart segment timer if maxDuration is set
                 if let maxDuration = maxDuration, maxDuration > 0 {
-                    print("Restarting segment timer after resume")
+                    log("Restarting segment timer after resume")
                     startSegmentTimer(maxDuration: maxDuration)
                 }
 
@@ -943,22 +1004,27 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         // If using segments and we have segments
         if let maxDuration = maxDuration, maxDuration > 0, !segmentFiles.isEmpty {
-            print("Processing segments. Total segments: \(segmentFiles.count)")
+            log("Processing segments. Total segments: \(segmentFiles.count)")
 
             // Check if we have at least 2 segments and the last segment is shorter than maxDuration
             if segmentFiles.count >= 2 {
-                let lastSegment = segmentFiles.last!
+                guard let lastSegment = segmentFiles.last,
+                      segmentFiles.count >= 2 else {
+                    log("Insufficient segments for merging")
+                    return
+                }
+
                 let previousSegment = segmentFiles[segmentFiles.count - 2]
 
                 // Get duration of the last segment
                 let lastSegmentAsset = AVAsset(url: lastSegment)
                 let lastSegmentDuration = lastSegmentAsset.duration.seconds
 
-                print("Last segment duration: \(lastSegmentDuration) seconds, maxDuration: \(maxDuration) seconds")
+                log("Last segment duration: \(lastSegmentDuration) seconds, maxDuration: \(maxDuration) seconds")
 
                 // If last segment is shorter than maxDuration, merge with previous segment
                 if lastSegmentDuration < Double(maxDuration) {
-                    print("Last segment is shorter than maxDuration, merging with previous segment")
+                    log("Last segment is shorter than maxDuration, merging with previous segment")
 
                     // Create a new file for the merged audio
                     let fileManager = FileManager.default
@@ -971,7 +1037,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     // Calculate how much time we need from the previous segment (in seconds)
                     // Use ceiling to ensure we get at least the full duration requested
                     let requiredDuration = ceil(Double(maxDuration) - lastSegmentDuration)
-                    print("Required duration from previous segment: \(requiredDuration) seconds")
+                    log("Required duration from previous segment: \(requiredDuration) seconds")
 
                     // Get previous segment duration to validate
                     let previousSegmentAsset = AVAsset(url: previousSegment)
@@ -979,19 +1045,19 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                     // Make sure we don't request more than what's available
                     let validRequiredDuration = min(requiredDuration, previousSegmentDuration)
-                    print("Valid required duration: \(validRequiredDuration) seconds (previous segment duration: \(previousSegmentDuration) seconds)")
+                    log("Valid required duration: \(validRequiredDuration) seconds (previous segment duration: \(previousSegmentDuration) seconds)")
 
                     // Merge the audio files asynchronously
                     mergeAudioFiles(firstFile: previousSegment, secondFile: lastSegment, outputFile: mergedFilePath, requiredDuration: validRequiredDuration) { result in
                         switch result {
                         case .success:
                             fileToReturn = mergedFilePath
-                            print("Successfully merged segments into: \(mergedFilePath.path)")
+                            self.log("Successfully merged segments into: \(mergedFilePath.path)")
 
                             // Clean up the segments that were merged
                             try? FileManager.default.removeItem(at: previousSegment)
                             try? FileManager.default.removeItem(at: lastSegment)
-                            print("Removed original segments after merging")
+                            self.log("Removed original segments after merging")
 
                             // Remove the merged segments from the list
                             self.segmentFiles.removeAll { $0 == previousSegment || $0 == lastSegment }
@@ -1000,7 +1066,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                             self.segmentFiles.append(mergedFilePath)
 
                         case .failure(let error):
-                            print("Failed to merge audio segments: \(error.localizedDescription)")
+                            self.log("Failed to merge audio segments: \(error.localizedDescription)")
                             fileToReturn = lastSegment
                         }
 
@@ -1008,11 +1074,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         for segmentPath in self.segmentFiles {
                             if segmentPath != fileToReturn {
                                 try? FileManager.default.removeItem(at: segmentPath)
-                                print("Removed unused segment: \(segmentPath.lastPathComponent)")
+                                self.log("Removed unused segment: \(segmentPath.lastPathComponent)")
                             }
                         }
                         self.segmentFiles.removeAll()
-                        print("Final recording file: \(fileToReturn.path)")
+                        self.log("Final recording file: \(fileToReturn.path)")
 
                         // Reset segment tracking
                         self.maxDuration = nil
@@ -1029,9 +1095,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                             let asset = AVAsset(url: fileToReturn)
                             let durationInSeconds = asset.duration.seconds
 
-                            print("Original recording duration: \(durationInSeconds) seconds")
+                            self.log("Original recording duration: \(durationInSeconds) seconds")
 
-                            print("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
+                            self.log("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
 
                             // Use the helper method to create response with base64 encoding
                             let response = self.createRecordingResponse(
@@ -1053,7 +1119,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     // Return early - the call will be resolved in the completion handler
                     return
                 } else {
-                    print("Last segment is not shorter than maxDuration, using as is")
+                    log("Last segment is not shorter than maxDuration, using as is")
                     fileToReturn = lastSegment
 
                     // Process the file asynchronously to maintain consistent pattern
@@ -1062,11 +1128,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         for segmentPath in self.segmentFiles {
                             if segmentPath != fileToReturn {
                                 try? FileManager.default.removeItem(at: segmentPath)
-                                print("Removed unused segment: \(segmentPath.lastPathComponent)")
+                                self.log("Removed unused segment: \(segmentPath.lastPathComponent)")
                             }
                         }
                         self.segmentFiles.removeAll()
-                        print("Final recording file: \(fileToReturn.path)")
+                        self.log("Final recording file: \(fileToReturn.path)")
 
                         // Reset segment tracking
                         self.maxDuration = nil
@@ -1083,9 +1149,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                             let asset = AVAsset(url: fileToReturn)
                             let durationInSeconds = asset.duration.seconds
 
-                            print("Original recording duration: \(durationInSeconds) seconds")
+                            self.log("Original recording duration: \(durationInSeconds) seconds")
 
-                            print("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
+                            self.log("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
 
                             // Use the helper method to create response with base64 encoding
                             let response = self.createRecordingResponse(
@@ -1108,61 +1174,79 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     return
                 }
             } else {
-                print("Only one segment available, using it as is")
+                log("Only one segment available, using it as is")
                 fileToReturn = segmentFiles.last ?? path
 
-                // Process the file asynchronously to maintain consistent pattern
-                DispatchQueue.global(qos: .userInitiated).async {
-                    // Clean up other segments
-                    for segmentPath in self.segmentFiles {
-                        if segmentPath != fileToReturn {
-                            try? FileManager.default.removeItem(at: segmentPath)
-                            print("Removed unused segment: \(segmentPath.lastPathComponent)")
-                        }
-                    }
-                    self.segmentFiles.removeAll()
-                    print("Final recording file: \(fileToReturn.path)")
+                // Clean up other segments and reset state
+                cleanupSegmentFiles(except: fileToReturn)
+                resetRecordingState()
 
-                    // Reset segment tracking
-                    self.maxDuration = nil
-                    self.currentSegment = 0
-
-                    // Process the final file and resolve the call
-                    do {
-                        // Get file attributes
-                        let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileToReturn.path)
-                        let fileSize = fileAttributes[.size] as? Int64 ?? 0
-                        let modificationDate = fileAttributes[.modificationDate] as? Date ?? Date() // Use modificationDate
-
-                        // Get audio metadata
-                        let asset = AVAsset(url: fileToReturn)
-                        let durationInSeconds = asset.duration.seconds
-
-                        print("Original recording duration: \(durationInSeconds) seconds")
-
-                        print("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
-
-                        // Use the helper method to create response with base64 encoding
-                        let response = self.createRecordingResponse(
-                            fileToReturn: fileToReturn,
-                            fileSize: fileSize,
-                            modificationDate: modificationDate,
-                            durationInSeconds: durationInSeconds
-                        )
-                        call.resolve(response)
-                    } catch {
-                        call.reject("Failed to get recording info: \(error.localizedDescription)")
-                    }
-
-                    // Cleanup
-                    self.audioRecorder = nil // Recorder is nilled out after use
-                    self.recordingPath = nil // Clear the path as well
-                }
-
-                // Return early - the call will be resolved in the async block
+                // Process the final file and resolve the call
+                processRecordingFile(fileToReturn, call: call)
                 return
             }
         }
+    }
+
+    // MARK: - Helper Methods for Recording
+
+    private func processRecordingFile(_ fileToReturn: URL, call: CAPPluginCall) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // Get file attributes
+                let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileToReturn.path)
+                let fileSize = fileAttributes[.size] as? Int64 ?? 0
+                let modificationDate = fileAttributes[.modificationDate] as? Date ?? Date()
+
+                // Get audio metadata
+                let asset = AVAsset(url: fileToReturn)
+                let durationInSeconds = asset.duration.seconds
+
+                self.log("Original recording duration: \(durationInSeconds) seconds")
+                self.log("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
+
+                // Use the helper method to create response with base64 encoding
+                let response = self.createRecordingResponse(
+                    fileToReturn: fileToReturn,
+                    fileSize: fileSize,
+                    modificationDate: modificationDate,
+                    durationInSeconds: durationInSeconds
+                )
+
+                DispatchQueue.main.async {
+                    call.resolve(response)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    call.reject("Failed to get recording info: \(error.localizedDescription)")
+                }
+            }
+
+            // Cleanup
+            self.audioRecorder = nil
+            self.recordingPath = nil
+        }
+    }
+
+    private func cleanupSegmentFiles(except keepFile: URL? = nil) {
+        performStateOperation {
+            for segmentPath in segmentFiles {
+                if let keepFile = keepFile, segmentPath == keepFile {
+                    continue
+                }
+                try? FileManager.default.removeItem(at: segmentPath)
+                log("Removed unused segment: \(segmentPath.lastPathComponent)")
+            }
+            segmentFiles.removeAll()
+            if let keepFile = keepFile {
+                segmentFiles.append(keepFile)
+            }
+        }
+    }
+
+    private func resetRecordingState() {
+        maxDuration = nil
+        currentSegment = 0
     }
 
     @objc func getDuration(_ call: CAPPluginCall) {
@@ -1170,7 +1254,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             // Return the current duration as an integer
             // Make sure we're returning the most up-to-date duration value
             let intDuration = Int(currentDuration)
-            print("getDuration returning: \(intDuration) seconds")
+            log("getDuration returning: \(intDuration) seconds")
             call.resolve([
                 "duration": intDuration
             ])
@@ -1203,16 +1287,27 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     @objc func trimAudio(_ call: CAPPluginCall) {
-        guard let sourcePath = call.getString("uri") else {
-            call.reject("Source URI is required")
+        guard let sourcePath = call.getString("uri"), !sourcePath.isEmpty else {
+            call.reject("Source URI is required and cannot be empty")
             return
         }
 
         let startTime = call.getDouble("start") ?? 0.0
         let endTime = call.getDouble("end") ?? 0.0
 
+        // Input validation
+        if startTime < 0 {
+            call.reject("Start time must be non-negative")
+            return
+        }
+
         if endTime <= startTime {
             call.reject("End time must be greater than start time")
+            return
+        }
+
+        if endTime - startTime > 3600 { // 1 hour limit
+            call.reject("Trim duration cannot exceed 1 hour")
             return
         }
 
@@ -1363,7 +1458,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                                 let base64String = audioData.base64EncodedString()
                                 base64Audio = "data:audio/m4a;base64," + base64String
                             } catch {
-                                print("Failed to encode trimmed audio file to base64: \(error.localizedDescription)")
+                                self.log("Failed to encode trimmed audio file to base64: \(error.localizedDescription)")
                                 base64Audio = nil
                             }
 
@@ -1438,14 +1533,20 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             }
 
             // Check for format compatibility
-            let firstFormat = firstTrack.formatDescriptions.first as! CMFormatDescription
-            let secondFormat = secondTrack.formatDescriptions.first as! CMFormatDescription
+            guard let firstFormatAny = firstTrack.formatDescriptions.first,
+                  let secondFormatAny = secondTrack.formatDescriptions.first else {
+                throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get format descriptions"])
+            }
+
+            let firstFormat = firstFormatAny as! CMFormatDescription
+            let secondFormat = secondFormatAny as! CMFormatDescription
+
             let firstASBD = CMAudioFormatDescriptionGetStreamBasicDescription(firstFormat)
             let secondASBD = CMAudioFormatDescriptionGetStreamBasicDescription(secondFormat)
 
             if let firstASBD = firstASBD, let secondASBD = secondASBD {
                 if firstASBD.pointee.mSampleRate != secondASBD.pointee.mSampleRate {
-                    print("Warning: Sample rate mismatch between segments: \(firstASBD.pointee.mSampleRate) vs \(secondASBD.pointee.mSampleRate)")
+                    log("Warning: Sample rate mismatch between segments: \(firstASBD.pointee.mSampleRate) vs \(secondASBD.pointee.mSampleRate)")
                     // We'll continue anyway, but this could cause quality issues
                 }
             }
@@ -1466,13 +1567,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             let firstPortionDuration = min(validRequiredDuration, firstFileDuration - startTime)
             let firstPortionCMTime = CMTime(seconds: firstPortionDuration, preferredTimescale: highPrecisionTimescale)
 
-            print("Merging audio files:")
-            print("First file duration: \(firstFileDuration) seconds")
-            print("Required duration: \(requiredDuration) seconds")
-            print("Valid required duration: \(validRequiredDuration) seconds")
-            print("Start time in first file: \(startTime) seconds")
-            print("First portion duration: \(firstPortionDuration) seconds")
-            print("Second file duration: \(secondAsset.duration.seconds) seconds")
+            log("Merging audio files:")
+            log("First file duration: \(firstFileDuration) seconds")
+            log("Required duration: \(requiredDuration) seconds")
+            log("Valid required duration: \(validRequiredDuration) seconds")
+            log("Start time in first file: \(startTime) seconds")
+            log("First portion duration: \(firstPortionDuration) seconds")
+            log("Second file duration: \(secondAsset.duration.seconds) seconds")
 
             // Insert only the required portion of the first audio track into the composition
             try compositionTrack.insertTimeRange(
@@ -1491,8 +1592,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             // This ensures perfect continuity with no gap
             let secondSegmentStartTime = firstSegmentEndTime
 
-            print("First segment end time: \(CMTimeGetSeconds(firstSegmentEndTime)) seconds")
-            print("Second segment start time: \(CMTimeGetSeconds(secondSegmentStartTime)) seconds")
+            log("First segment end time: \(CMTimeGetSeconds(firstSegmentEndTime)) seconds")
+            log("Second segment start time: \(CMTimeGetSeconds(secondSegmentStartTime)) seconds")
 
             // Insert the second audio track into the composition at the exact end of the first segment
             // This ensures there's no gap between segments
@@ -1508,7 +1609,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             // Create parameters for the composition track
             let audioMixInputParameters = AVMutableAudioMixInputParameters(track: compositionTrack)
             // Set volume ramp for the transition point to ensure smooth crossfade
-            let crossfadeDuration = 0.02 // 20 milliseconds crossfade
+            let crossfadeDuration = AudioEngineConstants.crossfadeDuration // 20 milliseconds crossfade
 
             // Calculate the crossfade start and end times
             // Since secondSegmentStartTime equals firstSegmentEndTime, we need to create a crossfade
@@ -1560,7 +1661,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             exportSession.exportAsynchronously {
                 userInitiatedQueue.async {
                     if exportSession.status == .completed {
-                        print("Successfully merged audio files to: \(outputFile.path)")
+                        self.log("Successfully merged audio files to: \(outputFile.path)")
                         completion(.success(()))
                     } else if let error = exportSession.error {
                         completion(.failure(error))
@@ -1667,7 +1768,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
     // Cleanup when plugin is destroyed
     deinit {
-        print("Plugin is being destroyed, cleaning up resources")
+        log("Plugin is being destroyed, cleaning up resources")
 
         // Stop duration monitoring
         stopDurationMonitoring()
@@ -1678,7 +1779,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         // Stop recording if active
         if let recorder = audioRecorder {
             if recorder.isRecording {
-                print("Stopping active recording during cleanup")
+                log("Stopping active recording during cleanup")
                 recorder.stop()
             }
             audioRecorder = nil
@@ -1687,7 +1788,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         // Cancel export if in progress
         if let session = exportSession {
-            print("Canceling active export session during cleanup")
+            log("Canceling active export session during cleanup")
             session.cancelExport()
         }
         exportSession = nil
@@ -1700,10 +1801,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         stopInterruptionMonitoring()
 
         // Clean up segment files
-        print("Cleaning up \(segmentFiles.count) segment files")
+        log("Cleaning up \(segmentFiles.count) segment files")
         for segmentPath in segmentFiles {
             try? FileManager.default.removeItem(at: segmentPath)
-            print("Removed segment file: \(segmentPath.lastPathComponent)")
+            log("Removed segment file: \(segmentPath.lastPathComponent)")
         }
         segmentFiles.removeAll()
 
@@ -1715,15 +1816,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         stopPlaybackProgressTimer()
 
         // Clean up preloaded audio resources
-        print("Cleaning up \(preloadedAudioPlayers.count) preloaded audio players")
+        log("Cleaning up \(preloadedAudioPlayers.count) preloaded audio players")
         for (uri, player) in preloadedAudioPlayers {
             player.stop()
-            print("Stopped preloaded audio: \(uri)")
+            log("Stopped preloaded audio: \(uri)")
         }
         preloadedAudioPlayers.removeAll()
         preloadedAudioData.removeAll()
 
-        print("Plugin cleanup completed")
+        log("Plugin cleanup completed")
     }
 
     @objc public override func addListener(_ call: CAPPluginCall) {
@@ -1735,21 +1836,21 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         // Validate event name - include both recording and playback events
         switch eventName {
         case "recordingInterruption", "durationChange", "error":
-            print("Adding recording listener for \(eventName)")
+            log("Adding recording listener for \(eventName)")
             super.addListener(call)
 
             if eventName == "durationChange" {
-                print("Duration change listener added")
+                log("Duration change listener added")
 
                 // If we're recording, immediately restart duration monitoring to ensure events fire
                 if isRecording {
-                    print("Restarting duration monitoring because listener was added while recording")
+                    log("Restarting duration monitoring because listener was added while recording")
                     stopDurationMonitoring() // Ensure clean state
                     startDurationMonitoring()
 
                     // Also emit an immediate event with the current duration
                     let intDuration = Int(currentDuration)
-                    print("Emitting immediate durationChange event with current duration: \(intDuration)")
+                    log("Emitting immediate durationChange event with current duration: \(intDuration)")
                     notifyListeners("durationChange", data: [
                         "duration": intDuration
                     ])
@@ -1758,12 +1859,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
             call.resolve()
         case "playbackProgress", "playbackStatusChange", "playbackCompleted", "playbackError":
-            print("Adding playback listener for \(eventName)")
+            log("Adding playback listener for \(eventName)")
             super.addListener(call)
 
             // If we're currently playing and this is a progress listener, make sure the timer is running
             if eventName == "playbackProgress" && isPlaying && audioPlayer != nil {
-                print("Restarting playback progress timer because listener was added while playing")
+                log("Restarting playback progress timer because listener was added while playing")
                 startPlaybackProgressTimer()
 
                 // Also emit an immediate progress event with current state
@@ -1772,7 +1873,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     let duration = player.duration
                     let position = duration > 0 ? (currentTime / duration) * 100 : 0
 
-                    print("Emitting immediate playbackProgress event")
+                    log("Emitting immediate playbackProgress event")
                     notifyListeners("playbackProgress", data: [
                         "currentTime": currentTime,
                         "duration": duration,
@@ -1788,13 +1889,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     @objc public override func removeAllListeners(_ call: CAPPluginCall) {
-        print("Removing all listeners")
+        log("Removing all listeners")
         super.removeAllListeners(call)
         call.resolve()
     }
 
     @objc public func removeAllListeners() {
-        print("Removing all listeners (no-arg version)")
+        log("Removing all listeners (no-arg version)")
         // Direct access to eventListeners property is the cleanest approach
         self.eventListeners?.removeAllObjects()
     }
@@ -1809,7 +1910,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 audioRecorder?.pause()
                 try recordingSession?.setActive(false, options: .notifyOthersOnDeactivation)
             } catch {
-                print("Failed to handle interruption: \(error.localizedDescription)")
+                log("Failed to handle interruption: \(error.localizedDescription)")
             }
         }
     }
@@ -1823,11 +1924,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 // Resume recording if possible
                 if let recorder = audioRecorder, isRecording {
                     if recorder.record() {
-                        print("Successfully resumed recording after interruption")
+                        log("Successfully resumed recording after interruption")
 
                         // Restart segment timer if maxDuration is set
                         if let maxDuration = maxDuration, maxDuration > 0 {
-                            print("Restarting segment timer after interruption")
+                            log("Restarting segment timer after interruption")
                             startSegmentTimer(maxDuration: maxDuration)
                         }
 
@@ -1838,7 +1939,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                             "message": "Recording resumed after interruption"
                         ])
                     } else {
-                        print("Failed to resume recording after interruption")
+                        log("Failed to resume recording after interruption")
                         wasRecordingBeforeInterruption = false
 
                         notifyListeners("recordingInterruption", data: [
@@ -1847,7 +1948,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     }
                 }
             } catch {
-                print("Failed to resume recording after app state change: \(error.localizedDescription)")
+                log("Failed to resume recording after app state change: \(error.localizedDescription)")
                 wasRecordingBeforeInterruption = false
 
                 notifyListeners("recordingInterruption", data: [
@@ -1957,7 +2058,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             } else {
                 // Try to install a tap on the input node
                 // This is a lightweight way to test mic access without actually recording
-                inputNode.installTap(onBus: 0, bufferSize: 512, format: format) { (buffer, time) in
+                inputNode.installTap(onBus: 0, bufferSize: AudioEngineConstants.bufferSize, format: format) { (buffer, time) in
                     // We don't process the buffer, just test that we can access it
                 }
 
@@ -2015,7 +2116,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 try audioSession.setActive(false)
             }
         } catch {
-            print("Failed to restore audio session: \(error)")
+            log("Failed to restore audio session: \(error)")
         }
 
         call.resolve(["busy": isBusy, "reason": reason])
@@ -2078,8 +2179,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         let settings = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44100,
-            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: Int(AudioEngineConstants.defaultSampleRate),
+            AVNumberOfChannelsKey: AudioEngineConstants.defaultChannels,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
 
@@ -2087,7 +2188,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             audioRecorder = try AVAudioRecorder(url: recordingPath, settings: settings)
             audioRecorder?.prepareToRecord()
         } catch {
-            print("Failed to setup audio recorder: \(error)")
+            log("Failed to setup audio recorder: \(error)")
         }
     }
 
@@ -2157,13 +2258,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             return
         }
 
-        print("Preloading remote audio from: \(uri)")
+        log("Preloading remote audio from: \(uri)")
 
         // Create URLSessionConfiguration for better CDN handling
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        config.timeoutIntervalForRequest = 60.0
-        config.timeoutIntervalForResource = 120.0
+        config.timeoutIntervalForRequest = AudioEngineConstants.networkTimeout
+        config.timeoutIntervalForResource = AudioEngineConstants.resourceTimeout
         config.waitsForConnectivity = true
 
         let session = URLSession(configuration: config)
@@ -2208,7 +2309,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                 // Check HTTP response with detailed error messages
                 if let httpResponse = response as? HTTPURLResponse {
-                    print("HTTP Response: \(httpResponse.statusCode) for URL: \(uri)")
+                    self.log("HTTP Response: \(httpResponse.statusCode) for URL: \(uri)")
 
                     switch httpResponse.statusCode {
                     case 200...299:
@@ -2229,14 +2330,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                     // Validate content type
                     if let contentType = httpResponse.allHeaderFields["Content-Type"] as? String {
-                        print("Content-Type: \(contentType)")
+                        self.log("Content-Type: \(contentType)")
                         if !contentType.contains("audio") && !contentType.contains("application/octet-stream") {
-                            print("Warning: Unexpected content type \(contentType) for audio file")
+                            self.log("Warning: Unexpected content type \(contentType) for audio file")
                         }
                     }
                 }
 
-                print("Successfully downloaded \(data.count) bytes for preload")
+                self.log("Successfully downloaded \(data.count) bytes for preload")
 
                 // Create audio player from downloaded data with enhanced error handling
                 do {
@@ -2250,7 +2351,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     if prepare {
                         let prepared = preloadedPlayer.prepareToPlay()
                         if prepared {
-                            print("Successfully prepared remote audio for playback")
+                            self.log("Successfully prepared remote audio for playback")
                             call.resolve(["success": true, "size": data.count])
                         } else {
                             call.reject("Failed to prepare remote audio for playback - audio format may be unsupported")
@@ -2330,7 +2431,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         // Check if this URI is already preloaded (PERFORMANCE ENHANCEMENT)
         if let preloadedPlayer = preloadedAudioPlayers[uri] {
-            print("Using preloaded audio for: \(uri)")
+            log("Using preloaded audio for: \(uri)")
 
             DispatchQueue.main.async {
                 // Stop any current playback
@@ -2391,7 +2492,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 self.isLooping = loop
 
                 // Load and play audio (since it's not preloaded)
-                print("Loading audio on-demand for: \(uri)")
+                self.log("Loading audio on-demand for: \(uri)")
                 if self.isRemoteURL(uri) {
                     self.playRemoteAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: startTime, call: call)
                 } else {
@@ -2414,7 +2515,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             return
         }
 
-        print("Starting playback of remote audio from: \(uri)")
+        log("Starting playback of remote audio from: \(uri)")
 
         // Create URLSessionConfiguration for better CDN handling
         let config = URLSessionConfiguration.default
@@ -2465,7 +2566,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                 // Check HTTP response with detailed error messages
                 if let httpResponse = response as? HTTPURLResponse {
-                    print("HTTP Response: \(httpResponse.statusCode) for URL: \(uri)")
+                    self.log("HTTP Response: \(httpResponse.statusCode) for URL: \(uri)")
 
                     switch httpResponse.statusCode {
                     case 200...299:
@@ -2485,7 +2586,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     }
                 }
 
-                print("Successfully downloaded \(data.count) bytes for playback")
+                self.log("Successfully downloaded \(data.count) bytes for playback")
 
                 // Create audio player from downloaded data with enhanced error handling
                 do {
@@ -2518,7 +2619,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         self.currentPlaybackPath = uri
                         self.startPlaybackProgressTimer()
 
-                        print("Successfully started remote audio playback")
+                        self.log("Successfully started remote audio playback")
 
                         // Notify listeners
                         let eventData: [String: Any] = [
@@ -2836,12 +2937,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             let loadedDescriptions = try await audioTrack.load(.formatDescriptions)
             formatDescriptions = loadedDescriptions
         } else {
-            formatDescriptions = audioTrack.formatDescriptions as! [CMFormatDescription]
+            guard let descriptions = audioTrack.formatDescriptions as? [CMFormatDescription] else {
+                throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get format descriptions"])
+            }
+            formatDescriptions = descriptions
         }
 
-        var sampleRate: Double = 44100.0
-        var channels: Int = 1
-        var bitrate: Int = 128000
+        var sampleRate: Double = AudioEngineConstants.defaultSampleRate
+        var channels: Int = AudioEngineConstants.defaultChannels
+        var bitrate: Int = AudioEngineConstants.defaultBitrate
 
         if let formatDescription = formatDescriptions.first {
             let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
@@ -2873,7 +2977,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             let pathExtension = fileURL.pathExtension.lowercased()
             switch pathExtension {
             case "m4a":
-                mimeType = "audio/m4a"
+                mimeType = AudioEngineConstants.mimeTypeM4A
             case "mp3":
                 mimeType = "audio/mpeg"
             case "wav":
@@ -2881,7 +2985,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             case "aac":
                 mimeType = "audio/aac"
             default:
-                mimeType = "audio/m4a"
+                mimeType = AudioEngineConstants.mimeTypeM4A
             }
         } else {
             // For remote URLs, extract filename from URL
@@ -2901,11 +3005,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             "uri": uri,
             "mimeType": mimeType,
             "size": fileSize,
-            "duration": round(durationInSeconds * 10) / 10, // Round to 1 decimal place
+            "duration": round(durationInSeconds * AudioEngineConstants.durationRoundingFactor) / AudioEngineConstants.durationRoundingFactor, // Round to 1 decimal place
             "sampleRate": sampleRate,
             "channels": channels,
             "bitrate": bitrate,
-            "createdAt": Int64(createdAt * 1000), // Convert to milliseconds
+            "createdAt": Int64(createdAt * AudioEngineConstants.timestampMultiplier), // Convert to milliseconds
             "filename": filename
         ]
     }
