@@ -1,9 +1,9 @@
 import { Component,  OnInit, signal, OnDestroy, inject } from '@angular/core';
-import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon, IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner, IonCheckbox } from '@ionic/angular/standalone';
+import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon, IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner, IonCheckbox, IonInput, IonCardSubtitle } from '@ionic/angular/standalone';
 import { CapacitorAudioEngine,AudioFileInfo, MicrophoneInfo } from "capacitor-audio-engine";
 import { CommonModule } from '@angular/common';
 import { addIcons } from 'ionicons';
-import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline, informationCircleOutline } from 'ionicons/icons';
+import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline, informationCircleOutline, cloudOutline, cloudDownloadOutline, volumeLowOutline } from 'ionicons/icons';
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
 import { AlertController } from '@ionic/angular';
@@ -13,7 +13,7 @@ import { Filesystem } from '@capacitor/filesystem';
   selector: 'app-home',
   templateUrl: 'home.page.html',
   styleUrls: ['home.page.scss'],
-  imports: [CommonModule, FormsModule, IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon,IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner, IonCheckbox],
+  imports: [CommonModule, FormsModule, IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon,IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner, IonCheckbox, IonInput, IonCardSubtitle],
   standalone: true
 })
 export class HomePage implements OnInit, OnDestroy{
@@ -45,6 +45,33 @@ export class HomePage implements OnInit, OnDestroy{
   playbackSpeed = signal<number>(1.0);
   playbackVolume = signal<number>(1.0);
   isLooping = signal<boolean>(false);
+
+
+
+
+  // CDN Audio Testing properties
+  cdnAudioUrls = [
+    {
+      name: 'Sample MP3 (CDN)',
+      url: "https://cms-public-artifacts.artlist.io/content/music/aac/807314_803239_Heinrich_Egbert_Matthias_Forster_-_In_a_Blink_of_an_Eye_-_AO-000986-2_-_Master_V2_-_130_Bpm_-_271222_-_BOV_-_ORG_-_2444.aac",
+      type: 'mp3'
+    },
+    {
+      name: 'Sample WAV (CDN)',
+      url:  "https://cms-public-artifacts.artlist.io/content/music/aac/911510_910848_TURPAK_-_Ascending_-_EX-000366-2_-_Master_-_75-77_Bpm_-_290823_-_BOV_-_EXT_-_2444.aac",
+      type: 'wav'
+    },
+    {
+      name: 'Sample M4A (CDN)',
+      url:     "https://cms-public-artifacts.artlist.io/content/music/aac/955658_954131_Amos_Ever_Hadani_-_Amores_-_AO-002223-2_-_Master_V2_-_113_Bpm_-_130824_-_BOV_-_ORG_-_2444.aac",
+      type: 'm4a'
+    }
+  ];
+  selectedCdnUrl = signal<string>('');
+  cdnPreloadStatus = signal<string>('');
+  cdnPlaybackStatus = signal<string>('');
+  isPreloading = signal<boolean>(false);
+  cdnAudioInfo = signal<AudioFileInfo | null>(null);
 
   // Add channel configuration
   recordingChannels = 1;  // Default to mono
@@ -87,7 +114,10 @@ export class HomePage implements OnInit, OnDestroy{
       speedometerOutline,
       playSkipForwardOutline,
       playSkipBackOutline,
-      informationCircleOutline
+      informationCircleOutline,
+      cloudOutline,
+      cloudDownloadOutline,
+      volumeLowOutline
     });
   }
 
@@ -785,5 +815,127 @@ export class HomePage implements OnInit, OnDestroy{
       });
       await alert.present();
     }
+  }
+
+  // CDN Audio Testing Methods
+  async preloadCdnAudio(url: string) {
+    if (!url) {
+      this.cdnPreloadStatus.set('Please select a CDN URL first');
+      return;
+    }
+
+    this.isPreloading.set(true);
+    this.cdnPreloadStatus.set('Preloading CDN audio...');
+    this.cdnAudioInfo.set(null);
+
+    try {
+      console.log('Preloading CDN audio from:', url);
+
+      const result = await CapacitorAudioEngine.preload({
+        uri: url,
+        prepare: true
+      });
+
+      console.log('CDN preload result:', result);
+
+      this.cdnPreloadStatus.set('✅ CDN audio preloaded successfully!');
+      this.selectedCdnUrl.set(url);
+
+      // Get audio info for the preloaded file
+      try {
+        const audioInfo = await CapacitorAudioEngine.getAudioInfo({ uri: url });
+        this.cdnAudioInfo.set(audioInfo);
+        console.log('CDN audio info:', audioInfo);
+      } catch (infoError) {
+        console.warn('Could not get audio info:', infoError);
+      }
+
+    } catch (error) {
+      console.error('CDN preload error:', error);
+      this.cdnPreloadStatus.set(`❌ Failed to preload: ${error}`);
+    } finally {
+      this.isPreloading.set(false);
+    }
+  }
+
+  async playCdnAudio(url: string) {
+    if (!url) {
+      this.cdnPlaybackStatus.set('Please select a CDN URL first');
+      return;
+    }
+
+    this.cdnPlaybackStatus.set('Starting CDN audio playback...');
+
+    try {
+      console.log('Playing CDN audio from:', url);
+
+      await CapacitorAudioEngine.startPlayback({
+        uri: url,
+        speed: this.playbackSpeed(),
+        volume: this.playbackVolume(),
+        loop: this.isLooping()
+      });
+
+      this.cdnPlaybackStatus.set('🎵 CDN audio playing');
+      this.isPlaying.set(true);
+
+    } catch (error) {
+      console.error('CDN playback error:', error);
+      this.cdnPlaybackStatus.set(`❌ Failed to play: ${error}`);
+    }
+  }
+
+  async stopCdnAudio() {
+    try {
+      await CapacitorAudioEngine.stopPlayback();
+      this.cdnPlaybackStatus.set('⏹️ CDN audio stopped');
+      this.isPlaying.set(false);
+    } catch (error) {
+      console.error('Error stopping CDN audio:', error);
+      this.cdnPlaybackStatus.set(`❌ Failed to stop: ${error}`);
+    }
+  }
+
+  async pauseCdnAudio() {
+    try {
+      await CapacitorAudioEngine.pausePlayback();
+      this.cdnPlaybackStatus.set('⏸️ CDN audio paused');
+      this.isPlaying.set(false);
+    } catch (error) {
+      console.error('Error pausing CDN audio:', error);
+      this.cdnPlaybackStatus.set(`❌ Failed to pause: ${error}`);
+    }
+  }
+
+  async resumeCdnAudio() {
+    try {
+      await CapacitorAudioEngine.resumePlayback();
+      this.cdnPlaybackStatus.set('▶️ CDN audio resumed');
+      this.isPlaying.set(true);
+    } catch (error) {
+      console.error('Error resuming CDN audio:', error);
+      this.cdnPlaybackStatus.set(`❌ Failed to resume: ${error}`);
+    }
+  }
+
+  selectCdnUrl(url: string) {
+    this.selectedCdnUrl.set(url);
+    this.cdnPreloadStatus.set('');
+    this.cdnPlaybackStatus.set('');
+    this.cdnAudioInfo.set(null);
+  }
+
+  formatFileSize(bytes: number): string {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  formatDuration(seconds: number): string {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 }

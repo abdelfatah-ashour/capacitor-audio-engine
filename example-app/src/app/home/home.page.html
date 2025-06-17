@@ -339,6 +339,195 @@
           </ion-button>
         </ion-card-content>
       </ion-card>
+
+      <!-- CDN Audio Testing Section -->
+      <ion-card class="cdn-audio-testing">
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="cloud-outline"></ion-icon>
+            CDN Audio Testing
+          </ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          <p>Test audio preloading and playback from CDN URLs to verify network functionality.</p>
+
+          <!-- CDN URL Selection -->
+          <ion-item>
+            <ion-label>Select CDN Audio:</ion-label>
+            <ion-select
+              placeholder="Choose audio file"
+              [value]="selectedCdnUrl()"
+              (ionChange)="selectCdnUrl($event.detail.value)">
+              @for(audio of cdnAudioUrls; track audio.url) {
+                <ion-select-option [value]="audio.url">
+                  {{ audio.name }} ({{ audio.type.toUpperCase() }})
+                </ion-select-option>
+              }
+            </ion-select>
+          </ion-item>
+
+          <!-- Custom URL Input -->
+          <ion-item>
+            <ion-label position="stacked">Or enter custom CDN URL:</ion-label>
+            <ion-input
+              type="url"
+              placeholder="https://example.com/audio.mp3"
+              [value]="selectedCdnUrl()"
+              (ionInput)="selectCdnUrl($event.detail.value!)"></ion-input>
+          </ion-item>
+
+          <!-- Preload Section -->
+          <div class="cdn-controls-section">
+            <h4>1. Preload CDN Audio</h4>
+            <p class="section-description">Test the preload functionality with CDN files</p>
+
+            <ion-button
+              expand="block"
+              color="secondary"
+              [disabled]="!selectedCdnUrl() || isPreloading()"
+              (click)="preloadCdnAudio(selectedCdnUrl())">
+              @if(isPreloading()) {
+                <ion-spinner slot="start"></ion-spinner>
+                Preloading...
+              } @else {
+                <ion-icon name="cloud-download-outline" slot="start"></ion-icon>
+                Preload CDN Audio
+              }
+            </ion-button>
+
+            @if(cdnPreloadStatus()) {
+              <ion-item>
+                <ion-label>
+                  <h3>Preload Status</h3>
+                  <p [innerHTML]="cdnPreloadStatus()"></p>
+                </ion-label>
+              </ion-item>
+            }
+
+            <!-- Audio Info Display -->
+            @if(cdnAudioInfo()) {
+              <ion-card class="audio-info-display">
+                <ion-card-header>
+                  <ion-card-subtitle>CDN Audio Information</ion-card-subtitle>
+                </ion-card-header>
+                <ion-card-content>
+                  <div class="audio-metadata">
+                    <p><strong>Duration:</strong> {{ formatDuration(cdnAudioInfo()!.duration) }}</p>
+                    <p><strong>Size:</strong> {{ formatFileSize(cdnAudioInfo()!.size) }}</p>
+                    <p><strong>Sample Rate:</strong> {{ cdnAudioInfo()!.sampleRate }} Hz</p>
+                    <p><strong>Channels:</strong> {{ cdnAudioInfo()!.channels }}</p>
+                    <p><strong>Bitrate:</strong> {{ cdnAudioInfo()!.bitrate }} bps</p>
+                    <p><strong>MIME Type:</strong> {{ cdnAudioInfo()!.mimeType }}</p>
+                  </div>
+                </ion-card-content>
+              </ion-card>
+            }
+          </div>
+
+          <!-- Playback Section -->
+          <div class="cdn-controls-section">
+            <h4>2. CDN Audio Playback</h4>
+            <p class="section-description">Test playback functionality with CDN files</p>
+
+            <!-- Playback Controls -->
+            <div class="playback-controls">
+              <ion-button
+                [disabled]="!selectedCdnUrl()"
+                (click)="playCdnAudio(selectedCdnUrl())">
+                <ion-icon name="play-outline" slot="icon-only"></ion-icon>
+              </ion-button>
+
+              <ion-button
+                [disabled]="!isPlaying()"
+                (click)="pauseCdnAudio()">
+                <ion-icon name="pause-outline" slot="icon-only"></ion-icon>
+              </ion-button>
+
+              <ion-button
+                [disabled]="isPlaying()"
+                (click)="resumeCdnAudio()">
+                <ion-icon name="play-skip-forward-outline" slot="icon-only"></ion-icon>
+              </ion-button>
+
+              <ion-button
+                color="danger"
+                (click)="stopCdnAudio()">
+                <ion-icon name="stop-outline" slot="icon-only"></ion-icon>
+              </ion-button>
+            </div>
+
+            @if(cdnPlaybackStatus()) {
+              <ion-item>
+                <ion-label>
+                  <h3>Playback Status</h3>
+                  <p [innerHTML]="cdnPlaybackStatus()"></p>
+                </ion-label>
+              </ion-item>
+            }
+          </div>
+
+          <!-- Playback Settings -->
+          <div class="cdn-controls-section">
+            <h4>3. Playback Settings</h4>
+
+            <!-- Volume Control -->
+            <ion-item>
+              <ion-label>Volume: {{ (playbackVolume() * 100).toFixed(0) }}%</ion-label>
+              <ion-range
+                [value]="playbackVolume()"
+                min="0"
+                max="1"
+                step="0.1"
+                (ionInput)="onPlaybackVolumeChange($event)"
+                slot="end">
+                <ion-icon name="volume-low-outline" slot="start"></ion-icon>
+                <ion-icon name="volume-high-outline" slot="end"></ion-icon>
+              </ion-range>
+            </ion-item>
+
+            <!-- Speed Control -->
+            <ion-item>
+              <ion-label>Speed: {{ playbackSpeed().toFixed(1) }}x</ion-label>
+              <ion-range
+                [value]="playbackSpeed()"
+                min="0.5"
+                max="2.0"
+                step="0.1"
+                (ionInput)="onPlaybackSpeedChange($event)"
+                slot="end">
+                <ion-icon name="speedometer-outline" slot="start"></ion-icon>
+                <ion-icon name="speedometer-outline" slot="end"></ion-icon>
+              </ion-range>
+            </ion-item>
+
+            <!-- Loop Control -->
+            <ion-item>
+              <ion-checkbox
+                [checked]="isLooping()"
+                (ionChange)="isLooping.set($event.detail.checked)"></ion-checkbox>
+              <ion-label>Loop playback</ion-label>
+              <ion-icon name="repeat-outline" slot="end"></ion-icon>
+            </ion-item>
+          </div>
+
+          <!-- Instructions -->
+          <ion-card class="instructions">
+            <ion-card-header>
+              <ion-card-subtitle>How to Test CDN Audio</ion-card-subtitle>
+            </ion-card-header>
+            <ion-card-content>
+              <ol>
+                <li>Select a sample CDN URL or enter your own</li>
+                <li>Click "Preload CDN Audio" to test the preload functionality</li>
+                <li>Use playback controls to test audio streaming</li>
+                <li>Adjust volume, speed, and loop settings</li>
+                <li>Check console logs for detailed debugging info</li>
+              </ol>
+              <p><strong>Note:</strong> Make sure you have an active internet connection for CDN testing.</p>
+            </ion-card-content>
+          </ion-card>
+        </ion-card-content>
+      </ion-card>
     }
   </div>
 </ion-content>

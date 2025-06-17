@@ -5,6 +5,8 @@ import AVKit
 import UIKit
 import ObjectiveC
 import UserNotifications
+import Network
+import Network
 
 /**
  * Please read the Capacitor iOS Plugin Development Guide
@@ -69,6 +71,62 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     private var playbackVolume: Float = 1.0
     private var isLooping = false
     private var urlSessionTask: URLSessionDataTask?
+
+    // Network monitoring
+    private var networkMonitor: NWPathMonitor?
+    private var isNetworkAvailable = true
+
+    // MARK: - Network Utility Methods
+
+    private func checkNetworkAvailability() -> Bool {
+        if #available(iOS 12.0, *) {
+            let monitor = NWPathMonitor()
+            var isConnected = false
+            let semaphore = DispatchSemaphore(value: 0)
+
+            monitor.pathUpdateHandler = { path in
+                isConnected = path.status == .satisfied
+                semaphore.signal()
+            }
+
+            let queue = DispatchQueue(label: "NetworkMonitor")
+            monitor.start(queue: queue)
+
+            _ = semaphore.wait(timeout: .now() + 2.0) // 2 second timeout
+            monitor.cancel()
+
+            return isConnected
+        } else {
+            // Fallback for iOS < 12
+            return true // Assume network is available
+        }
+    }
+
+    private func isRemoteURL(_ urlString: String) -> Bool {
+        return urlString.hasPrefix("http://") || urlString.hasPrefix("https://")
+    }
+
+    private func createOptimizedURLRequest(from urlString: String) -> URLRequest? {
+        guard let url = URL(string: urlString) else { return nil }
+
+        var request = URLRequest(url: url)
+
+        // Enhanced headers for better CDN compatibility
+        request.setValue("CapacitorAudioEngine/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+        request.setValue("audio/*", forHTTPHeaderField: "Accept")
+        request.setValue("bytes", forHTTPHeaderField: "Accept-Ranges")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("keep-alive", forHTTPHeaderField: "Connection")
+
+        // Set appropriate timeout for CDN files
+        request.timeoutInterval = 60.0 // Increased timeout for large files
+
+        // Add range header for partial content support (useful for large files)
+        // This allows for progressive download and better error recovery
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+
+        return request
+    }
 
     @objc func checkPermission(_ call: CAPPluginCall) {
         let audioStatus = AVAudioSession.sharedInstance().recordPermission
@@ -1974,6 +2032,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         let prepare = call.getBool("prepare") ?? true
 
+        // Check if it's a remote URL and verify network connectivity
+        if isRemoteURL(uri) {
+            guard checkNetworkAvailability() else {
+                call.reject("Network is not available for remote audio URL")
+                return
+            }
+        }
+
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 // Setup audio session for playback
@@ -1988,7 +2054,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 self.urlSessionTask = nil
 
                 // Check if it's a remote URL
-                if uri.hasPrefix("http://") || uri.hasPrefix("https://") {
+                if self.isRemoteURL(uri) {
                     self.preloadRemoteAudio(uri: uri, prepare: prepare, call: call)
                 } else {
                     self.preloadLocalAudio(uri: uri, prepare: prepare, call: call)
@@ -2003,62 +2069,138 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     private func preloadRemoteAudio(uri: String, prepare: Bool, call: CAPPluginCall) {
-        guard let url = URL(string: uri) else {
+        // Check network connectivity first
+        guard checkNetworkAvailability() else {
+            DispatchQueue.main.async {
+                call.reject("Network is not available for remote audio URL")
+            }
+            return
+        }
+
+        guard let request = createOptimizedURLRequest(from: uri) else {
             DispatchQueue.main.async {
                 call.reject("Invalid remote URL")
             }
             return
         }
 
-        // Create URLRequest with proper headers for CDN compatibility
-        var request = URLRequest(url: url)
-        request.setValue("CapacitorAudioEngine/1.0", forHTTPHeaderField: "User-Agent")
-        request.setValue("audio/*", forHTTPHeaderField: "Accept")
-        request.setValue("bytes", forHTTPHeaderField: "Accept-Ranges")
-        request.timeoutInterval = 30.0
+        print("Preloading remote audio from: \(uri)")
 
-        // Download audio for preloading
-        self.urlSessionTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        // Create URLSessionConfiguration for better CDN handling
+        let config = URLSessionConfiguration.default
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.timeoutIntervalForRequest = 60.0
+        config.timeoutIntervalForResource = 120.0
+        config.waitsForConnectivity = true
+
+        let session = URLSession(configuration: config)
+
+        // Download audio for preloading with enhanced error handling
+        self.urlSessionTask = session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
 
+                // Handle network errors with specific messages
                 if let error = error {
-                    call.reject("Failed to preload audio: \(error.localizedDescription)")
+                    let nsError = error as NSError
+                    var errorMessage = "Failed to preload audio"
+
+                    switch nsError.code {
+                    case NSURLErrorNotConnectedToInternet:
+                        errorMessage = "No internet connection available"
+                    case NSURLErrorTimedOut:
+                        errorMessage = "Request timed out - CDN may be slow or unreachable"
+                    case NSURLErrorCannotFindHost:
+                        errorMessage = "Cannot find CDN host"
+                    case NSURLErrorCannotConnectToHost:
+                        errorMessage = "Cannot connect to CDN host"
+                    case NSURLErrorNetworkConnectionLost:
+                        errorMessage = "Network connection lost during download"
+                    case NSURLErrorResourceUnavailable:
+                        errorMessage = "Audio resource is unavailable on CDN"
+                    case NSURLErrorBadURL:
+                        errorMessage = "Invalid CDN URL format"
+                    default:
+                        errorMessage = "Network error: \(error.localizedDescription)"
+                    }
+
+                    call.reject(errorMessage)
                     return
                 }
 
                 guard let data = data else {
-                    call.reject("No audio data received for preload")
+                    call.reject("No audio data received from CDN")
                     return
                 }
 
-                // Check HTTP response
+                // Check HTTP response with detailed error messages
                 if let httpResponse = response as? HTTPURLResponse {
-                    guard 200...299 ~= httpResponse.statusCode else {
-                        call.reject("Failed to preload audio: HTTP error \(httpResponse.statusCode)")
+                    print("HTTP Response: \(httpResponse.statusCode) for URL: \(uri)")
+
+                    switch httpResponse.statusCode {
+                    case 200...299:
+                        break // Success
+                    case 300...399:
+                        call.reject("CDN returned redirect (HTTP \(httpResponse.statusCode)) - check URL")
                         return
+                    case 400...499:
+                        call.reject("CDN client error (HTTP \(httpResponse.statusCode)) - audio file not found or access denied")
+                        return
+                    case 500...599:
+                        call.reject("CDN server error (HTTP \(httpResponse.statusCode)) - try again later")
+                        return
+                    default:
+                        call.reject("CDN returned unexpected status code: \(httpResponse.statusCode)")
+                        return
+                    }
+
+                    // Validate content type
+                    if let contentType = httpResponse.allHeaderFields["Content-Type"] as? String {
+                        print("Content-Type: \(contentType)")
+                        if !contentType.contains("audio") && !contentType.contains("application/octet-stream") {
+                            print("Warning: Unexpected content type \(contentType) for audio file")
+                        }
                     }
                 }
 
-                // Create audio player from downloaded data
+                print("Successfully downloaded \(data.count) bytes for preload")
+
+                // Create audio player from downloaded data with enhanced error handling
                 do {
                     self.audioPlayer = try AVAudioPlayer(data: data)
                     self.audioPlayer?.delegate = self
                     self.currentPlaybackPath = uri
 
                     if prepare {
-                        let prepared = self.audioPlayer?.prepareToPlay() ?? false
+                        let prepared = self.audioPlayer?.prepareToPlay() ?? false ;
                         if prepared {
-                            call.resolve(["success": true])
+                            print("Successfully prepared remote audio for playback")
+                            call.resolve(["success": true, "size": data.count])
                         } else {
-                            call.reject("Failed to prepare remote audio for playback")
+                            call.reject("Failed to prepare remote audio for playback - audio format may be unsupported")
                         }
                     } else {
-                        call.resolve(["success": true])
+                        call.resolve(["success": true, "size": data.count])
                     }
 
-                               } catch {
-                    call.reject("Failed to preload audio: \(error.localizedDescription)")
+                } catch {
+                    let avError = error as? AVError
+                    var errorMessage = "Failed to create audio player from CDN data"
+
+                    if let avError = avError {
+                        switch avError.code {
+                        case .fileFormatNotRecognized:
+                            errorMessage = "Audio format not supported - CDN file may be corrupted"
+                        case .fileFailedToParse:
+                            errorMessage = "Failed to parse audio file from CDN"
+                        case .unknown:
+                            errorMessage = "Invalid audio source from CDN"
+                        default:
+                            errorMessage = "Audio error: \(avError.localizedDescription)"
+                        }
+                    }
+
+                    call.reject(errorMessage)
                 }
             }
         }
@@ -2102,6 +2244,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             return
         }
 
+        // Check if it's a remote URL and verify network connectivity
+        if isRemoteURL(uri) {
+            guard checkNetworkAvailability() else {
+                call.reject("Network is not available for remote audio URL")
+                return
+            }
+        }
+
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 // Setup audio session for playback
@@ -2126,7 +2276,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 self.isLooping = loop
 
                 // Check if it's a remote URL
-                if uri.hasPrefix("http://") || uri.hasPrefix("https://") {
+                if self.isRemoteURL(uri) {
                     self.playRemoteAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: startTime, call: call)
                 } else {
                     self.playLocalAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: startTime, call: call)
@@ -2141,44 +2291,87 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     private func playRemoteAudio(uri: String, speed: Float, volume: Float, loop: Bool, startTime: Double, call: CAPPluginCall) {
-        guard let url = URL(string: uri) else {
+        guard let request = createOptimizedURLRequest(from: uri) else {
             DispatchQueue.main.async {
                 call.reject("Invalid remote URL")
             }
             return
         }
 
-        // Create URLRequest with proper headers for CDN compatibility
-        var request = URLRequest(url: url)
-        request.setValue("CapacitorAudioEngine/1.0", forHTTPHeaderField: "User-Agent")
-        request.setValue("audio/*", forHTTPHeaderField: "Accept")
-        request.setValue("bytes", forHTTPHeaderField: "Accept-Ranges")
-        request.timeoutInterval = 30.0
+        print("Starting playback of remote audio from: \(uri)")
 
-        // Download and play audio
-        self.urlSessionTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        // Create URLSessionConfiguration for better CDN handling
+        let config = URLSessionConfiguration.default
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.timeoutIntervalForRequest = 60.0
+        config.timeoutIntervalForResource = 120.0
+        config.waitsForConnectivity = true
+
+        let session = URLSession(configuration: config)
+
+        // Download and play audio with enhanced error handling
+        self.urlSessionTask = session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
 
+                // Handle network errors with specific messages
                 if let error = error {
-                    call.reject("Network error: \(error.localizedDescription)")
+                    let nsError = error as NSError
+                    var errorMessage = "Failed to play remote audio"
+
+                    switch nsError.code {
+                    case NSURLErrorNotConnectedToInternet:
+                        errorMessage = "No internet connection available"
+                    case NSURLErrorTimedOut:
+                        errorMessage = "Request timed out - CDN may be slow or unreachable"
+                    case NSURLErrorCannotFindHost:
+                        errorMessage = "Cannot find CDN host"
+                    case NSURLErrorCannotConnectToHost:
+                        errorMessage = "Cannot connect to CDN host"
+                    case NSURLErrorNetworkConnectionLost:
+                        errorMessage = "Network connection lost during download"
+                    case NSURLErrorResourceUnavailable:
+                        errorMessage = "Audio resource is unavailable on CDN"
+                    case NSURLErrorBadURL:
+                        errorMessage = "Invalid CDN URL format"
+                    default:
+                        errorMessage = "Network error: \(error.localizedDescription)"
+                    }
+
+                    call.reject(errorMessage)
                     return
                 }
 
                 guard let data = data else {
-                    call.reject("No audio data received")
+                    call.reject("No audio data received from CDN")
                     return
                 }
 
-                // Check HTTP response
+                // Check HTTP response with detailed error messages
                 if let httpResponse = response as? HTTPURLResponse {
-                    guard 200...299 ~= httpResponse.statusCode else {
-                        call.reject("HTTP error: \(httpResponse.statusCode)")
+                    print("HTTP Response: \(httpResponse.statusCode) for URL: \(uri)")
+
+                    switch httpResponse.statusCode {
+                    case 200...299:
+                        break // Success
+                    case 300...399:
+                        call.reject("CDN returned redirect (HTTP \(httpResponse.statusCode)) - check URL")
+                        return
+                    case 400...499:
+                        call.reject("CDN client error (HTTP \(httpResponse.statusCode)) - audio file not found or access denied")
+                        return
+                    case 500...599:
+                        call.reject("CDN server error (HTTP \(httpResponse.statusCode)) - try again later")
+                        return
+                    default:
+                        call.reject("CDN returned unexpected status code: \(httpResponse.statusCode)")
                         return
                     }
                 }
 
-                // Create audio player from downloaded data
+                print("Successfully downloaded \(data.count) bytes for playback")
+
+                // Create audio player from downloaded data with enhanced error handling
                 do {
                     self.audioPlayer = try AVAudioPlayer(data: data)
                     self.audioPlayer?.delegate = self
@@ -2195,7 +2388,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                     let prepared = self.audioPlayer?.prepareToPlay() ?? false
                     if !prepared {
-                        call.reject("Failed to prepare audio for playback")
+                        call.reject("Failed to prepare remote audio for playback - audio format may be unsupported")
                         return
                     }
 
@@ -2208,6 +2401,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         self.isPlaying = true
                         self.currentPlaybackPath = uri
                         self.startPlaybackProgressTimer()
+
+                        print("Successfully started remote audio playback")
 
                         // Notify listeners
                         let eventData: [String: Any] = [
@@ -2222,7 +2417,23 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     }
 
                 } catch {
-                    call.reject("Failed to create audio player from remote data: \(error.localizedDescription)")
+                    let avError = error as? AVError
+                    var errorMessage = "Failed to create audio player from CDN data"
+
+                    if let avError = avError {
+                        switch avError.code {
+                        case .fileFormatNotRecognized:
+                            errorMessage = "Audio format not supported - CDN file may be corrupted"
+                        case .fileFailedToParse:
+                            errorMessage = "Failed to parse audio file from CDN"
+                        case .unknown:
+                            errorMessage = "Invalid audio source from CDN"
+                        default:
+                            errorMessage = "Audio error: \(avError.localizedDescription)"
+                        }
+                    }
+
+                    call.reject(errorMessage)
                 }
             }
         }

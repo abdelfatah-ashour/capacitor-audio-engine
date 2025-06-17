@@ -17,10 +17,13 @@ import android.media.AudioRecord;
 import android.media.AudioFormat;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+
+import androidx.annotation.RequiresPermission;
 import androidx.core.content.ContextCompat;
 import androidx.core.app.ActivityCompat;
 import java.io.File;
@@ -1384,6 +1387,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     /**
      * Check if microphone is currently busy/in use by another application
      */
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     @PluginMethod
     public void isMicrophoneBusy(PluginCall call) {
         try {
@@ -1392,11 +1396,11 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             boolean isBusy = false;
 
             // Check if we can create an AudioRecord instance
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 AudioRecord audioRecord = null;
                 try {
                     audioRecord = new AudioRecord(
-                        android.media.MediaRecorder.AudioSource.MIC,
+                        MediaRecorder.AudioSource.MIC,
                         44100,
                         AudioFormat.CHANNEL_IN_MONO,
                         AudioFormat.ENCODING_PCM_16BIT,
@@ -1664,6 +1668,89 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             return;
         }
 
+        // For CDN URLs, use enhanced approach first
+        if (isRemoteUrl(uri)) {
+            preloadWithEnhancedCDNSupport(uri, prepare, call);
+        } else {
+            preloadWithBasicApproach(uri, prepare, call);
+        }
+    }
+
+    /**
+     * Enhanced CDN preload with HTTP validation and better error handling
+     */
+    private void preloadWithEnhancedCDNSupport(String uri, Boolean prepare, PluginCall call) {
+        new Thread(() -> {
+            try {
+                // First, validate the CDN URL with a HEAD request
+                java.net.URL url = new java.net.URL(uri);
+                java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
+
+                // Set enhanced headers for CDN compatibility
+                connection.setRequestProperty("User-Agent", "CapacitorAudioEngine/1.0 (Android)");
+                connection.setRequestProperty("Accept", "audio/*");
+                connection.setRequestProperty("Accept-Ranges", "bytes");
+                connection.setRequestProperty("Cache-Control", "no-cache");
+                connection.setRequestProperty("Connection", "keep-alive");
+
+                // Use HEAD request to validate without downloading
+                connection.setRequestMethod("HEAD");
+                connection.setConnectTimeout(15000); // 15 seconds for validation
+                connection.setReadTimeout(15000);
+
+                int responseCode = connection.getResponseCode();
+                Log.d(TAG, "CDN Validation - HTTP Response Code: " + responseCode + " for URL: " + uri);
+
+                if (responseCode >= 200 && responseCode < 300) {
+                    // Success - check content type
+                    String contentType = connection.getContentType();
+                    if (contentType != null) {
+                        Log.d(TAG, "Content-Type: " + contentType);
+                        if (!contentType.contains("audio") && !contentType.contains("application/octet-stream") && !contentType.contains("video")) {
+                            Log.w(TAG, "Warning: Unexpected content type " + contentType + " for audio file");
+                        }
+                    }
+
+                    // Get content length for logging
+                    int contentLength = connection.getContentLength();
+                    if (contentLength > 0) {
+                        Log.d(TAG, "Content-Length: " + contentLength + " bytes");
+                    }
+
+                    connection.disconnect();
+
+                    // Now use MediaPlayer with the validated URL
+                    getActivity().runOnUiThread(() -> {
+                        preloadWithBasicApproach(uri, prepare, call);
+                    });
+
+                } else {
+                    // Handle HTTP error codes with detailed messages
+                    String errorMessage = getHttpErrorMessage(responseCode);
+                    connection.disconnect();
+                    getActivity().runOnUiThread(() -> call.reject("CDN validation failed: " + errorMessage));
+                }
+
+            } catch (java.net.MalformedURLException e) {
+                getActivity().runOnUiThread(() -> call.reject("Invalid CDN URL format"));
+            } catch (java.net.SocketTimeoutException e) {
+                getActivity().runOnUiThread(() -> call.reject("CDN validation timed out - server may be slow or unreachable"));
+            } catch (java.net.UnknownHostException e) {
+                getActivity().runOnUiThread(() -> call.reject("Cannot find CDN host"));
+            } catch (java.net.ConnectException e) {
+                getActivity().runOnUiThread(() -> call.reject("Cannot connect to CDN host"));
+            } catch (java.io.IOException e) {
+                getActivity().runOnUiThread(() -> call.reject("Network error during CDN validation: " + e.getMessage()));
+            } catch (Exception e) {
+                getActivity().runOnUiThread(() -> call.reject("Failed to validate CDN URL: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    /**
+     * Basic preload approach using MediaPlayer directly
+     */
+    private void preloadWithBasicApproach(String uri, Boolean prepare, PluginCall call) {
         try {
             // Stop any current playback
             if (mediaPlayer != null) {
@@ -1675,10 +1762,10 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
             // Configure for CDN URLs if needed
             if (isRemoteUrl(uri)) {
-                configureMediaPlayerForRemoteUrl(mediaPlayer);
+                configureMediaPlayerForRemoteUrl(mediaPlayer, uri);
+            } else {
+                mediaPlayer.setDataSource(uri);
             }
-
-            mediaPlayer.setDataSource(uri);
 
             if (prepare) {
                 mediaPlayer.setOnPreparedListener(mp -> {
@@ -1737,10 +1824,10 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
             // Configure for CDN URLs if needed
             if (isRemoteUrl(uri)) {
-                configureMediaPlayerForRemoteUrl(mediaPlayer);
+                configureMediaPlayerForRemoteUrl(mediaPlayer, uri);
+            } else {
+                mediaPlayer.setDataSource(uri);
             }
-
-            mediaPlayer.setDataSource(uri);
 
             // Set playback options
             Float speed = call.getFloat("speed", 1.0f);
@@ -2023,7 +2110,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     /**
      * Configure MediaPlayer with optimal settings for remote URLs
      */
-    private void configureMediaPlayerForRemoteUrl(MediaPlayer mediaPlayer) {
+    private void configureMediaPlayerForRemoteUrl(MediaPlayer mediaPlayer, String uri) throws IOException {
         try {
             // Set audio stream type for playback
             mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
@@ -2033,15 +2120,18 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             headers.put("User-Agent", "CapacitorAudioEngine/1.0 (Android)");
             headers.put("Accept", "audio/*");
             headers.put("Accept-Ranges", "bytes");
+            headers.put("Cache-Control", "no-cache");
+            headers.put("Connection", "keep-alive");
+            headers.put("Accept-Encoding", "identity");
 
-            // Note: MediaPlayer.setDataSource() with headers is available but
-            // we'll use the simpler version for broader compatibility.
-            // The headers approach would require calling setDataSource(uri, headers)
+            // Use MediaPlayer.setDataSource() with headers for better CDN compatibility
+            mediaPlayer.setDataSource(getContext(), Uri.parse(uri), headers);
 
-            Log.d(TAG, "MediaPlayer configured for remote URL playback");
+            Log.d(TAG, "MediaPlayer configured for remote URL playback with enhanced headers");
         } catch (Exception e) {
-            Log.w(TAG, "Failed to configure MediaPlayer headers for remote URL", e);
-            // Continue without custom headers - MediaPlayer will still work
+            Log.w(TAG, "Failed to configure MediaPlayer headers for remote URL, falling back to basic configuration", e);
+            // Fallback to basic configuration without headers
+          mediaPlayer.setDataSource(uri);
         }
     }
 
@@ -2105,6 +2195,49 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         }
 
         return fullMessage;
+    }
+
+    /**
+     * Get detailed HTTP error messages for better CDN error reporting
+     */
+    private String getHttpErrorMessage(int responseCode) {
+        switch (responseCode) {
+            case 300:
+            case 301:
+            case 302:
+            case 303:
+            case 304:
+            case 307:
+            case 308:
+                return "CDN returned redirect (HTTP " + responseCode + ") - check URL";
+            case 400:
+                return "Bad request (HTTP " + responseCode + ")";
+            case 401:
+                return "Unauthorized access (HTTP " + responseCode + ") - authentication required";
+            case 403:
+                return "Access forbidden (HTTP " + responseCode + ") - check permissions";
+            case 404:
+                return "Audio file not found (HTTP " + responseCode + ") - check URL";
+            case 408:
+                return "Request timeout (HTTP " + responseCode + ") - CDN is slow";
+            case 410:
+                return "Audio file no longer available (HTTP " + responseCode + ")";
+            case 429:
+                return "Too many requests (HTTP " + responseCode + ") - rate limited by CDN";
+            case 500:
+            case 502:
+            case 503:
+            case 504:
+                return "CDN server error (HTTP " + responseCode + ") - try again later";
+            default:
+                if (responseCode >= 400 && responseCode < 500) {
+                    return "CDN client error (HTTP " + responseCode + ") - check URL and permissions";
+                } else if (responseCode >= 500) {
+                    return "CDN server error (HTTP " + responseCode + ") - try again later";
+                } else {
+                    return "CDN returned unexpected status code: " + responseCode;
+                }
+        }
     }
 
     @PluginMethod

@@ -201,3 +201,89 @@
   }
 }
 
+/* CDN Audio Testing Styles */
+.cdn-audio-testing {
+  .cdn-controls-section {
+    margin: 24px 0;
+    padding: 16px;
+    border-left: 4px solid var(--ion-color-secondary);
+    background-color: var(--ion-color-secondary, #3dc2ff);
+    background-color: rgba(var(--ion-color-secondary-rgb, 61, 194, 255), 0.1);
+    border-radius: 8px;
+
+    h4 {
+      color: var(--ion-color-secondary);
+      margin: 0 0 8px 0;
+      font-weight: 600;
+    }
+
+    .section-description {
+      color: var(--ion-color-medium);
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+    }
+  }
+
+  .playback-controls {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin: 16px 0;
+
+    ion-button {
+      --border-radius: 50%;
+      width: 56px;
+      height: 56px;
+    }
+  }
+
+  .audio-info-display {
+    margin-top: 16px;
+
+    .audio-metadata {
+      p {
+        margin: 8px 0;
+        font-size: 0.9rem;
+
+        strong {
+          color: var(--ion-color-primary);
+          font-weight: 600;
+        }
+      }
+    }
+  }
+
+  .instructions {
+    margin-top: 24px;
+    border: 1px solid var(--ion-color-light);
+
+    ol {
+      margin: 0;
+      padding-left: 20px;
+
+      li {
+        margin: 4px 0;
+        font-size: 0.9rem;
+      }
+    }
+
+    p {
+      margin-top: 12px;
+      font-size: 0.85rem;
+      color: var(--ion-color-warning);
+    }
+  }
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+  .cdn-audio-testing {
+    .playback-controls {
+      ion-button {
+        width: 48px;
+        height: 48px;
+      }
+    }
+  }
+}
+
