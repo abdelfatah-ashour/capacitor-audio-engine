@@ -97,6 +97,11 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     // Preloaded audio storage - thread-safe with proper state tracking
     private final Map<String, PreloadedAudio> preloadedAudioPlayers = new java.util.concurrent.ConcurrentHashMap<>();
 
+    // Thread safety locks
+    private final Object recordingLock = new Object();
+    private final Object playbackLock = new Object();
+    private final Object segmentLock = new Object();
+
     // Preload state tracking
     private enum PreloadState {
         LOADING, LOADED, ERROR
@@ -215,69 +220,69 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
     @PluginMethod
     public void startRecording(PluginCall call) {
-        if (mediaRecorder != null) {
-            call.reject("Recording is already in progress");
-            return;
-        }
-
-        // Check permissions
-        if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
-            call.reject("Microphone permission not granted");
-            return;
-        }
-
-        // Check notification permission for Android 13+ (required for foreground service)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-                call.reject("Notification permission not granted (required for background recording on Android 13+)");
+        synchronized (recordingLock) {
+            if (mediaRecorder != null) {
+                call.reject("Recording is already in progress");
                 return;
             }
-        }
 
-        // Reset segment tracking
-        segmentFiles.clear();
-        currentSegment = 0;
-        currentDuration = 0.0;
-
-        // Emit initial duration
-        emitDurationChange();
-
-        // Get recording options - maxDuration in SECONDS
-        Integer maxDurationSeconds = call.getInt("maxDuration");
-        if (maxDurationSeconds != null && maxDurationSeconds > 0) {
-            // Use seconds directly for internal use
-            maxDuration = maxDurationSeconds;
-            Log.d(TAG, "Setting maxDuration: " + maxDurationSeconds + " seconds");
-        } else {
-            maxDuration = null;
-        }
-
-        sampleRate = call.getInt("sampleRate", 44100);
-        channels = call.getInt("channels", 1);
-        bitrate = call.getInt("bitrate", 128000);
-
-        try {
-            File recordingsDir = getRecordingsDirectory();
-
-            if (maxDuration != null && maxDuration > 0) {
-                // Start circular recording with segments (rolling recording)
-                Log.d(TAG, "Starting circular recording with maxDuration: " + maxDuration + " seconds");
-                startCircularRecording(recordingsDir);
-                call.resolve();
-            } else {
-                // Regular linear recording without segments
-                Log.d(TAG, "Starting linear recording (unlimited duration)");
-                startLinearRecording(recordingsDir);
-                call.resolve();
+            // Check permissions
+            if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+                call.reject("Microphone permission not granted");
+                return;
             }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to start recording", e);
-            JSObject errorData = new JSObject();
-            errorData.put("message", "Failed to start recording: " + e.getMessage());
-            emitError(errorData);
-            call.reject("Failed to start recording: " + e.getMessage());
+
+            // Check notification permission for Android 13+ (required for foreground service)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                    call.reject("Notification permission not granted (required for background recording on Android 13+)");
+                    return;
+                }
+            }
+
+            // Reset segment tracking
+            segmentFiles.clear();
+            currentSegment = 0;
+            currentDuration = 0.0;
+
+            // Emit initial duration
+            emitDurationChange();
+
+            // Get recording options - maxDuration in SECONDS
+            Integer maxDurationSeconds = call.getInt("maxDuration");
+            if (maxDurationSeconds != null && maxDurationSeconds > 0) {
+                // Use seconds directly for internal use
+                maxDuration = maxDurationSeconds;
+                Log.d(TAG, "Setting maxDuration: " + maxDurationSeconds + " seconds");
+            } else {
+                maxDuration = null;
+            }
+
+            sampleRate = call.getInt("sampleRate", 44100);
+            channels = call.getInt("channels", 1);
+            bitrate = call.getInt("bitrate", 128000);
+
+            try {
+                File recordingsDir = getRecordingsDirectory();
+
+                if (maxDuration != null && maxDuration > 0) {
+                    Log.d(TAG, "Starting circular recording with maxDuration: " + maxDuration + " seconds");
+                    startCircularRecording(recordingsDir);
+                    call.resolve();
+                } else {
+                    Log.d(TAG, "Starting linear recording (unlimited duration)");
+                    startLinearRecording(recordingsDir);
+                    call.resolve();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to start recording", e);
+                JSObject errorData = new JSObject();
+                errorData.put("message", "Failed to start recording: " + e.getMessage());
+                emitError(errorData);
+                call.reject("Failed to start recording: " + e.getMessage());
+            }
         }
     }
 
@@ -336,48 +341,50 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
     @PluginMethod
     public void stopRecording(PluginCall call) {
-        if (mediaRecorder == null || !isRecording) {
-            call.reject("No active recording to stop");
-            return;
-        }
-
-        try {
-            // Stop duration monitoring
-            stopDurationMonitoring();
-
-            // Stop segment timer if active
-            stopSegmentTimer();
-
-            // Stop background service
-            stopRecordingService();
-
-            // Stop the actual MediaRecorder
-            mediaRecorder.stop();
-            mediaRecorder.release();
-            isRecording = false;
-
-            String fileToReturn = currentRecordingPath;
-
-            // Handle segments if they exist
-            if (maxDuration != null && maxDuration > 0 && !segmentFiles.isEmpty()) {
-                fileToReturn = processSegments();
+        synchronized (recordingLock) {
+            if (mediaRecorder == null || !isRecording) {
+                call.reject("No active recording to stop");
+                return;
             }
 
-            // Reset segment tracking
-            maxDuration = null;
-            currentSegment = 0;
+            try {
+                // Stop duration monitoring
+                stopDurationMonitoring();
 
-            // Get file info and return
-            JSObject response = getAudioFileInfo(fileToReturn);
-            call.resolve(response);
+                // Stop segment timer if active
+                stopSegmentTimer();
 
-            // Cleanup
-            mediaRecorder = null;
-            currentRecordingPath = null;
+                // Stop background service
+                stopRecordingService();
 
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to stop recording", e);
-            call.reject("Failed to stop recording: " + e.getMessage());
+                // Stop the actual MediaRecorder
+                mediaRecorder.stop();
+                mediaRecorder.release();
+                isRecording = false;
+
+                String fileToReturn = currentRecordingPath;
+
+                // Handle segments if they exist
+                if (maxDuration != null && maxDuration > 0 && !segmentFiles.isEmpty()) {
+                    fileToReturn = processSegments();
+                }
+
+                // Reset segment tracking
+                maxDuration = null;
+                currentSegment = 0;
+
+                // Get file info and return
+                JSObject response = getAudioFileInfo(fileToReturn);
+                call.resolve(response);
+
+                // Cleanup
+                mediaRecorder = null;
+                currentRecordingPath = null;
+
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to stop recording", e);
+                call.reject("Failed to stop recording: " + e.getMessage());
+            }
         }
     }
 
@@ -520,55 +527,57 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     }
 
     private void startNextSegment(File recordingsDir) throws IOException {
-        Log.d(TAG, "Starting next segment. Current segment count: " + segmentFiles.size());
+        synchronized (segmentLock) {
+            Log.d(TAG, "Starting next segment. Current segment count: " + segmentFiles.size());
 
-        // Stop current recorder if exists
-        if (mediaRecorder != null) {
-            try {
-                long startTime = System.nanoTime();
-                Log.d(TAG, "Stopping previous recorder before starting new segment");
-                mediaRecorder.stop();
-                mediaRecorder.release();
-                long duration = (System.nanoTime() - startTime) / 1_000_000;
-                Log.d(TAG, "MediaRecorder stop/release took: " + duration + " ms");
-            } catch (Exception e) {
-                Log.w(TAG, "Error stopping previous recorder", e);
+            // Stop current recorder if exists
+            if (mediaRecorder != null) {
+                try {
+                    long startTime = System.nanoTime();
+                    Log.d(TAG, "Stopping previous recorder before starting new segment");
+                    mediaRecorder.stop();
+                    mediaRecorder.release();
+                    long duration = (System.nanoTime() - startTime) / 1_000_000;
+                    Log.d(TAG, "MediaRecorder stop/release took: " + duration + " ms");
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping previous recorder", e);
+                }
             }
-        }
 
-        // Create new segment file
-        long timestamp = System.currentTimeMillis();
-        File segmentFile = new File(recordingsDir, "segment_" + timestamp + ".m4a");
-        Log.d(TAG, "Creating new segment file: " + segmentFile.getName() + " at path: " + segmentFile.getAbsolutePath());
+            // Create new segment file
+            long timestamp = System.currentTimeMillis();
+            File segmentFile = new File(recordingsDir, "segment_" + timestamp + ".m4a");
+            Log.d(TAG, "Creating new segment file: " + segmentFile.getName() + " at path: " + segmentFile.getAbsolutePath());
 
-        // Add to segments list
-        segmentFiles.add(segmentFile.getAbsolutePath());
-        currentSegment++;
-        Log.d(TAG, "Current segment number: " + currentSegment + ", total segments: " + segmentFiles.size());
+            // Add to segments list
+            segmentFiles.add(segmentFile.getAbsolutePath());
+            currentSegment++;
+            Log.d(TAG, "Current segment number: " + currentSegment + ", total segments: " + segmentFiles.size());
 
-        // Keep segments based on maxDuration - estimate how many segments we need
-        // Add some buffer to ensure we have enough audio
-        int maxSegments = Math.max(3, (maxDuration / 15) + 2); // At least 3 segments, or enough for maxDuration + buffer
-        cleanupOldSegments(maxSegments);
+            // Keep segments based on maxDuration - estimate how many segments we need
+            // Add some buffer to ensure we have enough audio
+            int maxSegments = Math.max(3, (maxDuration / 15) + 2); // At least 3 segments, or enough for maxDuration + buffer
+            cleanupOldSegments(maxSegments);
 
-        // Set as current recording path
-        currentRecordingPath = segmentFile.getAbsolutePath();
-        Log.d(TAG, "Set current recording path to: " + currentRecordingPath);
+            // Set as current recording path
+            currentRecordingPath = segmentFile.getAbsolutePath();
+            Log.d(TAG, "Set current recording path to: " + currentRecordingPath);
 
-        // Setup and start new recorder
-        long setupStartTime = System.nanoTime();
-        setupMediaRecorder(currentRecordingPath);
-        mediaRecorder.start();
-        long setupDuration = (System.nanoTime() - setupStartTime) / 1_000_000;
-        Log.d(TAG, "MediaRecorder setup/start took: " + setupDuration + " ms");
+            // Setup and start new recorder
+            long setupStartTime = System.nanoTime();
+            setupMediaRecorder(currentRecordingPath);
+            mediaRecorder.start();
+            long setupDuration = (System.nanoTime() - setupStartTime) / 1_000_000;
+            Log.d(TAG, "MediaRecorder setup/start took: " + setupDuration + " ms");
 
-        Log.d(TAG, "Successfully started recording segment: " + segmentFile.getName());
+            Log.d(TAG, "Successfully started recording segment: " + segmentFile.getName());
 
-        // Verify file was created
-        if (segmentFile.exists()) {
-            Log.d(TAG, "Segment file created successfully, initial size: " + segmentFile.length() + " bytes");
-        } else {
-            Log.w(TAG, "Segment file was not created!");
+            // Verify file was created
+            if (segmentFile.exists()) {
+                Log.d(TAG, "Segment file created successfully, initial size: " + segmentFile.length() + " bytes");
+            } else {
+                Log.w(TAG, "Segment file was not created!");
+            }
         }
     }
 
@@ -1146,36 +1155,47 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
             while (true) {
                 int sampleSize = extractor.readSampleData(buffer, 0);
-                if (sampleSize < 0) break;
+                if (sampleSize < 0) {
+                    break;
+                }
 
-                long sampleTime = extractor.getSampleTime();
-                if (sampleTime > endTimeUs) break;
+                long presentationTimeUs = extractor.getSampleTime();
+                if (presentationTimeUs > endTimeUs) {
+                    break;
+                }
 
                 bufferInfo.offset = 0;
                 bufferInfo.size = sampleSize;
-                bufferInfo.presentationTimeUs = sampleTime - (long)(startTime * 1000000);
+                bufferInfo.presentationTimeUs = presentationTimeUs;
                 bufferInfo.flags = convertExtractorFlags(extractor.getSampleFlags());
 
                 muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
                 extractor.advance();
             }
 
-            Log.d(TAG, "Audio trimmed successfully");
+            Log.d(TAG, "Audio trimmed successfully from " + startTime + "s to " + endTime + "s");
 
+        } catch (Exception e) {
+            // Clean up output file if trimming failed
+            if (outputFile.exists()) {
+                outputFile.delete();
+            }
+            throw new IOException("Failed to trim audio file: " + e.getMessage(), e);
         } finally {
+            // Ensure resources are always cleaned up
             if (muxer != null) {
                 try {
                     muxer.stop();
                     muxer.release();
                 } catch (Exception e) {
-                    Log.w(TAG, "Error releasing muxer", e);
+                    Log.w(TAG, "Error releasing MediaMuxer", e);
                 }
             }
             if (extractor != null) {
                 try {
                     extractor.release();
                 } catch (Exception e) {
-                    Log.w(TAG, "Error releasing extractor", e);
+                    Log.w(TAG, "Error releasing MediaExtractor", e);
                 }
             }
         }
@@ -1316,10 +1336,17 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     protected void handleOnDestroy() {
         super.handleOnDestroy();
 
-        // Clean up resources
-        stopDurationMonitoring();
-        stopSegmentTimer();
+        // Clean up all resources systematically
+        cleanupRecordingResources();
+        cleanupPlaybackResources();
+        cleanupPreloadedAudio();
+        cleanupTimers();
+        cleanupBackgroundService();
 
+        Log.d(TAG, "Plugin destroyed and all resources cleaned up");
+    }
+
+    private void cleanupRecordingResources() {
         if (mediaRecorder != null) {
             try {
                 if (isRecording) {
@@ -1327,43 +1354,63 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 }
                 mediaRecorder.release();
             } catch (Exception e) {
-                Log.w(TAG, "Error cleaning up MediaRecorder", e);
+                Log.w(TAG, "Error releasing MediaRecorder", e);
+            } finally {
+                mediaRecorder = null;
+                isRecording = false;
             }
-            mediaRecorder = null;
         }
+    }
 
-        isRecording = false;
-
-        // Clean up playback resources
+    private void cleanupPlaybackResources() {
         if (mediaPlayer != null) {
             try {
+                if (mediaPlayer.isPlaying()) {
+                    mediaPlayer.stop();
+                }
                 mediaPlayer.release();
             } catch (Exception e) {
-                Log.w(TAG, "Error cleaning up MediaPlayer", e);
+                Log.w(TAG, "Error releasing MediaPlayer", e);
+            } finally {
+                mediaPlayer = null;
+                isPlaying = false;
             }
-            mediaPlayer = null;
         }
+    }
 
-        stopPlaybackProgressTimer();
-
-        // Clean up preloaded audio resources
+    private void cleanupPreloadedAudio() {
         Log.d(TAG, "Cleaning up " + preloadedAudioPlayers.size() + " preloaded audio players");
         for (Map.Entry<String, PreloadedAudio> entry : preloadedAudioPlayers.entrySet()) {
             try {
-                PreloadedAudio audio = entry.getValue();
-                if (audio != null && audio.player != null) {
-                    audio.player.release();
-                    Log.d(TAG, "Released preloaded audio: " + entry.getKey());
+                if (entry.getValue().player != null) {
+                    entry.getValue().player.release();
                 }
             } catch (Exception e) {
                 Log.w(TAG, "Error releasing preloaded audio: " + entry.getKey(), e);
             }
         }
         preloadedAudioPlayers.clear();
+    }
+
+
+    private void cleanupTimers() {
+        stopDurationMonitoring();
+        stopSegmentTimer();
+        stopPlaybackProgressTimer();
+    }
+
+    private void cleanupBackgroundService() {
+        if (serviceStarted) {
+            stopRecordingService();
+        }
 
         // Clean up segment files
         for (String segmentPath : segmentFiles) {
-            new File(segmentPath).delete();
+            try {
+                new File(segmentPath).delete();
+            } catch (Exception e) {
+                Log.w(TAG, "Error deleting segment file: " + segmentPath, e);
+            }
         }
         segmentFiles.clear();
     }
@@ -1371,45 +1418,63 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     // Background service management methods
     private void startRecordingService() {
         if (!serviceStarted) {
-            Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-            serviceIntent.setAction(AudioRecordingService.ACTION_START_RECORDING);
+            try {
+                Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
+                serviceIntent.setAction("START_RECORDING");
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                getContext().startForegroundService(serviceIntent);
-            } else {
-                getContext().startService(serviceIntent);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    getContext().startForegroundService(serviceIntent);
+                } else {
+                    getContext().startService(serviceIntent);
+                }
+
+                serviceStarted = true;
+                Log.d(TAG, "Started background recording service");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to start background recording service", e);
+                serviceStarted = false;
             }
-
-            serviceStarted = true;
-            Log.d(TAG, "Started background recording service");
         }
     }
 
     private void pauseRecordingService() {
         if (serviceStarted) {
-            Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-            serviceIntent.setAction(AudioRecordingService.ACTION_PAUSE_RECORDING);
-            getContext().startService(serviceIntent);
-            Log.d(TAG, "Paused background recording service");
+            try {
+                Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
+                serviceIntent.setAction("PAUSE_RECORDING");
+                getContext().startService(serviceIntent);
+                Log.d(TAG, "Paused background recording service");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to pause background recording service", e);
+            }
         }
     }
 
     private void resumeRecordingService() {
         if (serviceStarted) {
-            Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-            serviceIntent.setAction(AudioRecordingService.ACTION_RESUME_RECORDING);
-            getContext().startService(serviceIntent);
-            Log.d(TAG, "Resumed background recording service");
+            try {
+                Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
+                serviceIntent.setAction("RESUME_RECORDING");
+                getContext().startService(serviceIntent);
+                Log.d(TAG, "Resumed background recording service");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to resume background recording service", e);
+            }
         }
     }
 
     private void stopRecordingService() {
         if (serviceStarted) {
-            Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-            serviceIntent.setAction(AudioRecordingService.ACTION_STOP_RECORDING);
-            getContext().startService(serviceIntent);
-            serviceStarted = false;
-            Log.d(TAG, "Stopped background recording service");
+            try {
+                Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
+                serviceIntent.setAction("STOP_RECORDING");
+                getContext().startService(serviceIntent);
+                serviceStarted = false;
+                Log.d(TAG, "Stopped background recording service");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to stop background recording service", e);
+                serviceStarted = false;
+            }
         }
     }
 
