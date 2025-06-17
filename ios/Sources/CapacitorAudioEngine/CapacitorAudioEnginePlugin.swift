@@ -510,25 +510,42 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         // Stop any existing timer
         stopPlaybackProgressTimer()
 
-        // Start a new timer that fires every 0.1 seconds
-        playbackProgressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self = self, let player = self.audioPlayer, self.isPlaying else {
-                return
-            }
+        // Ensure timer is created on main thread
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
 
-            // Notify listeners of progress
-            let eventData: [String: Any] = [
-                "status": "playing",
-                "currentTime": player.currentTime,
-                "duration": player.duration
-            ]
-            self.notifyListeners("playbackProgress", data: eventData)
+            print("Starting playback progress timer")
+
+            // Start a new timer that fires every 1 second (matching Android)
+            self.playbackProgressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                guard let self = self, let player = self.audioPlayer, self.isPlaying else {
+                    return
+                }
+
+                // Calculate position percentage (0-100)
+                let currentTime = player.currentTime
+                let duration = player.duration
+                let position = duration > 0 ? (currentTime / duration) * 100 : 0
+
+                print("Playback progress: \(currentTime)/\(duration) (\(position)%)")
+
+                // Notify listeners of progress
+                let eventData: [String: Any] = [
+                    "currentTime": currentTime,
+                    "duration": duration,
+                    "position": position
+                ]
+                self.notifyListeners("playbackProgress", data: eventData)
+            }
         }
     }
 
     private func stopPlaybackProgressTimer() {
-        playbackProgressTimer?.invalidate()
-        playbackProgressTimer = nil
+        print("Stopping playback progress timer")
+        DispatchQueue.main.async { [weak self] in
+            self?.playbackProgressTimer?.invalidate()
+            self?.playbackProgressTimer = nil
+        }
     }
 
     @objc func startRecording(_ call: CAPPluginCall) {
@@ -1616,6 +1633,27 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         case "playbackProgress", "playbackStatusChange", "playbackCompleted", "playbackError":
             print("Adding playback listener for \(eventName)")
             super.addListener(call)
+
+            // If we're currently playing and this is a progress listener, make sure the timer is running
+            if eventName == "playbackProgress" && isPlaying && audioPlayer != nil {
+                print("Restarting playback progress timer because listener was added while playing")
+                startPlaybackProgressTimer()
+
+                // Also emit an immediate progress event with current state
+                if let player = audioPlayer {
+                    let currentTime = player.currentTime
+                    let duration = player.duration
+                    let position = duration > 0 ? (currentTime / duration) * 100 : 0
+
+                    print("Emitting immediate playbackProgress event")
+                    notifyListeners("playbackProgress", data: [
+                        "currentTime": currentTime,
+                        "duration": duration,
+                        "position": position
+                    ])
+                }
+            }
+
             call.resolve()
         default:
             call.reject("Unknown event name: \(eventName)")
