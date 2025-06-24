@@ -1288,6 +1288,170 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         return info;
     }
 
+    /**
+     * Helper method to create AudioFileInfo from a prepared MediaPlayer
+     */
+    private JSObject getAudioInfoFromMediaPlayer(MediaPlayer player, String uri) {
+        JSObject info = new JSObject();
+
+        try {
+            // Basic info
+            info.put("uri", uri);
+            info.put("mimeType", "audio/m4a");
+            info.put("createdAt", System.currentTimeMillis());
+
+            // Duration from MediaPlayer
+            double duration = player.getDuration() / 1000.0;
+            info.put("duration", Math.round(duration * 10.0) / 10.0);
+
+            // Audio settings - use recording settings as default
+            info.put("sampleRate", sampleRate);
+            info.put("channels", channels);
+            info.put("bitrate", bitrate);
+
+            // For local files, try to get file info
+            if (!isRemoteUrl(uri)) {
+                String filePath = uri;
+                if (uri.startsWith("file://")) {
+                    filePath = uri.substring(7);
+                } else if (uri.startsWith("capacitor://localhost/_capacitor_file_")) {
+                    filePath = uri.replace("capacitor://localhost/_capacitor_file_", "");
+                }
+
+                File file = new File(filePath);
+                if (file.exists()) {
+                    info.put("path", filePath);
+                    info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
+                    info.put("size", file.length());
+                    info.put("filename", file.getName());
+
+                    // Add base64 encoding for local files
+                    try {
+                        byte[] audioBytes = java.nio.file.Files.readAllBytes(file.toPath());
+                        String base64Audio = android.util.Base64.encodeToString(audioBytes, android.util.Base64.NO_WRAP);
+                        String dataUri = "data:audio/m4a;base64," + base64Audio;
+                        info.put("base64", dataUri);
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to encode audio file to base64", e);
+                        info.put("base64", null);
+                    }
+                } else {
+                    info.put("path", filePath);
+                    info.put("webPath", uri);
+                    info.put("size", 0);
+                    info.put("filename", getFilenameFromUri(uri));
+                    info.put("base64", null);
+                }
+            } else {
+                // For remote URLs
+                info.put("path", uri);
+                info.put("webPath", uri);
+                info.put("size", 0);
+                info.put("filename", getFilenameFromUri(uri));
+                info.put("base64", null);
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get audio info from MediaPlayer", e);
+            // Return basic info even if extraction fails
+            info.put("path", uri);
+            info.put("webPath", uri);
+            info.put("size", 0);
+            info.put("duration", 0.0);
+            info.put("sampleRate", sampleRate);
+            info.put("channels", channels);
+            info.put("bitrate", bitrate);
+            info.put("filename", getFilenameFromUri(uri));
+            info.put("base64", null);
+        }
+
+        return info;
+    }
+
+    /**
+     * Helper method to create basic AudioFileInfo without preparing MediaPlayer
+     */
+    private JSObject getBasicAudioInfo(String uri) {
+        JSObject info = new JSObject();
+
+        try {
+            // Basic info
+            info.put("uri", uri);
+            info.put("mimeType", "audio/m4a");
+            info.put("createdAt", System.currentTimeMillis());
+            info.put("duration", 0.0); // Duration unknown without preparation
+
+            // Audio settings - use recording settings as default
+            info.put("sampleRate", sampleRate);
+            info.put("channels", channels);
+            info.put("bitrate", bitrate);
+
+            // For local files, try to get file info
+            if (!isRemoteUrl(uri)) {
+                String filePath = uri;
+                if (uri.startsWith("file://")) {
+                    filePath = uri.substring(7);
+                } else if (uri.startsWith("capacitor://localhost/_capacitor_file_")) {
+                    filePath = uri.replace("capacitor://localhost/_capacitor_file_", "");
+                }
+
+                File file = new File(filePath);
+                if (file.exists()) {
+                    info.put("path", filePath);
+                    info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
+                    info.put("size", file.length());
+                    info.put("filename", file.getName());
+                    info.put("base64", null); // Skip base64 encoding for performance
+                } else {
+                    info.put("path", filePath);
+                    info.put("webPath", uri);
+                    info.put("size", 0);
+                    info.put("filename", getFilenameFromUri(uri));
+                    info.put("base64", null);
+                }
+            } else {
+                // For remote URLs
+                info.put("path", uri);
+                info.put("webPath", uri);
+                info.put("size", 0);
+                info.put("filename", getFilenameFromUri(uri));
+                info.put("base64", null);
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get basic audio info", e);
+            // Return minimal info even if extraction fails
+            info.put("path", uri);
+            info.put("webPath", uri);
+            info.put("size", 0);
+            info.put("duration", 0.0);
+            info.put("sampleRate", sampleRate);
+            info.put("channels", channels);
+            info.put("bitrate", bitrate);
+            info.put("filename", getFilenameFromUri(uri));
+            info.put("base64", null);
+        }
+
+        return info;
+    }
+
+    /**
+     * Helper method to extract filename from URI
+     */
+    private String getFilenameFromUri(String uri) {
+        try {
+            if (uri.contains("/")) {
+                String[] parts = uri.split("/");
+                return parts[parts.length - 1];
+            }
+            return uri;
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    // ...existing code...
+
     // Event emission methods
     private void emitDurationChange() {
         JSObject data = new JSObject();
@@ -1823,12 +1987,8 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         PreloadedAudio existingAudio = preloadedAudioPlayers.get(uri);
         if (existingAudio != null) {
             if (existingAudio.state == PreloadState.LOADED) {
-                JSObject result = new JSObject();
-                result.put("success", true);
-                result.put("cached", true);
-                result.put("message", "Audio already preloaded");
-                result.put("duration", existingAudio.player.getDuration() / 1000.0);
-                call.resolve(result);
+                JSObject audioInfo = getAudioInfoFromMediaPlayer(existingAudio.player, uri);
+                call.resolve(audioInfo);
                 return;
             } else if (existingAudio.state == PreloadState.LOADING) {
                 call.reject("Audio is currently being preloaded");
@@ -1898,11 +2058,9 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
                         Log.d(TAG, "Successfully preloaded audio: " + uri + " (duration: " + (mp.getDuration() / 1000.0) + "s)");
 
-                        JSObject ret = new JSObject();
-                        ret.put("success", true);
-                        ret.put("duration", mp.getDuration() / 1000.0);
-                        ret.put("prepared", true);
-                        call.resolve(ret);
+                        // Get audio file information
+                        JSObject audioInfo = getAudioInfoFromMediaPlayer(mp, uri);
+                        call.resolve(audioInfo);
                     } catch (Exception e) {
                         Log.e(TAG, "Error in onPrepared callback", e);
                         cleanupFailedPreload(uri, mp);
@@ -1943,10 +2101,9 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
                 Log.d(TAG, "Audio data source set (not prepared): " + uri);
 
-                JSObject ret = new JSObject();
-                ret.put("success", true);
-                ret.put("prepared", false);
-                call.resolve(ret);
+                // Get basic audio file information without preparing
+                JSObject audioInfo = getBasicAudioInfo(uri);
+                call.resolve(audioInfo);
             }
 
         } catch (Exception e) {

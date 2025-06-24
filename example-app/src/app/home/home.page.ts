@@ -672,10 +672,11 @@ export class HomePage implements OnInit, OnDestroy{
 
     try {
       console.log('🚀 ~ Preloading audio...');
-      await CapacitorAudioEngine.preload({
+     const results = await CapacitorAudioEngine.preload({
         uri: audioInfo.uri,
         prepare: true // Load audio data into memory for faster playback
       });
+      console.log("🚀 ~ HomePage ~ preloadAudio ~ results:", results)
       console.log('🚀 ~ Audio preloaded successfully');
       this.showAlert('Preload Complete', 'Audio has been preloaded and is ready for instant playback.');
     } catch (error) {
@@ -693,10 +694,11 @@ export class HomePage implements OnInit, OnDestroy{
 
     try {
       console.log('🚀 ~ Preloading audio (without prepare)...');
-      await CapacitorAudioEngine.preload({
+     const results = await CapacitorAudioEngine.preload({
         uri: audioInfo.uri,
         prepare: false // Just set up player without loading data
       });
+      console.log("🚀 ~ HomePage ~ preloadWithoutPrepare ~ results:", results)
       console.log('🚀 ~ Audio player setup completed');
       this.showAlert('Player Setup Complete', 'Audio player is ready (data not preloaded).');
     } catch (error) {

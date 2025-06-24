@@ -2204,8 +2204,22 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         let prepare = call.getBool("prepare") ?? true
 
         // Check if already preloaded
-        if preloadedAudioPlayers[uri] != nil {
-            call.resolve(["success": true, "cached": true, "message": "Audio already preloaded"])
+        if let preloadedPlayer = preloadedAudioPlayers[uri] {
+            // Return audio info for already preloaded audio
+            Task {
+                do {
+                    let audioInfo = try await self.extractAudioInfo(from: uri)
+                    call.resolve(audioInfo)
+                } catch {
+                    // Fallback to basic info if extraction fails
+                    call.resolve([
+                        "uri": uri,
+                        "duration": preloadedPlayer.duration,
+                        "mimeType": "audio/m4a",
+                        "createdAt": Int64(Date().timeIntervalSince1970 * 1000)
+                    ])
+                }
+            }
             return
         }
 
@@ -2353,12 +2367,63 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                         let prepared = preloadedPlayer.prepareToPlay()
                         if prepared {
                             self.log("Successfully prepared remote audio for playback")
-                            call.resolve(["success": true, "size": data.count])
+
+                            // Extract and return audio info
+                            Task {
+                                do {
+                                    var audioInfo = try await self.extractAudioInfo(from: uri)
+                                    // Update with actual data size for remote files
+                                    audioInfo["size"] = data.count
+                                    call.resolve(audioInfo)
+                                } catch {
+                                    // Fallback to basic info if extraction fails
+                                    call.resolve([
+                                        "uri": uri,
+                                        "duration": preloadedPlayer.duration,
+                                        "size": data.count,
+                                        "mimeType": "audio/m4a",
+                                        "path": uri,
+                                        "webPath": uri,
+                                        "sampleRate": AudioEngineConstants.defaultSampleRate,
+                                        "channels": AudioEngineConstants.defaultChannels,
+                                        "bitrate": AudioEngineConstants.defaultBitrate,
+                                        "createdAt": Int64(Date().timeIntervalSince1970 * 1000),
+                                        "filename": self.extractFilenameFromURI(uri)
+                                    ])
+                                }
+                            }
                         } else {
                             call.reject("Failed to prepare remote audio for playback - audio format may be unsupported")
                         }
                     } else {
-                        call.resolve(["success": true, "size": data.count])
+                        // Extract and return audio info without preparing
+                        Task {
+                            do {
+                                var audioInfo = try await self.extractAudioInfo(from: uri)
+                                // Update with actual data size for remote files
+                                audioInfo["size"] = data.count
+                                // Duration might be 0 if not prepared
+                                if (audioInfo["duration"] as? Double ?? 0) == 0 {
+                                    audioInfo["duration"] = 0.0
+                                }
+                                call.resolve(audioInfo)
+                            } catch {
+                                // Fallback to basic info if extraction fails
+                                call.resolve([
+                                    "uri": uri,
+                                    "duration": 0.0,
+                                    "size": data.count,
+                                    "mimeType": "audio/m4a",
+                                    "path": uri,
+                                    "webPath": uri,
+                                    "sampleRate": AudioEngineConstants.defaultSampleRate,
+                                    "channels": AudioEngineConstants.defaultChannels,
+                                    "bitrate": AudioEngineConstants.defaultBitrate,
+                                    "createdAt": Int64(Date().timeIntervalSince1970 * 1000),
+                                    "filename": self.extractFilenameFromURI(uri)
+                                ])
+                            }
+                        }
                     }
 
                 } catch {
@@ -2400,14 +2465,58 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 let prepared = preloadedPlayer.prepareToPlay()
                 DispatchQueue.main.async {
                     if prepared {
-                        call.resolve(["success": true])
+                        // Extract and return audio info
+                        Task {
+                            do {
+                                let audioInfo = try await self.extractAudioInfo(from: uri)
+                                call.resolve(audioInfo)
+                            } catch {
+                                // Fallback to basic info if extraction fails
+                                call.resolve([
+                                    "uri": uri,
+                                    "duration": preloadedPlayer.duration,
+                                    "mimeType": "audio/m4a",
+                                    "path": uri,
+                                    "webPath": uri,
+                                    "sampleRate": AudioEngineConstants.defaultSampleRate,
+                                    "channels": AudioEngineConstants.defaultChannels,
+                                    "bitrate": AudioEngineConstants.defaultBitrate,
+                                    "createdAt": Int64(Date().timeIntervalSince1970 * 1000),
+                                    "filename": self.extractFilenameFromURI(uri)
+                                ])
+                            }
+                        }
                     } else {
                         call.reject("Failed to prepare local audio for playback")
                     }
                 }
             } else {
                 DispatchQueue.main.async {
-                    call.resolve(["success": true])
+                    // Extract and return audio info without preparing
+                    Task {
+                        do {
+                            var audioInfo = try await self.extractAudioInfo(from: uri)
+                            // Duration might be 0 if not prepared
+                            if (audioInfo["duration"] as? Double ?? 0) == 0 {
+                                audioInfo["duration"] = 0.0
+                            }
+                            call.resolve(audioInfo)
+                        } catch {
+                            // Fallback to basic info if extraction fails
+                            call.resolve([
+                                "uri": uri,
+                                "duration": 0.0,
+                                "mimeType": "audio/m4a",
+                                "path": uri,
+                                "webPath": uri,
+                                "sampleRate": AudioEngineConstants.defaultSampleRate,
+                                "channels": AudioEngineConstants.defaultChannels,
+                                "bitrate": AudioEngineConstants.defaultBitrate,
+                                "createdAt": Int64(Date().timeIntervalSince1970 * 1000),
+                                "filename": self.extractFilenameFromURI(uri)
+                            ])
+                        }
+                    }
                 }
             }
 
@@ -3013,6 +3122,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             "createdAt": Int64(createdAt * AudioEngineConstants.timestampMultiplier), // Convert to milliseconds
             "filename": filename
         ]
+    }
+
+    /**
+     * Helper method to extract filename from URI
+     */
+    private func extractFilenameFromURI(_ uri: String) -> String {
+        if let url = URL(string: uri) {
+            let filename = url.lastPathComponent
+            return filename.isEmpty ? "audio.m4a" : filename
+        }
+        return "audio.m4a"
     }
 
     // MARK: - Microphone Availability Detection

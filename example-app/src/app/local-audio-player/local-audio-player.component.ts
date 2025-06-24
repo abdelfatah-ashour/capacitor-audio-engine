@@ -456,10 +456,11 @@ export class LocalAudioPlayerComponent implements OnInit, OnDestroy {
 
     while (retryCount < maxRetries) {
       try {
-        await CapacitorAudioEngine.preload({
+      const results =  await CapacitorAudioEngine.preload({
           uri: audioFile.uri!,
           prepare: true
         });
+      console.log("🚀 ~ LocalAudioPlayerComponent ~ preloadAudio ~ results:", results)
 
         audioFile.preloaded = true;
         audioFile.loading = false;

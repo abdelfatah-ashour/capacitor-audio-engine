@@ -323,10 +323,10 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
 
   /**
    * Preload an audio file for faster playback start.
-   * @returns Promise that resolves when preloading is complete
+   * @returns Promise that resolves with audio file information when preloading is complete
    * @platform web Not supported
    */
-  async preload(_options: any): Promise<void> {
+  async preload(_options: any): Promise<AudioFileInfo> {
     void _options; // Parameter for API compatibility
     console.warn(
       'preload is not supported on web platform. For web implementation, consider using AudioContext API directly.',

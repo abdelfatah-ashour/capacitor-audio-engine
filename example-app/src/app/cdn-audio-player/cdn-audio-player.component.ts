@@ -147,10 +147,11 @@ export class CdnAudioPlayerComponent implements OnInit, OnDestroy {
 
     audioItem.loading = true;
     try {
-      await CapacitorAudioEngine.preload({
+      const results = await CapacitorAudioEngine.preload({
         uri: audioItem.url,
         prepare: true
       });
+      console.log("🚀 ~ CdnAudioPlayerComponent ~ preloadAudio ~ results:", results)
 
       audioItem.preloaded = true;
       audioItem.loading = false;

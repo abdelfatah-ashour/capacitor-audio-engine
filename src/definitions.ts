@@ -471,13 +471,13 @@ export interface CapacitorAudioEnginePlugin {
    * @param options - Preload options
    * @param options.uri - URI of the audio file to preload
    * @param options.prepare - Whether to prepare for playback immediately. Default: true
-   * @returns Promise that resolves when preloading is complete
+   * @returns Promise that resolves with audio file information when preloading is complete
    * @throws {Error} If preloading fails
    * @platform web Not supported
    * @platform android Uses MediaPlayer.prepareAsync()
    * @platform ios Uses AVAudioPlayer.prepareToPlay()
    */
-  preload(options: PreloadOptions): Promise<void>;
+  preload(options: PreloadOptions): Promise<AudioFileInfo>;
 
   /**
    * Get information about an audio file.
