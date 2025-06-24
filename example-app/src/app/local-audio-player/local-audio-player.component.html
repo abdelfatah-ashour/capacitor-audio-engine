@@ -1,0 +1,355 @@
+<ion-header [translucent]="true">
+  <ion-toolbar>
+    <ion-title>Local Audio Player</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content [fullscreen]="true">
+  <ion-header collapse="condense">
+    <ion-toolbar>
+      <ion-title size="large">Local Audio Player</ion-title>
+    </ion-toolbar>
+  </ion-header>
+
+  <div class="container">
+    <!-- File Management Controls -->
+    <ion-card>
+      <ion-card-header>
+        <ion-card-title>
+          <ion-icon name="folder-outline"></ion-icon>
+          File Management
+        </ion-card-title>
+      </ion-card-header>
+      <ion-card-content>
+        <!-- Progress Overview -->
+        <div class="progress-overview" *ngIf="anyDownloading || anyLoading || downloadedCount > 0">
+          <div class="status-text">
+            <h4>{{ getOverallStatus() }}</h4>
+            <p>Progress: {{ getProgressPercentage() }}%</p>
+          </div>
+          <ion-progress-bar
+            [value]="getProgressPercentage() / 100"
+            [color]="allDownloaded && allPreloaded ? 'success' : 'primary'">
+          </ion-progress-bar>
+        </div>
+
+        <div class="management-buttons">
+          <ion-button
+            expand="block"
+            fill="outline"
+            (click)="downloadAllFiles()"
+            [disabled]="downloadAllDisabled">
+            <ion-icon name="download-outline" slot="start"></ion-icon>
+            Download All Files
+          </ion-button>
+
+          <ion-button
+            expand="block"
+            fill="outline"
+            color="success"
+            (click)="preloadAllAudio()"
+            [disabled]="preloadAllDisabled">
+            <ion-icon name="flash-outline" slot="start"></ion-icon>
+            Preload All Audio
+          </ion-button>
+
+          <ion-button
+            expand="block"
+            fill="outline"
+            color="tertiary"
+            (click)="downloadAndPreloadAll()"
+            [disabled]="downloadAndPreloadAllDisabled">
+            <ion-icon name="rocket-outline" slot="start"></ion-icon>
+            Download & Preload All
+          </ion-button>
+
+          <ion-button
+            expand="block"
+            fill="outline"
+            color="medium"
+            (click)="listStoredFiles()">
+            <ion-icon name="list-outline" slot="start"></ion-icon>
+            List Stored Files
+          </ion-button>
+
+          <ion-button
+            expand="block"
+            fill="outline"
+            color="warning"
+            (click)="validateAllFiles()"
+            [disabled]="downloadedCount === 0">
+            <ion-icon name="checkmark-done-outline" slot="start"></ion-icon>
+            Validate Files
+          </ion-button>
+
+          <ion-button
+            expand="block"
+            fill="outline"
+            color="secondary"
+            (click)="retryFailedDownloads()">
+            <ion-icon name="refresh-outline" slot="start"></ion-icon>
+            Retry Failed
+          </ion-button>
+
+          <ion-button
+            expand="block"
+            fill="outline"
+            color="danger"
+            (click)="clearAllFiles()"
+            [disabled]="stopAllDisabled">
+            <ion-icon name="trash-outline" slot="start"></ion-icon>
+            Clear All Files
+          </ion-button>
+        </div>
+      </ion-card-content>
+    </ion-card>
+
+    <!-- Audio Files List -->
+    <ion-card>
+      <ion-card-header>
+        <ion-card-title>
+          <ion-icon name="musical-notes-outline"></ion-icon>
+          Local Audio Files
+        </ion-card-title>
+      </ion-card-header>
+      <ion-card-content>
+        <div *ngFor="let audio of audioFiles" class="audio-item">
+          <div class="audio-info">
+            <h3>{{ audio.name }}</h3>
+            <p class="audio-details">{{ audio.fileName }}</p>
+            <div class="audio-meta" *ngIf="audio.downloaded">
+              <span class="meta-item">{{ formatFileSize(audio.size) }}</span>
+              <span class="meta-item" *ngIf="audio.duration">{{ formatTime(audio.duration) }}</span>
+            </div>
+            <div class="audio-status">
+              <ion-chip
+                [color]="getFileStatusColor(audio)"
+                [outline]="!audio.downloaded">
+                <ion-icon
+                  [name]="audio.downloading ? 'sync-outline' : audio.downloaded ? 'checkmark-circle' : 'cloud-outline'">
+                </ion-icon>
+                <ion-label>{{ getFileStatus(audio) }}</ion-label>
+              </ion-chip>
+
+              <ion-chip
+                *ngIf="audio.downloaded"
+                [color]="audio.loading ? 'warning' : audio.preloaded ? 'tertiary' : 'light'"
+                [outline]="!audio.preloaded">
+                <ion-icon
+                  [name]="audio.loading ? 'hourglass-outline' : audio.preloaded ? 'flash' : 'flash-outline'">
+                </ion-icon>
+                <ion-label>{{ audio.loading ? 'Preloading...' : audio.preloaded ? 'Preloaded' : 'Not Preloaded' }}</ion-label>
+              </ion-chip>
+
+              <ion-chip
+                *ngIf="isCurrentlyPlaying(audio)"
+                color="primary">
+                <ion-icon name="play"></ion-icon>
+                <ion-label>Playing</ion-label>
+              </ion-chip>
+
+              <ion-chip
+                *ngIf="isPlaying(audio)"
+                color="primary">
+                <ion-icon name="play"></ion-icon>
+                <ion-label>Playing</ion-label>
+              </ion-chip>
+
+              <ion-chip
+                *ngIf="isPaused(audio)"
+                color="warning">
+                <ion-icon name="pause"></ion-icon>
+                <ion-label>Paused</ion-label>
+              </ion-chip>
+            </div>
+          </div>
+
+          <div class="audio-controls">
+            <!-- Download Button -->
+            <ion-button
+              size="small"
+              fill="clear"
+              color="primary"
+              (click)="downloadAudioFile(audio)"
+              [disabled]="audio.downloaded || audio.downloading">
+              <ion-icon
+                [name]="audio.downloading ? 'hourglass-outline' : 'download-outline'">
+              </ion-icon>
+            </ion-button>
+
+            <!-- Preload Button -->
+            <ion-button
+              size="small"
+              fill="clear"
+              color="tertiary"
+              (click)="preloadAudio(audio)"
+              [disabled]="!audio.downloaded || audio.preloaded || audio.loading">
+              <ion-icon
+                [name]="audio.loading ? 'hourglass-outline' : 'flash-outline'">
+              </ion-icon>
+            </ion-button>
+
+            <!-- Play Button -->
+            <ion-button
+              size="small"
+              fill="clear"
+              color="success"
+              (click)="playAudio(audio)"
+              [disabled]="!audio.downloaded || isPlaying(audio)">
+              <ion-icon name="play"></ion-icon>
+            </ion-button>
+
+            <!-- Pause Button -->
+            <ion-button
+              size="small"
+              fill="clear"
+              color="warning"
+              (click)="pausePlayback()"
+              [disabled]="!isPlaying(audio)">
+              <ion-icon name="pause"></ion-icon>
+            </ion-button>
+
+            <!-- Stop Button -->
+            <ion-button
+              size="small"
+              fill="clear"
+              color="medium"
+              (click)="stopPlayback()"
+              [disabled]="!canStop(audio)">
+              <ion-icon name="stop"></ion-icon>
+            </ion-button>
+
+            <!-- Delete Button -->
+            <ion-button
+              size="small"
+              fill="clear"
+              color="danger"
+              (click)="deleteAudioFile(audio)"
+              [disabled]="!audio.downloaded">
+              <ion-icon name="trash-outline"></ion-icon>
+            </ion-button>
+          </div>
+        </div>
+      </ion-card-content>
+    </ion-card>
+
+    <!-- Playback Controls -->
+    <ion-card *ngIf="currentlyPlaying">
+      <ion-card-header>
+        <ion-card-title>
+          <ion-icon name="settings-outline"></ion-icon>
+          Playback Controls
+        </ion-card-title>
+      </ion-card-header>
+      <ion-card-content>
+        <!-- Progress Bar -->
+        <div class="progress-container">
+          <span class="time-label">{{ formatTime(playbackStatus.currentTime || 0) }}</span>
+          <ion-range
+            class="progress-range"
+            [value]="playbackStatus.position || 0"
+            (ionKnobMoveEnd)="onSeek($event)">
+          </ion-range>
+          <span class="time-label">{{ formatTime(playbackStatus.duration || 0) }}</span>
+        </div>
+
+        <!-- Speed Control -->
+        <ion-item>
+          <ion-label>Speed: {{ playbackSpeed }}x</ion-label>
+          <ion-range
+            slot="end"
+            [(ngModel)]="playbackSpeed"
+            (ionKnobMoveEnd)="onSpeedChange()"
+            min="0.5"
+            max="2.0"
+            step="0.1"
+            [value]="playbackSpeed">
+          </ion-range>
+        </ion-item>
+
+        <!-- Volume Control -->
+        <ion-item>
+          <ion-label>Volume: {{ (volume * 100).toFixed(0) }}%</ion-label>
+          <ion-range
+            slot="end"
+            [(ngModel)]="volume"
+            (ionKnobMoveEnd)="onVolumeChange()"
+            min="0"
+            max="1"
+            step="0.1"
+            [value]="volume">
+          </ion-range>
+        </ion-item>
+
+        <!-- Loop Toggle -->
+        <ion-item>
+          <ion-label>Loop</ion-label>
+          <ion-toggle
+            slot="end"
+            [(ngModel)]="isLooping">
+          </ion-toggle>
+        </ion-item>
+
+        <!-- Main Controls -->
+        <div class="main-controls">
+          <ion-button
+            expand="block"
+            fill="outline"
+            (click)="resumePlayback()"
+            [disabled]="playbackStatus.status !== 'paused'">
+            <ion-icon name="play" slot="start"></ion-icon>
+            Resume
+          </ion-button>
+
+          <ion-button
+            expand="block"
+            fill="outline"
+            color="warning"
+            (click)="pausePlayback()"
+            [disabled]="playbackStatus.status !== 'playing'">
+            <ion-icon name="pause" slot="start"></ion-icon>
+            Pause
+          </ion-button>
+
+          <ion-button
+            expand="block"
+            fill="outline"
+            color="danger"
+            (click)="stopPlayback()">
+            <ion-icon name="stop" slot="start"></ion-icon>
+            Stop
+          </ion-button>
+        </div>
+      </ion-card-content>
+    </ion-card>
+
+    <!-- Status Information -->
+    <ion-card>
+      <ion-card-header>
+        <ion-card-title>
+          <ion-icon name="information-circle-outline"></ion-icon>
+          Status Information
+        </ion-card-title>
+      </ion-card-header>
+      <ion-card-content>
+        <ion-button
+          expand="block"
+          fill="outline"
+          (click)="getPlaybackStatus()">
+          <ion-icon name="refresh" slot="start"></ion-icon>
+          Refresh Status
+        </ion-button>
+
+        <div class="status-info">
+          <p><strong>Status:</strong> {{ playbackStatus.status || 'idle' }}</p>
+          <p><strong>Current Time:</strong> {{ formatTime(playbackStatus.currentTime || 0) }}</p>
+          <p><strong>Duration:</strong> {{ formatTime(playbackStatus.duration || 0) }}</p>
+          <p><strong>Position:</strong> {{ (playbackStatus.position || 0).toFixed(1) }}%</p>
+          <p *ngIf="currentlyPlaying"><strong>Playing:</strong> Local File</p>
+          <p><strong>Downloaded Files:</strong> {{ downloadedCount }} / {{ totalFiles }}</p>
+          <p><strong>Preloaded Files:</strong> {{ preloadedCount }} / {{ downloadedCount }}</p>
+        </div>
+      </ion-card-content>
+    </ion-card>
+  </div>
+</ion-content>

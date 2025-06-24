@@ -275,6 +275,31 @@
   }
 }
 
+/* Navigation card styles */
+.navigation-card {
+  margin-bottom: 20px;
+
+  .navigation-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+
+    @media (max-width: 768px) {
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+
+    ion-button {
+      height: 56px;
+      font-weight: 600;
+
+      ion-icon {
+        font-size: 1.2em;
+      }
+    }
+  }
+}
+
 /* Responsive improvements */
 @media (max-width: 768px) {
   .cdn-audio-testing {

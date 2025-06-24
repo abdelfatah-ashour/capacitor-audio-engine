@@ -490,4 +490,15 @@ export interface CapacitorAudioEnginePlugin {
    * @platform ios Uses AVAsset to extract audio metadata
    */
   getAudioInfo(options: GetAudioInfoOptions): Promise<AudioFileInfo>;
+
+  /**
+   * Destroy all active playback sessions and clear all preloaded audio.
+   * This method stops all current playback, releases all MediaPlayer/AVAudioPlayer instances,
+   * and clears all preloaded audio from memory.
+   * @returns Promise that resolves when all playback resources are destroyed
+   * @platform web Not supported
+   * @platform android Stops MediaPlayer and clears preloaded audio
+   * @platform ios Stops AVAudioPlayer and clears preloaded audio
+   */
+  destroyAllPlaybacks(): Promise<void>;
 }

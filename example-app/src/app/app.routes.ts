@@ -6,6 +6,14 @@ export const routes: Routes = [
     loadComponent: () => import('./home/home.page').then((m) => m.HomePage),
   },
   {
+    path: 'cdn-audio-player',
+    loadComponent: () => import('./cdn-audio-player/cdn-audio-player.component').then((m) => m.CdnAudioPlayerComponent),
+  },
+  {
+    path: 'local-audio-player',
+    loadComponent: () => import('./local-audio-player/local-audio-player.component').then((m) => m.LocalAudioPlayerComponent),
+  },
+  {
     path: '',
     redirectTo: 'home',
     pathMatch: 'full',

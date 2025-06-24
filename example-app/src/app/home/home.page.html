@@ -14,6 +14,34 @@
   </ion-header>
 
   <div class="ion-padding">
+    <!-- Navigation to Audio Players -->
+    <ion-card class="navigation-card">
+      <ion-card-header>
+        <ion-card-title>
+          <ion-icon name="play-circle-outline"></ion-icon>
+          Audio Players
+        </ion-card-title>
+      </ion-card-header>
+      <ion-card-content>
+        <div class="navigation-buttons">
+          <ion-button
+            expand="block"
+            fill="outline"
+            routerLink="/cdn-audio-player">
+            <ion-icon name="cloud-outline" slot="start"></ion-icon>
+            CDN Audio Player
+          </ion-button>
+          <ion-button
+            expand="block"
+            fill="outline"
+            routerLink="/local-audio-player">
+            <ion-icon name="folder-outline" slot="start"></ion-icon>
+            Local Audio Player
+          </ion-button>
+        </div>
+      </ion-card-content>
+    </ion-card>
+
     <!-- Permission Status -->
     @if(hasPermission){
       <ion-text color="success">

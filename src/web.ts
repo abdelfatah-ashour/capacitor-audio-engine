@@ -347,4 +347,16 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     );
     throw new Error('getAudioInfo is not supported on web platform');
   }
+
+  /**
+   * Destroy all active playback sessions and clear all preloaded audio.
+   * @returns Promise that resolves when all playback resources are destroyed
+   * @platform web Not supported
+   */
+  async destroyAllPlaybacks(): Promise<void> {
+    console.warn(
+      'destroyAllPlaybacks is not supported on web platform. For web implementation, consider using Web Audio API directly.',
+    );
+    throw new Error('destroyAllPlaybacks is not supported on web platform');
+  }
 }

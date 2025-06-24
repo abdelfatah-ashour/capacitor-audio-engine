@@ -3,17 +3,29 @@ import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIco
 import { CapacitorAudioEngine,AudioFileInfo, MicrophoneInfo } from "capacitor-audio-engine";
 import { CommonModule } from '@angular/common';
 import { addIcons } from 'ionicons';
-import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline, informationCircleOutline, cloudOutline, cloudDownloadOutline, volumeLowOutline } from 'ionicons/icons';
+import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline, informationCircleOutline, cloudOutline, cloudDownloadOutline, volumeLowOutline, playCircleOutline, folderOutline } from 'ionicons/icons';
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
 import { AlertController } from '@ionic/angular';
 import { Filesystem } from '@capacitor/filesystem';
+import { RouterLink } from '@angular/router';
+
+
+
+ const urlAudio = "https://cdn.pixabay.com/audio/2025/03/19/audio_91b4c0a3b6.mp3";
+
+const urlAudio2 = "https://cdn.pixabay.com/audio/2025/02/18/audio_67a824edf7.mp3";
+
+const urlAudio3 = "https://cdn.pixabay.com/audio/2024/11/29/audio_45bbd49c34.mp3";
+
+const urlAudio4 = "https://cdn.pixabay.com/audio/2024/11/05/audio_da986d1e2a.mp3";
+
 
 @Component({
   selector: 'app-home',
   templateUrl: 'home.page.html',
   styleUrls: ['home.page.scss'],
-  imports: [CommonModule, FormsModule, IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon,IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner, IonCheckbox, IonInput, IonCardSubtitle],
+  imports: [CommonModule, FormsModule, RouterLink, IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIcon,IonRange, IonItem, IonLabel, IonSelect, IonSelectOption, IonCard, IonCardHeader, IonCardTitle, IonCardContent, IonBadge, IonSpinner, IonCheckbox, IonInput, IonCardSubtitle],
   standalone: true
 })
 export class HomePage implements OnInit, OnDestroy{
@@ -46,25 +58,27 @@ export class HomePage implements OnInit, OnDestroy{
   playbackVolume = signal<number>(1.0);
   isLooping = signal<boolean>(false);
 
-
-
-
   // CDN Audio Testing properties
   cdnAudioUrls = [
     {
       name: 'Sample MP3 (CDN)',
-      url: "https://cms-public-artifacts.artlist.io/content/music/aac/807314_803239_Heinrich_Egbert_Matthias_Forster_-_In_a_Blink_of_an_Eye_-_AO-000986-2_-_Master_V2_-_130_Bpm_-_271222_-_BOV_-_ORG_-_2444.aac",
+      url: urlAudio,
       type: 'mp3'
     },
     {
       name: 'Sample WAV (CDN)',
-      url:  "https://cms-public-artifacts.artlist.io/content/music/aac/911510_910848_TURPAK_-_Ascending_-_EX-000366-2_-_Master_-_75-77_Bpm_-_290823_-_BOV_-_EXT_-_2444.aac",
+      url:  urlAudio2,
       type: 'wav'
     },
     {
       name: 'Sample M4A (CDN)',
-      url:     "https://cms-public-artifacts.artlist.io/content/music/aac/955658_954131_Amos_Ever_Hadani_-_Amores_-_AO-002223-2_-_Master_V2_-_113_Bpm_-_130824_-_BOV_-_ORG_-_2444.aac",
+      url:  urlAudio3,
       type: 'm4a'
+    },
+    {
+      name: 'Sample AAC (CDN)',
+      url:  urlAudio4,
+      type: 'aac'
     }
   ];
   selectedCdnUrl = signal<string>('');
@@ -117,7 +131,9 @@ export class HomePage implements OnInit, OnDestroy{
       informationCircleOutline,
       cloudOutline,
       cloudDownloadOutline,
-      volumeLowOutline
+      volumeLowOutline,
+      playCircleOutline,
+      folderOutline
     });
   }
 

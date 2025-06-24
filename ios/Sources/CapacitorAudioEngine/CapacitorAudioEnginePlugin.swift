@@ -60,6 +60,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         CAPPluginMethod(name: "clearPreloadedAudio", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPreloadedAudio", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "isAudioPreloaded", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "destroyAllPlaybacks", returnType: CAPPluginReturnPromise),
     ]
 
     // MARK: - Interruption monitoring properties
@@ -3107,5 +3108,53 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         }
 
         return (false, "Microphone appears available")
+    }
+
+    @objc func destroyAllPlaybacks(_ call: CAPPluginCall) {
+        log("Destroying all playback sessions and clearing preloaded audio")
+
+        performStateOperation {
+            // Stop current playback if active
+            if let player = audioPlayer {
+                do {
+                    player.stop()
+                    isPlaying = false
+                    currentPlaybackPath = nil
+                    stopPlaybackProgressTimer()
+                    audioPlayer = nil
+                    log("Current playback stopped and released")
+                } catch {
+                    log("Error stopping current playback: \(error.localizedDescription)")
+                }
+            }
+
+            // Cancel any ongoing URL session tasks
+            urlSessionTask?.cancel()
+            urlSessionTask = nil
+
+            // Clear all preloaded audio
+            let preloadedCount = preloadedAudioPlayers.count
+            for (uri, player) in preloadedAudioPlayers {
+                do {
+                    player.stop()
+                } catch {
+                    log("Error stopping preloaded audio '\(uri)': \(error.localizedDescription)")
+                }
+            }
+            preloadedAudioPlayers.removeAll()
+            preloadedAudioData.removeAll()
+
+            // Reset playback state
+            playbackSpeed = 1.0
+            playbackVolume = 1.0
+            isLooping = false
+
+            log("Successfully destroyed all playback sessions. Cleared \(preloadedCount) preloaded audio files")
+        }
+
+        call.resolve([
+            "success": true,
+            "message": "Destroyed all playback sessions and cleared \(preloadedAudioPlayers.count) preloaded audio files"
+        ])
     }
 }
