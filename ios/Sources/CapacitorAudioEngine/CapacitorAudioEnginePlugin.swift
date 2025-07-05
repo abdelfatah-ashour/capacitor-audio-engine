@@ -61,6 +61,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         CAPPluginMethod(name: "getPreloadedAudio", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "isAudioPreloaded", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "destroyAllPlaybacks", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "addPlaybackListener", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "removeAllPlaybackListeners", returnType: CAPPluginReturnPromise),
     ]
 
     // MARK: - Interruption monitoring properties
@@ -2891,6 +2893,59 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         }
 
         call.resolve(result)
+    }
+
+    // MARK: - Playback Listener Methods
+
+    @objc func addPlaybackListener(_ call: CAPPluginCall) {
+        guard let eventName = call.getString("eventName") else {
+            call.reject("Event name is required")
+            return
+        }
+
+        // Validate event name
+        if !isValidPlaybackEventName(eventName) {
+            call.reject("Invalid playback event name: \(eventName)")
+            return
+        }
+
+        // For iOS, we don't need to do anything special here since listeners
+        // are automatically managed by Capacitor's notifyListeners system.
+        // The actual listeners are registered on the JavaScript side.
+
+        log("Playback listener added for event: \(eventName)")
+
+        call.resolve([
+            "success": true,
+            "eventName": eventName,
+            "message": "Playback listener added successfully"
+        ])
+    }
+
+    @objc func removeAllPlaybackListeners(_ call: CAPPluginCall) {
+        log("Removing all playback listeners")
+
+        // Stop any ongoing playback progress timer as it emits events
+        stopPlaybackProgressTimer()
+
+        // Note: In Capacitor, individual listeners are managed on the JavaScript side.
+        // The notifyListeners method will automatically handle cases where no listeners exist.
+        // We don't need to track individual listeners on the native side.
+
+        call.resolve([
+            "success": true,
+            "message": "All playback listeners removed successfully"
+        ])
+    }
+
+    /**
+     * Validate if the provided event name is a valid playback event
+     */
+    private func isValidPlaybackEventName(_ eventName: String) -> Bool {
+        return eventName == "playbackStatusChange" ||
+               eventName == "playbackProgress" ||
+               eventName == "playbackCompleted" ||
+               eventName == "playbackError"
     }
 
     @objc func getAudioInfo(_ call: CAPPluginCall) {

@@ -2133,7 +2133,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                         result.put("message", "Microphone preference updated for next recording session");
                         call.resolve(result);
                     } else {
-                        call.reject("Microphone switching during recording requires Android N (API 24) or higher");
+
                     }
                 } else {
                     // Not currently recording, just store preference for next recording
@@ -2877,6 +2877,63 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             playbackProgressTimer.cancel();
             playbackProgressTimer = null;
         }
+    }
+
+    // ========== PLAYBACK LISTENER METHODS ==========
+
+    @PluginMethod
+    public void addPlaybackListener(PluginCall call) {
+        String eventName = call.getString("eventName");
+
+        if (eventName == null) {
+            call.reject("Event name is required");
+            return;
+        }
+
+        // Validate event name
+        if (!isValidPlaybackEventName(eventName)) {
+            call.reject("Invalid playback event name: " + eventName);
+            return;
+        }
+
+        // For Android, we don't need to do anything special here since listeners
+        // are automatically managed by Capacitor's notifyListeners system.
+        // The actual listeners are registered on the JavaScript side.
+
+        Log.d(TAG, "Playback listener added for event: " + eventName);
+
+        JSObject result = new JSObject();
+        result.put("success", true);
+        result.put("eventName", eventName);
+        result.put("message", "Playback listener added successfully");
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void removeAllPlaybackListeners(PluginCall call) {
+        Log.d(TAG, "Removing all playback listeners");
+
+        // Stop any ongoing playback progress timer as it emits events
+        stopPlaybackProgressTimer();
+
+        // Note: In Capacitor, individual listeners are managed on the JavaScript side.
+        // The notifyListeners method will automatically handle cases where no listeners exist.
+        // We don't need to track individual listeners on the native side.
+
+        JSObject result = new JSObject();
+        result.put("success", true);
+        result.put("message", "All playback listeners removed successfully");
+        call.resolve(result);
+    }
+
+    /**
+     * Validate if the provided event name is a valid playback event
+     */
+    private boolean isValidPlaybackEventName(String eventName) {
+        return eventName.equals("playbackStatusChange") ||
+               eventName.equals("playbackProgress") ||
+               eventName.equals("playbackCompleted") ||
+               eventName.equals("playbackError");
     }
 
     // ========== PRELOADED AUDIO MANAGEMENT METHODS ==========
