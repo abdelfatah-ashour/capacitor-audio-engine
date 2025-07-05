@@ -1,8 +1,10 @@
 package com.capacitor.audioengine;
 
 import android.Manifest;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.media.MediaRecorder;
 import android.media.MediaPlayer;
@@ -15,6 +17,7 @@ import android.media.AudioManager;
 import android.media.AudioDeviceInfo;
 import android.media.AudioRecord;
 import android.media.AudioFormat;
+import android.media.AudioFocusRequest;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
@@ -82,6 +85,16 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     // Interruption handling
     private boolean wasRecordingBeforeInterruption = false;
 
+    // Audio focus and device connection monitoring
+    private AudioManager audioManager;
+    private AudioFocusRequest audioFocusRequest;
+    private AudioManager.OnAudioFocusChangeListener audioFocusChangeListener;
+    private boolean hasInterruptionListeners = false;
+
+    // Audio device monitoring
+    private BroadcastReceiver audioDeviceReceiver;
+    private IntentFilter audioDeviceFilter;
+
     // Background service for long-running recordings
     private boolean serviceStarted = false;
 
@@ -128,7 +141,274 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
     @Override
     public void load() {
+        super.load();
         mainHandler = new Handler(Looper.getMainLooper());
+        Log.d(TAG, "CapacitorAudioEngine plugin loaded");
+    }
+
+    private void startInterruptionMonitoring() {
+        hasInterruptionListeners = true;
+        Log.d(TAG, "Starting interruption monitoring");
+
+        // Get AudioManager instance
+        audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager == null) {
+            Log.e(TAG, "Failed to get AudioManager");
+            return;
+        }
+
+        // Setup audio focus change listener
+        audioFocusChangeListener = new AudioManager.OnAudioFocusChangeListener() {
+            @Override
+            public void onAudioFocusChange(int focusChange) {
+                handleAudioFocusChange(focusChange);
+            }
+        };
+
+        // Setup audio device monitoring
+        setupAudioDeviceMonitoring();
+    }
+
+    private void stopInterruptionMonitoring() {
+        Log.d(TAG, "Stopping interruption monitoring");
+        hasInterruptionListeners = false;
+
+        if (audioManager != null && audioFocusRequest != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+        } else if (audioManager != null && audioFocusChangeListener != null) {
+            audioManager.abandonAudioFocus(audioFocusChangeListener);
+        }
+
+        // Stop audio device monitoring
+        stopAudioDeviceMonitoring();
+
+        audioFocusChangeListener = null;
+        audioFocusRequest = null;
+        Log.d(TAG, "Interruption monitoring stopped");
+    }
+
+    private void handleAudioFocusChange(int focusChange) {
+        Log.d(TAG, "Audio focus changed: " + focusChange);
+
+        switch (focusChange) {
+            case AudioManager.AUDIOFOCUS_LOSS:
+                // Lost focus for an unbounded amount of time
+                handleInterruptionBegan("Audio focus lost permanently");
+                emitInterruption("Interruption began - audio focus lost");
+                break;
+
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                // Lost focus for a short time
+                handleInterruptionBegan("Audio focus lost temporarily");
+                emitInterruption("Interruption began - temporary audio focus loss");
+                break;
+
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                // Lost focus but can duck (lower volume)
+                // For recording, we'll treat this as an interruption
+                handleInterruptionBegan("Audio focus lost - can duck");
+                emitInterruption("Interruption began - audio focus lost (can duck)");
+                break;
+
+            case AudioManager.AUDIOFOCUS_GAIN:
+                // Regained focus
+                handleInterruptionEnded(true, "Audio focus regained");
+                emitInterruption("Interruption ended - audio focus regained");
+                break;
+
+            case AudioManager.AUDIOFOCUS_GAIN_TRANSIENT:
+                // Regained focus temporarily
+                handleInterruptionEnded(true, "Audio focus regained temporarily");
+                emitInterruption("Interruption ended - temporary audio focus regained");
+                break;
+
+            case AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK:
+                // Regained focus and may duck
+                handleInterruptionEnded(true, "Audio focus regained (may duck)");
+                emitInterruption("Interruption ended - audio focus regained (may duck)");
+                break;
+
+            default:
+                Log.d(TAG, "Unknown audio focus change: " + focusChange);
+                break;
+        }
+    }
+
+    private void handleInterruptionBegan(String reason) {
+        Log.d(TAG, "Handling interruption began: " + reason);
+
+        if (isRecording) {
+            wasRecordingBeforeInterruption = true;
+            try {
+                // Stop timers
+                stopSegmentTimer();
+                stopDurationMonitoring();
+
+                // Pause recording if supported (Android N+)
+                if (mediaRecorder != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    mediaRecorder.pause();
+                    Log.d(TAG, "Recording paused due to interruption");
+                } else {
+                    Log.d(TAG, "Recording pause not supported on this Android version");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to handle interruption", e);
+            }
+        }
+    }
+
+    private void handleInterruptionEnded(boolean shouldResume, String reason) {
+        Log.d(TAG, "Handling interruption ended: " + reason + ", shouldResume: " + shouldResume);
+
+        if (wasRecordingBeforeInterruption && shouldResume) {
+            try {
+                // Resume recording if supported (Android N+)
+                if (mediaRecorder != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    mediaRecorder.resume();
+
+                    // Restart timers
+                    if (maxDuration != null && maxDuration > 0) {
+                        startSegmentTimer(maxDuration);
+                    }
+                    startDurationMonitoring();
+
+                    emitInterruption("Recording resumed after interruption");
+                    Log.d(TAG, "Recording resumed after interruption");
+                } else {
+                    Log.d(TAG, "Recording resume not supported on this Android version");
+                    emitInterruption("Interruption ended - manual resume required");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to resume recording after interruption", e);
+                emitInterruption("Failed to resume recording after interruption");
+            }
+
+            wasRecordingBeforeInterruption = false;
+        }
+    }
+
+    private void requestAudioFocus() {
+        if (audioManager == null) return;
+
+        int result;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(new android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build())
+                    .setAcceptsDelayedFocusGain(true)
+                    .setOnAudioFocusChangeListener(audioFocusChangeListener, mainHandler)
+                    .build();
+            result = audioManager.requestAudioFocus(audioFocusRequest);
+        } else {
+            result = audioManager.requestAudioFocus(audioFocusChangeListener,
+                    AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
+
+        if (result != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            Log.w(TAG, "Audio focus request not granted");
+        }
+    }
+
+    private void setupAudioDeviceMonitoring() {
+        Log.d(TAG, "Setting up audio device monitoring");
+
+        // Create broadcast receiver for audio device changes
+        audioDeviceReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                handleAudioDeviceChange(intent);
+            }
+        };
+
+        // Create intent filter for audio device events
+        audioDeviceFilter = new IntentFilter();
+        audioDeviceFilter.addAction(AudioManager.ACTION_HEADSET_PLUG);
+        audioDeviceFilter.addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioDeviceFilter.addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED);
+        }
+
+        // Register the receiver
+        try {
+            getContext().registerReceiver(audioDeviceReceiver, audioDeviceFilter);
+            Log.d(TAG, "Audio device monitoring registered successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to register audio device receiver", e);
+        }
+    }
+
+    private void stopAudioDeviceMonitoring() {
+        Log.d(TAG, "Stopping audio device monitoring");
+
+        if (audioDeviceReceiver != null) {
+            try {
+                getContext().unregisterReceiver(audioDeviceReceiver);
+                Log.d(TAG, "Audio device receiver unregistered");
+            } catch (Exception e) {
+                Log.w(TAG, "Error unregistering audio device receiver", e);
+            }
+            audioDeviceReceiver = null;
+        }
+
+        audioDeviceFilter = null;
+    }
+
+    private void handleAudioDeviceChange(Intent intent) {
+        String action = intent.getAction();
+        if (action == null) return;
+
+        String message = "Audio route changed: ";
+
+        switch (action) {
+            case AudioManager.ACTION_HEADSET_PLUG:
+                int state = intent.getIntExtra("state", -1);
+                String name = intent.getStringExtra("name");
+                if (state == 0) {
+                    message += "headphones unplugged";
+                    if (name != null) {
+                        message += " (" + name + ")";
+                    }
+                } else if (state == 1) {
+                    message += "headphones connected";
+                    if (name != null) {
+                        message += " (" + name + ")";
+                    }
+                }
+                break;
+
+            case AudioManager.ACTION_AUDIO_BECOMING_NOISY:
+                message += "audio becoming noisy (headphones unplugged)";
+                break;
+
+            case AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED:
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    int scoState = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1);
+                    switch (scoState) {
+                        case AudioManager.SCO_AUDIO_STATE_CONNECTED:
+                            message += "Bluetooth SCO connected";
+                            break;
+                        case AudioManager.SCO_AUDIO_STATE_DISCONNECTED:
+                            message += "Bluetooth SCO disconnected";
+                            break;
+                        case AudioManager.SCO_AUDIO_STATE_CONNECTING:
+                            message += "Bluetooth SCO connecting";
+                            break;
+                        default:
+                            message += "Bluetooth SCO state changed";
+                            break;
+                    }
+                }
+                break;
+
+            default:
+                message += "unknown device change";
+                break;
+        }
+
+        Log.d(TAG, "Audio device change: " + message);
+        emitInterruption(message);
     }
 
     @PluginMethod
@@ -373,6 +653,13 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 // Stop segment timer if active
                 stopSegmentTimer();
 
+                // Abandon audio focus
+                if (audioManager != null && audioFocusRequest != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    audioManager.abandonAudioFocusRequest(audioFocusRequest);
+                } else if (audioManager != null && audioFocusChangeListener != null) {
+                    audioManager.abandonAudioFocus(audioFocusChangeListener);
+                }
+
                 // Stop background service
                 stopRecordingService();
 
@@ -516,6 +803,9 @@ public class CapacitorAudioEnginePlugin extends Plugin {
      * Start linear recording (no max duration limit) - records continuously until stopped
      */
     private void startLinearRecording(File recordingsDir) throws IOException {
+        // Request audio focus before starting recording
+        requestAudioFocus();
+
         // Start background service for long-running recording
         startRecordingService();
 
@@ -535,6 +825,9 @@ public class CapacitorAudioEnginePlugin extends Plugin {
      * Memory-efficient approach that only keeps the last maxDuration worth of audio
      */
     private void startCircularRecording(File recordingsDir) throws IOException {
+        // Request audio focus before starting recording
+        requestAudioFocus();
+
         // Start background service for long-running recording
         startRecordingService();
 
@@ -1450,8 +1743,6 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         }
     }
 
-    // ...existing code...
-
     // Event emission methods
     private void emitDurationChange() {
         JSObject data = new JSObject();
@@ -1469,60 +1760,12 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         notifyListeners("recordingInterruption", data);
     }
 
-    // App lifecycle handling for interruptions
-    @Override
-    protected void handleOnPause() {
-        super.handleOnPause();
-        handleAppStateChange(true);
-    }
-
-    @Override
-    protected void handleOnResume() {
-        super.handleOnResume();
-        handleAppStateChange(false);
-    }
-
-    private void handleAppStateChange(boolean isBackground) {
-        if (isBackground) {
-            if (isRecording) {
-                wasRecordingBeforeInterruption = true;
-                try {
-                    stopSegmentTimer();
-                    stopDurationMonitoring();
-                    if (mediaRecorder != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        mediaRecorder.pause();
-                    }
-                    pauseRecordingService(); // Update service for background state
-                    emitInterruption("App went to background, recording paused");
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed to handle app state change to background", e);
-                }
-            }
-        } else {
-            if (wasRecordingBeforeInterruption) {
-                try {
-                    if (mediaRecorder != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        mediaRecorder.resume();
-
-                        if (maxDuration != null && maxDuration > 0) {
-                            startSegmentTimer(maxDuration);
-                        }
-
-                        startDurationMonitoring();
-                        resumeRecordingService(); // Update service for foreground state
-                        emitInterruption("App resumed from background, recording resumed");
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed to resume recording after app state change", e);
-                }
-            }
-            wasRecordingBeforeInterruption = false;
-        }
-    }
-
     @Override
     protected void handleOnDestroy() {
         super.handleOnDestroy();
+
+        // Stop interruption monitoring
+        stopInterruptionMonitoring();
 
         // Clean up all resources systematically
         cleanupRecordingResources();
@@ -1806,8 +2049,8 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 if (primaryBuiltinMic != null) {
                     JSObject micInfo = new JSObject();
                     micInfo.put("id", primaryBuiltinMic.getId());
-                    micInfo.put("name", "Built-in Microphone");
-                    micInfo.put("type", "internal");
+                    micInfo.put("name", getDeviceName(primaryBuiltinMic));
+                    micInfo.put("type", getDeviceType(primaryBuiltinMic));
                     micInfo.put("isConnected", true);
                     microphones.put(micInfo);
                 }
@@ -2389,6 +2632,99 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
     @PluginMethod
     public void resumePlayback(PluginCall call) {
+        String uri = call.getString("uri");
+        Float speed = call.getFloat("speed", 1.0f);
+        Float volume = call.getFloat("volume", 1.0f);
+        Boolean loop = call.getBoolean("loop", false);
+
+        // If uri is provided, switch to that audio file
+        if (uri != null) {
+            Log.d(TAG, "Resuming playback for new URI: " + uri);
+
+            // Stop current playback if any
+            if (mediaPlayer != null) {
+                try {
+                    mediaPlayer.stop();
+                    mediaPlayer.release();
+                    stopPlaybackProgressTimer();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping current playback: " + e.getMessage());
+                }
+            }
+
+            // Try to use preloaded audio first
+            PreloadedAudio preloadedAudio = preloadedAudioPlayers.get(uri);
+            if (preloadedAudio != null && preloadedAudio.state == PreloadState.LOADED) {
+                Log.d(TAG, "Using preloaded audio for resume");
+                mediaPlayer = preloadedAudio.player;
+                currentPlaybackPath = uri;
+                isPlaying = true;
+
+                try {
+                    // Apply options
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        mediaPlayer.setPlaybackParams(mediaPlayer.getPlaybackParams().setSpeed(speed));
+                    }
+                    mediaPlayer.setVolume(volume, volume);
+                    mediaPlayer.setLooping(loop);
+
+                    mediaPlayer.start();
+                    startPlaybackProgressTimer();
+
+                    // Notify listeners
+                    JSObject eventData = new JSObject();
+                    eventData.put("status", "playing");
+                    eventData.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
+                    eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
+                    notifyListeners("playbackStatusChange", eventData);
+
+                    call.resolve();
+                } catch (Exception e) {
+                    call.reject("Failed to resume preloaded audio", e);
+                }
+                return;
+            }
+
+            // If not preloaded, start new playback
+            try {
+                // Create new MediaPlayer for the URI
+                mediaPlayer = new MediaPlayer();
+                currentPlaybackPath = uri;
+
+                if (isRemoteUrl(uri)) {
+                    configureMediaPlayerForRemoteUrl(mediaPlayer, uri);
+                } else {
+                    mediaPlayer.setDataSource(uri);
+                }
+
+                mediaPlayer.prepare();
+
+                // Apply options
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    mediaPlayer.setPlaybackParams(mediaPlayer.getPlaybackParams().setSpeed(speed));
+                }
+                mediaPlayer.setVolume(volume, volume);
+                mediaPlayer.setLooping(loop);
+
+                mediaPlayer.start();
+                isPlaying = true;
+                startPlaybackProgressTimer();
+
+                // Notify listeners
+                JSObject eventData = new JSObject();
+                eventData.put("status", "playing");
+                eventData.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
+                eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
+                notifyListeners("playbackStatusChange", eventData);
+
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("Failed to start playback for new URI", e);
+            }
+            return;
+        }
+
+        // No URI provided, resume current playback
         if (mediaPlayer == null) {
             call.reject("No active playback to resume");
             return;
@@ -2400,6 +2736,13 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         }
 
         try {
+            // Apply options to current player
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                mediaPlayer.setPlaybackParams(mediaPlayer.getPlaybackParams().setSpeed(speed));
+            }
+            mediaPlayer.setVolume(volume, volume);
+            mediaPlayer.setLooping(loop);
+
             mediaPlayer.start();
             isPlaying = true;
             startPlaybackProgressTimer();

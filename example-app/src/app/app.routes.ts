@@ -14,6 +14,10 @@ export const routes: Routes = [
     loadComponent: () => import('./local-audio-player/local-audio-player.component').then((m) => m.LocalAudioPlayerComponent),
   },
   {
+    path: 'multi-audio-resume',
+    loadComponent: () => import('./multi-audio-resume/multi-audio-resume.component').then((m) => m.MultiAudioResumeComponent),
+  },
+  {
     path: '',
     redirectTo: 'home',
     pathMatch: 'full',

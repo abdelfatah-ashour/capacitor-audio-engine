@@ -223,37 +223,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             self?.handleRouteChange(notification)
         }
         interruptionObservers.append(routeChangeObserver)
-
-        // App state change notifications
-        let willResignActiveObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.willResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.log("App will resign active")
-            self?.handleAppStateChange(isBackground: true)
-        }
-        interruptionObservers.append(willResignActiveObserver)
-
-        let didEnterBackgroundObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.log("App did enter background")
-            self?.handleAppStateChange(isBackground: true)
-        }
-        interruptionObservers.append(didEnterBackgroundObserver)
-
-        let didBecomeActiveObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.log("App did become active")
-            self?.handleAppStateChange(isBackground: false)
-        }
-        interruptionObservers.append(didBecomeActiveObserver)
     }
 
     public func stopInterruptionMonitoring() {
@@ -277,7 +246,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         case .began:
             handleInterruptionBegan()
             notifyListeners("recordingInterruption", data: [
-                "message": "Interruption began"
+                "message": "Interruption began - audio session interrupted"
             ])
 
         case .ended:
@@ -287,11 +256,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                 if options.contains(.shouldResume) {
                     notifyListeners("recordingInterruption", data: [
-                        "message": "Interruption ended - should resume"
+                        "message": "Interruption ended - audio session resumed"
                     ])
                 } else {
                     notifyListeners("recordingInterruption", data: [
-                        "message": "Interruption ended - should not resume"
+                        "message": "Interruption ended - manual resume required"
                     ])
                 }
             }
@@ -331,95 +300,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         notifyListeners("recordingInterruption", data: [
             "message": message
         ])
-    }
-
-    public func handleAppStateChange(isBackground: Bool) {
-        if isBackground {
-            if isRecording {
-                // For background recording, don't pause - let it continue
-                // iOS with background audio mode should allow continuous recording
-                log("App entered background - continuing recording with background audio mode")
-
-                // Notify listeners that recording continues in background
-                notifyListeners("recordingInterruption", data: [
-                    "message": "App entered background - recording continues"
-                ])
-
-                // Keep the recording active but ensure proper audio session setup
-                do {
-                    // Enhanced audio session setup for background recording
-                    let session = recordingSession ?? AVAudioSession.sharedInstance()
-
-                    // Use .mixWithOthers to allow background recording alongside other audio
-                    try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .defaultToSpeaker, .allowBluetooth])
-                    try session.setActive(true, options: .notifyOthersOnDeactivation)
-
-                    // Verify recording is still active
-                    if let recorder = audioRecorder, !recorder.isRecording {
-                        log("Warning: Recorder was paused during background transition, attempting to resume")
-                        if !recorder.record() {
-                            log("Failed to maintain recording in background")
-                            wasRecordingBeforeInterruption = true
-                        }
-                    }
-                } catch {
-                    log("Failed to maintain background audio session: \(error.localizedDescription)")
-                    // If background setup fails, store state for resume
-                    wasRecordingBeforeInterruption = true
-
-                    // Stop timers to save battery
-                    stopSegmentTimer()
-                    stopDurationMonitoring()
-
-                    audioRecorder?.pause()
-                    try? recordingSession?.setActive(false, options: .notifyOthersOnDeactivation)
-
-                    notifyListeners("recordingInterruption", data: [
-                        "message": "Background recording failed - will resume when app returns"
-                    ])
-                }
-            }
-        } else {
-            // App returned to foreground
-            log("App returned to foreground")
-
-            if wasRecordingBeforeInterruption {
-                do {
-                    // Reactivate audio session
-                    try recordingSession?.setActive(true, options: .notifyOthersOnDeactivation)
-
-                    // Resume recording if possible
-                    if let recorder = audioRecorder, isRecording {
-                        if recorder.record() {
-                            log("Successfully resumed recording after app state change")
-
-                            // Restart segment timer if maxDuration is set
-                            if let maxDuration = maxDuration, maxDuration > 0 {
-                                log("Restarting segment timer after app state change")
-                                startSegmentTimer(maxDuration: maxDuration)
-                            }
-
-                            // Restart duration monitoring when app comes back to foreground
-                            startDurationMonitoring()
-
-                            notifyListeners("recordingInterruption", data: [
-                                "message": "Recording resumed after returning to foreground"
-                            ])
-                        } else {
-                            log("Failed to resume recording after app state change")
-                        }
-                    }
-                } catch {
-                    log("Failed to resume recording after app state change: \(error.localizedDescription)")
-                }
-                wasRecordingBeforeInterruption = false
-            } else if isRecording {
-                // Recording continued in background, just notify
-                notifyListeners("recordingInterruption", data: [
-                    "message": "App returned to foreground - recording continued"
-                ])
-            }
-        }
     }
 
     @objc func requestPermission(_ call: CAPPluginCall) {
@@ -2847,6 +2727,62 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     @objc func resumePlayback(_ call: CAPPluginCall) {
+        let uri = call.getString("uri")
+        let speed = call.getFloat("speed") ?? 1.0
+        let volume = call.getFloat("volume") ?? 1.0
+        let loop = call.getBool("loop") ?? false
+
+        // If uri is provided, switch to that audio file
+        if let uri = uri {
+            log("Resuming playback for new URI: \(uri)")
+
+            // Stop current playback if any
+            if let currentPlayer = audioPlayer {
+                currentPlayer.stop()
+                stopPlaybackProgressTimer()
+            }
+
+            // Try to use preloaded audio first
+            if let preloadedPlayer = preloadedAudioPlayers[uri] {
+                log("Using preloaded audio for resume")
+                audioPlayer = preloadedPlayer
+                currentPlaybackPath = uri
+                isPlaying = true
+
+                // Apply options
+                audioPlayer?.enableRate = true
+                audioPlayer?.rate = speed
+                audioPlayer?.volume = volume
+                audioPlayer?.numberOfLoops = loop ? -1 : 0
+
+                let started = audioPlayer?.play() ?? false
+                if started {
+                    startPlaybackProgressTimer()
+
+                    // Notify listeners
+                    let eventData: [String: Any] = [
+                        "status": "playing",
+                        "currentTime": audioPlayer?.currentTime ?? 0,
+                        "duration": audioPlayer?.duration ?? 0
+                    ]
+                    notifyListeners("playbackStatusChange", data: eventData)
+                    call.resolve()
+                } else {
+                    call.reject("Failed to resume preloaded audio")
+                }
+                return
+            }
+
+            // If not preloaded, load and play
+            if isRemoteURL(uri) {
+                playRemoteAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: 0.0, call: call)
+            } else {
+                playLocalAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: 0.0, call: call)
+            }
+            return
+        }
+
+        // No URI provided, resume current playback
         guard let audioPlayer = audioPlayer else {
             call.reject("No active playback to resume")
             return
@@ -2856,6 +2792,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             call.reject("Playback is already active")
             return
         }
+
+        // Apply options to current player
+        audioPlayer.enableRate = true
+        audioPlayer.rate = speed
+        audioPlayer.volume = volume
+        audioPlayer.numberOfLoops = loop ? -1 : 0
 
         let started = audioPlayer.play()
         if started {

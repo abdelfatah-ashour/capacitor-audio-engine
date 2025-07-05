@@ -1,0 +1,239 @@
+.global-controls {
+  margin-bottom: 16px;
+
+  ion-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.2rem;
+    font-weight: 600;
+  }
+
+  ion-item {
+    --padding-start: 0;
+    --padding-end: 0;
+
+    ion-label {
+      font-weight: 500;
+      min-width: 140px;
+    }
+
+    ion-range {
+      flex: 1;
+      margin-left: 16px;
+    }
+  }
+}
+
+.audio-records {
+  ion-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.2rem;
+    font-weight: 600;
+  }
+
+  ion-list {
+    padding: 0;
+  }
+}
+
+.audio-record-item {
+  --padding-start: 0;
+  --padding-end: 0;
+  --min-height: auto;
+  border-bottom: 1px solid var(--ion-color-light);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.record-content {
+  width: 100%;
+  padding: 16px;
+}
+
+.record-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+
+  h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--ion-color-dark);
+  }
+
+  .record-badges {
+    display: flex;
+    gap: 8px;
+
+    ion-badge {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      font-size: 0.75rem;
+
+      ion-icon {
+        font-size: 0.9rem;
+      }
+    }
+  }
+}
+
+.playback-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+
+  ion-button {
+    --padding-start: 8px;
+    --padding-end: 8px;
+    height: 32px;
+    font-size: 0.9rem;
+
+    ion-icon {
+      font-size: 1rem;
+      margin-right: 4px;
+    }
+  }
+}
+
+.progress-section {
+  margin-bottom: 16px;
+
+  .time-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 0.9rem;
+    color: var(--ion-color-medium);
+
+    .current-time {
+      font-weight: 500;
+      color: var(--ion-color-primary);
+    }
+
+    .duration {
+      font-weight: 500;
+    }
+  }
+
+  .progress-bar {
+    height: 4px;
+    background-color: var(--ion-color-light);
+    border-radius: 2px;
+    overflow: hidden;
+
+    .progress-fill {
+      height: 100%;
+      background-color: var(--ion-color-primary);
+      transition: width 0.3s ease;
+    }
+  }
+}
+
+.audio-settings {
+  background-color: var(--ion-color-light-tint);
+  border-radius: 8px;
+  padding: 8px;
+  margin-top: 8px;
+
+  ion-item {
+    --background: transparent;
+    --padding-start: 8px;
+    --padding-end: 8px;
+    --min-height: 40px;
+
+    ion-label {
+      font-size: 0.9rem;
+      font-weight: 500;
+      min-width: 100px;
+    }
+
+    ion-range {
+      flex: 1;
+      margin-left: 12px;
+    }
+
+    ion-toggle {
+      transform: scale(0.8);
+    }
+  }
+}
+
+.instructions {
+  margin-top: 16px;
+
+  ion-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
+
+  ul {
+    margin: 0;
+    padding-left: 16px;
+
+    li {
+      margin-bottom: 8px;
+      line-height: 1.4;
+      color: var(--ion-color-medium);
+
+      &:last-child {
+        margin-bottom: 0;
+      }
+    }
+  }
+}
+
+ion-fab-button {
+  --box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+// Responsive design
+@media (max-width: 768px) {
+  .record-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+
+    .record-badges {
+      align-self: flex-end;
+    }
+  }
+
+  .playback-controls {
+    flex-wrap: wrap;
+
+    ion-button {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+}
+
+// Dark mode support
+@media (prefers-color-scheme: dark) {
+  .record-content {
+    .record-header h3 {
+      color: var(--ion-color-light);
+    }
+
+    .progress-section .time-info {
+      color: var(--ion-color-medium);
+    }
+
+    .audio-settings {
+      background-color: var(--ion-color-dark-tint);
+    }
+  }
+}

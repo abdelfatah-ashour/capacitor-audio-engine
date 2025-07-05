@@ -50,6 +50,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 🎵 **Audio playback** - Play, pause, stop, and control recorded audio files
 - 🎚️ **Playback controls** - Speed control, seeking, volume, and looping
 - ⚡ **Audio preloading** - Preload audio files for faster playback start times
+- 🎼 **Multi-audio resume** - Resume any of multiple audio files with custom settings
 - 📋 **Audio information** - Get detailed metadata from local and remote audio files
 - 📡 **Real-time monitoring** - Track playback progress and status changes
 - 🌐 Cross-platform support (Web coming soon!)
@@ -73,6 +74,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 | Audio Playback       | ✅      | ✅  | 🔜  |
 | Playback Controls    | ✅      | ✅  | 🔜  |
 | Audio Preloading     | ✅      | ✅  | ❌  |
+| Multi-Audio Resume   | ✅      | ✅  | ❌  |
 | Audio Information    | ✅      | ✅  | 🔜  |
 
 > 💡 **Note:** Android and iOS are fully supported! Web support is coming soon - we're working on it! 🚧
@@ -308,6 +310,30 @@ export interface PlaybackOptions {
    * Volume level (0.0 - 1.0). Default: 1.0
    */
   volume?: number;
+}
+```
+
+#### `ResumePlaybackOptions`
+
+```typescript
+export interface ResumePlaybackOptions {
+  /**
+   * URI of the audio file to resume
+   * If not provided, resumes the currently paused playback
+   */
+  uri?: string;
+  /**
+   * Playback speed (0.5 - 2.0). Default: 1.0
+   */
+  speed?: number;
+  /**
+   * Volume level (0.0 - 1.0). Default: 1.0
+   */
+  volume?: number;
+  /**
+   * Whether to loop the audio. Default: false
+   */
+  loop?: boolean;
 }
 ```
 
@@ -650,11 +676,47 @@ pausePlayback(): Promise<void>;
 
 ##### `resumePlayback()`
 
-Resume paused audio playback.
+Resume paused audio playbook with optional settings to switch to a different audio file or modify playback parameters.
 
 ```typescript
-resumePlayback(): Promise<void>;
+resumePlayback(options?: ResumePlaybackOptions): Promise<void>;
 ```
+
+**Examples:**
+
+```typescript
+// Resume current playback (existing behavior)
+await CapacitorAudioEngine.resumePlayback();
+
+// Resume with custom settings
+await CapacitorAudioEngine.resumePlayback({
+  speed: 1.5, // 1.5x speed
+  volume: 0.8, // 80% volume
+  loop: true, // Enable looping
+});
+
+// Resume a different audio file
+await CapacitorAudioEngine.resumePlayback({
+  uri: 'file:///path/to/other-audio.m4a',
+  speed: 1.0,
+  volume: 1.0,
+  loop: false,
+});
+
+// Resume preloaded audio with custom settings
+await CapacitorAudioEngine.resumePlayback({
+  uri: 'https://example.com/audio/track2.mp3',
+  speed: 1.2,
+  volume: 0.9,
+});
+```
+
+**Key Features:**
+- **Backwards Compatible**: Calling without options resumes current playback
+- **Multi-Audio Support**: Can switch to any audio file using the `uri` parameter
+- **Custom Settings**: Apply different speed, volume, and loop settings on resume
+- **Preloaded Audio**: Automatically uses preloaded audio when available for faster playback
+- **Smart Fallback**: If URI not preloaded, loads and plays the audio file automatically
 
 ##### `stopPlayback()`
 
@@ -872,10 +934,26 @@ class AudioRecorder {
 
   async resumePlayback() {
     try {
+      // Resume current playback (existing behavior)
       await CapacitorAudioEngine.resumePlayback();
       console.log('Playback resumed');
     } catch (error) {
       console.error('Failed to resume playback:', error);
+    }
+  }
+
+  async resumePlaybackWithOptions(uri?: string, speed?: number, volume?: number, loop?: boolean) {
+    try {
+      // Resume with custom options - can switch to different audio files
+      await CapacitorAudioEngine.resumePlayback({
+        uri,           // Optional: switch to different audio file
+        speed,         // Optional: custom playback speed
+        volume,        // Optional: custom volume level
+        loop          // Optional: enable/disable looping
+      });
+      console.log('Playback resumed with custom options');
+    } catch (error) {
+      console.error('Failed to resume playback with options:', error);
     }
   }
 

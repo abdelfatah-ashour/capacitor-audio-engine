@@ -143,6 +143,26 @@ export interface PlaybackOptions {
   volume?: number;
 }
 
+export interface ResumePlaybackOptions {
+  /**
+   * URI of the audio file to resume
+   * If not provided, resumes the currently paused playback
+   */
+  uri?: string;
+  /**
+   * Playback speed (0.5 - 2.0). Default: 1.0
+   */
+  speed?: number;
+  /**
+   * Volume level (0.0 - 1.0). Default: 1.0
+   */
+  volume?: number;
+  /**
+   * Whether to loop the audio. Default: false
+   */
+  loop?: boolean;
+}
+
 export interface PreloadOptions {
   /**
    * URI of the audio file to preload
@@ -406,13 +426,18 @@ export interface CapacitorAudioEnginePlugin {
 
   /**
    * Resume the current playback if it was previously paused.
+   * @param options - Resume playback options
+   * @param options.uri - URI of the audio file to resume. If not provided, resumes the currently paused playback
+   * @param options.speed - Playback speed (0.5 - 2.0). Default: 1.0
+   * @param options.volume - Volume level (0.0 - 1.0). Default: 1.0
+   * @param options.loop - Whether to loop the audio. Default: false
    * @returns Promise that resolves when playback is resumed
    * @throws {Error} If no active playback exists or if playback is not paused
    * @platform web Uses AudioContext.resume()
    * @platform android Uses MediaPlayer.start()
    * @platform ios Uses AVAudioPlayer.play()
    */
-  resumePlayback(): Promise<void>;
+  resumePlayback(options?: ResumePlaybackOptions): Promise<void>;
 
   /**
    * Stop the current playback.

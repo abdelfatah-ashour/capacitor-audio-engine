@@ -14,6 +14,7 @@ import type {
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
   GetAudioInfoOptions,
+  ResumePlaybackOptions,
 } from './definitions';
 
 declare global {
@@ -240,14 +241,18 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
-   * Resume the current playback.
+   * Resume the current playback if it was previously paused.
+   * @param options - Resume playback options
    * @returns Promise that resolves when playback is resumed
    * @platform web Not supported
    */
-  async resumePlayback(): Promise<void> {
+  async resumePlayback(options?: ResumePlaybackOptions): Promise<void> {
     console.warn(
       'resumePlayback is not supported on web platform. For web implementation, consider using AudioContext API directly.',
     );
+    if (options?.uri) {
+      console.warn(`Attempted to resume playback for URI: ${options.uri}`);
+    }
     throw new Error('resumePlayback is not supported on web platform');
   }
 

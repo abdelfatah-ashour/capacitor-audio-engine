@@ -3,7 +3,7 @@ import { IonHeader, IonToolbar, IonTitle, IonContent, IonText, IonButton, IonIco
 import { CapacitorAudioEngine,AudioFileInfo, MicrophoneInfo } from "capacitor-audio-engine";
 import { CommonModule } from '@angular/common';
 import { addIcons } from 'ionicons';
-import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline, informationCircleOutline, cloudOutline, cloudDownloadOutline, volumeLowOutline, playCircleOutline, folderOutline } from 'ionicons/icons';
+import { playOutline, pauseOutline, stopOutline, micOutline, keyOutline, timeOutline,stopCircleOutline, headsetOutline, phonePortraitOutline, bluetoothOutline, refreshOutline, warningOutline, cutOutline, bugOutline, shieldCheckmarkOutline, volumeHighOutline, repeatOutline, speedometerOutline, playSkipForwardOutline, playSkipBackOutline, informationCircleOutline, cloudOutline, cloudDownloadOutline, volumeLowOutline, playCircleOutline, folderOutline, musicalNotesOutline } from 'ionicons/icons';
 import { FormsModule } from '@angular/forms';
 import { Capacitor } from '@capacitor/core';
 import { AlertController } from '@ionic/angular';
@@ -133,7 +133,8 @@ export class HomePage implements OnInit, OnDestroy{
       cloudDownloadOutline,
       volumeLowOutline,
       playCircleOutline,
-      folderOutline
+      folderOutline,
+      musicalNotesOutline
     });
   }
 
@@ -602,8 +603,13 @@ export class HomePage implements OnInit, OnDestroy{
 
   async resumePlayback() {
     try {
-      await CapacitorAudioEngine.resumePlayback();
-      console.log('🚀 ~ Playback resumed');
+      // Example: Resume with current playback settings
+      await CapacitorAudioEngine.resumePlayback({
+        speed: this.playbackSpeed(),
+        volume: this.playbackVolume(),
+        loop: this.isLooping()
+      });
+      console.log('🚀 ~ Playback resumed with options');
     } catch (error) {
       console.error('Failed to resume playback:', error);
       this.showAlert('Playback Error', `Failed to resume playback: ${error}`);
