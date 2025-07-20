@@ -192,41 +192,19 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
         switch (focusChange) {
             case AudioManager.AUDIOFOCUS_LOSS:
-                // Lost focus for an unbounded amount of time
+                // Lost focus for an unbounded amount of time - CRITICAL
                 handleInterruptionBegan("Audio focus lost permanently");
                 emitInterruption("Interruption began - audio focus lost");
                 break;
 
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                // Lost focus for a short time
+                // Lost focus for a short time - CRITICAL
                 handleInterruptionBegan("Audio focus lost temporarily");
                 emitInterruption("Interruption began - temporary audio focus loss");
                 break;
 
-            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                // Lost focus but can duck (lower volume)
-                // For recording, we'll treat this as an interruption
-                handleInterruptionBegan("Audio focus lost - can duck");
-                emitInterruption("Interruption began - audio focus lost (can duck)");
-                break;
-
-            case AudioManager.AUDIOFOCUS_GAIN:
-                // Regained focus
-                handleInterruptionEnded(true, "Audio focus regained");
-                emitInterruption("Interruption ended - audio focus regained");
-                break;
-
-            case AudioManager.AUDIOFOCUS_GAIN_TRANSIENT:
-                // Regained focus temporarily
-                handleInterruptionEnded(true, "Audio focus regained temporarily");
-                emitInterruption("Interruption ended - temporary audio focus regained");
-                break;
-
-            case AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK:
-                // Regained focus and may duck
-                handleInterruptionEnded(true, "Audio focus regained (may duck)");
-                emitInterruption("Interruption ended - audio focus regained (may duck)");
-                break;
+            // REMOVED: AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK - doesn't stop recording
+            // REMOVED: All AUDIOFOCUS_GAIN events - these are just notifications
 
             default:
                 Log.d(TAG, "Unknown audio focus change: " + focusChange);
@@ -366,49 +344,32 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 int state = intent.getIntExtra("state", -1);
                 String name = intent.getStringExtra("name");
                 if (state == 0) {
+                    // CRITICAL: Headphones unplugged - can affect recording quality
                     message += "headphones unplugged";
                     if (name != null) {
                         message += " (" + name + ")";
                     }
-                } else if (state == 1) {
-                    message += "headphones connected";
-                    if (name != null) {
-                        message += " (" + name + ")";
-                    }
+                    Log.d(TAG, "Audio device change: " + message);
+                    emitInterruption(message);
                 }
+                // REMOVED: Headphone connection events - don't affect recording
                 break;
 
             case AudioManager.ACTION_AUDIO_BECOMING_NOISY:
+                // CRITICAL: Audio becoming noisy (headphones unplugged)
                 message += "audio becoming noisy (headphones unplugged)";
+                Log.d(TAG, "Audio device change: " + message);
+                emitInterruption(message);
                 break;
 
-            case AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED:
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    int scoState = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1);
-                    switch (scoState) {
-                        case AudioManager.SCO_AUDIO_STATE_CONNECTED:
-                            message += "Bluetooth SCO connected";
-                            break;
-                        case AudioManager.SCO_AUDIO_STATE_DISCONNECTED:
-                            message += "Bluetooth SCO disconnected";
-                            break;
-                        case AudioManager.SCO_AUDIO_STATE_CONNECTING:
-                            message += "Bluetooth SCO connecting";
-                            break;
-                        default:
-                            message += "Bluetooth SCO state changed";
-                            break;
-                    }
-                }
-                break;
+            // REMOVED: Bluetooth SCO events - these are just connection status
+            // REMOVED: Other device change notifications that don't affect recording
 
             default:
-                message += "unknown device change";
+                // Only log, don't emit interruption for unknown changes
+                Log.d(TAG, "Unknown audio device change: " + action);
                 break;
         }
-
-        Log.d(TAG, "Audio device change: " + message);
-        emitInterruption(message);
     }
 
     @PluginMethod

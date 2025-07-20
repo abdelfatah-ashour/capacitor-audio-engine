@@ -246,12 +246,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
         switch type {
         case .began:
+            // CRITICAL: Interruption began - this actually affects recording
             handleInterruptionBegan()
             notifyListeners("recordingInterruption", data: [
                 "message": "Interruption began - audio session interrupted"
             ])
 
         case .ended:
+            // CRITICAL: Interruption ended - check if we should resume
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 handleInterruptionEnded(shouldResume: options.contains(.shouldResume))
@@ -278,30 +280,28 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             return
         }
 
-        var message = "Audio route changed: "
-
+        // Only handle critical route changes that affect recording
         switch reason {
         case .oldDeviceUnavailable:
-            message += "headphones unplugged"
-        case .newDeviceAvailable:
-            message += "new device connected"
-        case .categoryChange:
-            message += "category changed"
-        case .override:
-            message += "route overridden"
-        case .wakeFromSleep:
-            message += "device woke from sleep"
-        case .noSuitableRouteForCategory:
-            message += "no suitable route for category"
-        case .routeConfigurationChange:
-            message += "configuration changed"
-        default:
-            message += "unknown reason"
-        }
+            // CRITICAL: Headphones unplugged - can affect recording quality
+            let message = "Audio route changed: headphones unplugged"
+            notifyListeners("recordingInterruption", data: [
+                "message": message
+            ])
 
-        notifyListeners("recordingInterruption", data: [
-            "message": message
-        ])
+        // REMOVED: Other route changes that don't affect recording
+        // .newDeviceAvailable - doesn't stop recording
+        // .categoryChange - doesn't stop recording
+        // .override - doesn't stop recording
+        // .wakeFromSleep - doesn't stop recording
+        // .noSuitableRouteForCategory - doesn't stop recording
+        // .routeConfigurationChange - doesn't stop recording
+
+        default:
+            // Only log, don't emit interruption for non-critical changes
+            log("Non-critical route change: \(reason)")
+            break
+        }
     }
 
     @objc func requestPermission(_ call: CAPPluginCall) {
