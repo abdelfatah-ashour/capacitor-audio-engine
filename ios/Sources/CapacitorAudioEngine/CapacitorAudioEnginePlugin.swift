@@ -892,10 +892,23 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         if let maxDuration = maxDuration, maxDuration > 0, !segmentFiles.isEmpty {
             log("Processing segments. Total segments: \(segmentFiles.count)")
 
-            // Check if we have at least 2 segments and the last segment is shorter than maxDuration
-            if segmentFiles.count >= 2 {
-                guard let lastSegment = segmentFiles.last,
-                      segmentFiles.count >= 2 else {
+            // Handle different segment count cases
+            if segmentFiles.count == 1 {
+                // Single segment case
+                log("Single segment available, using as is")
+                fileToReturn = segmentFiles.last ?? path
+
+                // Clean up and reset state
+                cleanupSegmentFiles(except: fileToReturn)
+                resetRecordingState()
+
+                // Process the final file and resolve the call
+                processRecordingFile(fileToReturn, call: call)
+                return
+
+            } else if segmentFiles.count >= 2 {
+                // Multiple segments case
+                guard let lastSegment = segmentFiles.last else {
                     log("Insufficient segments for merging")
                     return
                 }
@@ -908,9 +921,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
 
                 log("Last segment duration: \(lastSegmentDuration) seconds, maxDuration: \(maxDuration) seconds")
 
-                // If last segment is shorter than maxDuration, merge with previous segment
+                // If last segment is shorter than maxDuration, merge segments
                 if lastSegmentDuration < Double(maxDuration) {
-                    log("Last segment is shorter than maxDuration, merging with previous segment")
+                    log("Last segment is shorter than maxDuration, merging segments")
 
                     // Create a new file for the merged audio
                     let fileManager = FileManager.default
@@ -919,91 +932,112 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     let timestamp = Int(Date().timeIntervalSince1970 * 1000)
                     let mergedFilePath = recordingsPath.appendingPathComponent("merged_\(timestamp).m4a")
 
-                    // Process the segments asynchronously
-                    // Calculate how much time we need from the previous segment (in seconds)
-                    // Use ceiling to ensure we get at least the full duration requested
-                    let requiredDuration = ceil(Double(maxDuration) - lastSegmentDuration)
-                    log("Required duration from previous segment: \(requiredDuration) seconds")
-
-                    // Get previous segment duration to validate
-                    let previousSegmentAsset = AVAsset(url: previousSegment)
-                    let previousSegmentDuration = previousSegmentAsset.duration.seconds
-
-                    // Make sure we don't request more than what's available
-                    let validRequiredDuration = min(requiredDuration, previousSegmentDuration)
-                    log("Valid required duration: \(validRequiredDuration) seconds (previous segment duration: \(previousSegmentDuration) seconds)")
-
-                    // Merge the audio files asynchronously
-                    mergeAudioFiles(firstFile: previousSegment, secondFile: lastSegment, outputFile: mergedFilePath, requiredDuration: validRequiredDuration) { result in
-                        switch result {
-                        case .success:
-                            fileToReturn = mergedFilePath
-                            self.log("Successfully merged segments into: \(mergedFilePath.path)")
-
-                            // Clean up the segments that were merged
-                            try? FileManager.default.removeItem(at: previousSegment)
-                            try? FileManager.default.removeItem(at: lastSegment)
-                            self.log("Removed original segments after merging")
-
-                            // Remove the merged segments from the list
-                            self.segmentFiles.removeAll { $0 == previousSegment || $0 == lastSegment }
-
-                            // Add the merged file to the list
-                            self.segmentFiles.append(mergedFilePath)
-
-                        case .failure(let error):
-                            self.log("Failed to merge audio segments: \(error.localizedDescription)")
-                            fileToReturn = lastSegment
-                        }
-
-                        // Clean up other segments
-                        for segmentPath in self.segmentFiles {
-                            if segmentPath != fileToReturn {
-                                try? FileManager.default.removeItem(at: segmentPath)
-                                self.log("Removed unused segment: \(segmentPath.lastPathComponent)")
+                    // If we have more than 2 segments, merge all of them
+                    if segmentFiles.count > 2 {
+                        log("Merging all \(segmentFiles.count) segments")
+                        mergeAllSegments(outputFile: mergedFilePath) { result in
+                            switch result {
+                            case .success:
+                                fileToReturn = mergedFilePath
+                                self.log("Successfully merged all segments into: \(mergedFilePath.path)")
+                            case .failure(let error):
+                                self.log("Failed to merge all segments: \(error.localizedDescription)")
+                                fileToReturn = lastSegment
                             }
+
+                            // Clean up and process final file
+                            self.cleanupSegmentFiles(except: fileToReturn)
+                            self.resetRecordingState()
+                            self.processRecordingFile(fileToReturn, call: call)
                         }
-                        self.segmentFiles.removeAll()
-                        self.log("Final recording file: \(fileToReturn.path)")
+                        return
+                    } else {
+                        // For exactly 2 segments, use existing logic
+                        // Calculate how much time we need from the previous segment (in seconds)
+                        // Use ceiling to ensure we get at least the full duration requested
+                        let requiredDuration = ceil(Double(maxDuration) - lastSegmentDuration)
+                        log("Required duration from previous segment: \(requiredDuration) seconds")
 
-                        // Reset segment tracking
-                        self.maxDuration = nil
-                        self.currentSegment = 0
+                        // Get previous segment duration to validate
+                        let previousSegmentAsset = AVAsset(url: previousSegment)
+                        let previousSegmentDuration = previousSegmentAsset.duration.seconds
 
-                        // Process the final file and resolve the call
-                        do {
-                            // Get file attributes
-                            let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileToReturn.path)
-                            let fileSize = fileAttributes[.size] as? Int64 ?? 0
-                            let modificationDate = fileAttributes[.modificationDate] as? Date ?? Date() // Use modificationDate
+                        // Make sure we don't request more than what's available
+                        let validRequiredDuration = min(requiredDuration, previousSegmentDuration)
+                        log("Valid required duration: \(validRequiredDuration) seconds (previous segment duration: \(previousSegmentDuration) seconds)")
 
-                            // Get audio metadata
-                            let asset = AVAsset(url: fileToReturn)
-                            let durationInSeconds = asset.duration.seconds
+                        // Merge the audio files asynchronously
+                        mergeAudioFiles(firstFile: previousSegment, secondFile: lastSegment, outputFile: mergedFilePath, requiredDuration: validRequiredDuration) { result in
+                            switch result {
+                            case .success:
+                                fileToReturn = mergedFilePath
+                                self.log("Successfully merged segments into: \(mergedFilePath.path)")
 
-                            self.log("Original recording duration: \(durationInSeconds) seconds")
+                                // Clean up the segments that were merged
+                                try? FileManager.default.removeItem(at: previousSegment)
+                                try? FileManager.default.removeItem(at: lastSegment)
+                                self.log("Removed original segments after merging")
 
-                            self.log("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
+                                // Remove the merged segments from the list
+                                self.segmentFiles.removeAll { $0 == previousSegment || $0 == lastSegment }
 
-                            // Use the helper method to create response with base64 encoding
-                            let response = self.createRecordingResponse(
-                                fileToReturn: fileToReturn,
-                                fileSize: fileSize,
-                                modificationDate: modificationDate,
-                                durationInSeconds: durationInSeconds
-                            )
-                            call.resolve(response)
-                        } catch {
-                            call.reject("Failed to get recording info: \(error.localizedDescription)")
+                                // Add the merged file to the list
+                                self.segmentFiles.append(mergedFilePath)
+
+                            case .failure(let error):
+                                self.log("Failed to merge audio segments: \(error.localizedDescription)")
+                                fileToReturn = lastSegment
+                            }
+
+                            // Clean up other segments
+                            for segmentPath in self.segmentFiles {
+                                if segmentPath != fileToReturn {
+                                    try? FileManager.default.removeItem(at: segmentPath)
+                                    self.log("Removed unused segment: \(segmentPath.lastPathComponent)")
+                                }
+                            }
+                            self.segmentFiles.removeAll()
+                            self.log("Final recording file: \(fileToReturn.path)")
+
+                            // Reset segment tracking
+                            self.maxDuration = nil
+                            self.currentSegment = 0
+
+                            // Process the final file and resolve the call
+                            do {
+                                // Get file attributes
+                                let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileToReturn.path)
+                                let fileSize = fileAttributes[.size] as? Int64 ?? 0
+                                let modificationDate = fileAttributes[.modificationDate] as? Date ?? Date() // Use modificationDate
+
+                                // Get audio metadata
+                                let asset = AVAsset(url: fileToReturn)
+                                let durationInSeconds = asset.duration.seconds
+
+                                self.log("Original recording duration: \(durationInSeconds) seconds")
+
+                                self.log("Returning recording at path: \(fileToReturn.path) with duration: \(durationInSeconds) seconds")
+
+                                // Use the helper method to create response with base64 encoding
+                                let response = self.createRecordingResponse(
+                                    fileToReturn: fileToReturn,
+                                    fileSize: fileSize,
+                                    modificationDate: modificationDate,
+                                    durationInSeconds: durationInSeconds
+                                )
+                                call.resolve(response)
+                            } catch {
+                                call.reject("Failed to get recording info: \(error.localizedDescription)")
+                            }
+
+                            // Cleanup
+                            self.audioRecorder = nil // Recorder is nilled out after use
+                            self.recordingPath = nil // Clear the path as well
                         }
 
-                        // Cleanup
-                        self.audioRecorder = nil // Recorder is nilled out after use
-                        self.recordingPath = nil // Clear the path as well
+                        // Return early - the call will be resolved in the completion handler
+                        return
                     }
-
-                    // Return early - the call will be resolved in the completion handler
-                    return
                 } else {
                     log("Last segment is not shorter than maxDuration, using as is")
                     fileToReturn = lastSegment
@@ -1059,17 +1093,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                     // Return early - the call will be resolved in the async block
                     return
                 }
-            } else {
-                log("Only one segment available, using it as is")
-                fileToReturn = segmentFiles.last ?? path
-
-                // Clean up other segments and reset state
-                cleanupSegmentFiles(except: fileToReturn)
-                resetRecordingState()
-
-                // Process the final file and resolve the call
-                processRecordingFile(fileToReturn, call: call)
-                return
             }
         }
     }
@@ -3347,5 +3370,88 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             "success": true,
             "message": "Destroyed all playback sessions and cleared \(preloadedAudioPlayers.count) preloaded audio files"
         ])
+    }
+
+    // Function to merge multiple audio files with completion handler
+    private func mergeAllSegments(outputFile: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        log("Merging all \(segmentFiles.count) segments into: \(outputFile.lastPathComponent)")
+
+        if segmentFiles.count == 1 {
+            // Just copy the single segment
+            do {
+                if FileManager.default.fileExists(atPath: outputFile.path) {
+                    try FileManager.default.removeItem(at: outputFile)
+                }
+                try FileManager.default.copyItem(at: segmentFiles[0], to: outputFile)
+                completion(.success(()))
+            } catch {
+                completion(.failure(error))
+            }
+            return
+        }
+
+        // Create a composition to merge all segments
+        let composition = AVMutableComposition()
+
+        // Create an audio track in the composition
+        guard let compositionTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            completion(.failure(NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create composition track"])))
+            return
+        }
+
+        var currentTime = CMTime.zero
+
+        // Add all segments to the composition
+        for (index, segmentURL) in segmentFiles.enumerated() {
+            log("Processing segment \(index + 1) of \(segmentFiles.count): \(segmentURL.lastPathComponent)")
+
+            let asset = AVAsset(url: segmentURL)
+            guard let track = asset.tracks(withMediaType: .audio).first else {
+                log("Warning: Segment \(index + 1) has no audio track, skipping")
+                continue
+            }
+
+            do {
+                let timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+                try compositionTrack.insertTimeRange(timeRange, of: track, at: currentTime)
+                currentTime = CMTimeAdd(currentTime, asset.duration)
+                log("Added segment \(index + 1) to composition, duration: \(asset.duration.seconds)s")
+            } catch {
+                log("Failed to add segment \(index + 1) to composition: \(error.localizedDescription)")
+                completion(.failure(error))
+                return
+            }
+        }
+
+        // Create an export session
+        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
+            completion(.failure(NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create export session"])))
+            return
+        }
+
+        // Configure the export session
+        exportSession.outputURL = outputFile
+        exportSession.outputFileType = .m4a
+
+        // Remove the output file if it already exists
+        if FileManager.default.fileExists(atPath: outputFile.path) {
+            try? FileManager.default.removeItem(at: outputFile)
+        }
+
+        // Export the composition asynchronously
+        exportSession.exportAsynchronously {
+            DispatchQueue.main.async {
+                if exportSession.status == .completed {
+                    self.log("Successfully merged all segments into: \(outputFile.path)")
+                    completion(.success(()))
+                } else if let error = exportSession.error {
+                    self.log("Failed to merge segments: \(error.localizedDescription)")
+                    completion(.failure(error))
+                } else {
+                    let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export failed with unknown error"])
+                    completion(.failure(error))
+                }
+            }
+        }
     }
 }

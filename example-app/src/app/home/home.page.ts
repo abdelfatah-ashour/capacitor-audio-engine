@@ -356,7 +356,8 @@ export class HomePage implements OnInit, OnDestroy{
       // Resume recording if it was active before interruption
       if (this.wasRecordingBeforeInterruption) {
         try {
-          await CapacitorAudioEngine.startRecording({maxDuration:5});
+          await CapacitorAudioEngine.startRecording({maxDuration:120});
+          console.log(`🚀 ~ HomePage ~ handleRecordingInterruption ~ {maxDuration:120}:`, {maxDuration:120})
           console.log('Recording resumed after interruption');
         } catch (error) {
           console.error('Failed to resume recording:', error);
@@ -497,7 +498,8 @@ export class HomePage implements OnInit, OnDestroy{
         await this.switchMicrophone(this.selectedMicrophoneId()!);
       }
 
-      CapacitorAudioEngine.startRecording({maxDuration:5}).then(() => {
+      CapacitorAudioEngine.startRecording({maxDuration:120}).then(() => {
+        console.log(`🚀 ~ HomePage ~ startRecording ~ {maxDuration:120}:`, {maxDuration:120})
         this.isRecording = true;
         this.hasRecording = false;
         this.isPaused = false;

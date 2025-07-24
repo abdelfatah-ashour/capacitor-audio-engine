@@ -803,8 +803,8 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         // Start first segment
         startNextSegment(recordingsDir);
 
-        // Start segment timer to rotate segments
-        startSegmentTimer(segmentDurationSeconds);
+        // Start segment timer to rotate segments (FIX: use maxDuration, not segmentDurationSeconds)
+        startSegmentTimer(maxDuration);
 
         isRecording = true;
         startDurationMonitoring();
@@ -1082,12 +1082,9 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
         // Strategy 2: Last segment is shorter, merge with trimmed previous if possible
         if (lastSegment.duration < maxDuration) {
-            // If total recording time is still less than maxDuration, just merge what we have
-            if (totalDuration <= maxDuration) {
-                Log.d(TAG, "Total recording time (" + totalDuration + "s) is less than maxDuration (" +
-                      maxDuration + "s), using last segment: " + lastSegment.duration + "s");
-                return lastSegment.filePath;
-            }
+            // Always merge segments when last segment is shorter than maxDuration
+            // This ensures we get the full recording duration instead of just the last segment
+            Log.d(TAG, "Last segment is shorter than maxDuration, merging segments to get full recording");
             return handleShortLastSegment(lastSegment, previousSegment);
         }
 
@@ -1110,30 +1107,49 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     }
 
     private String handleShortLastSegment(SegmentInfo lastSegment, SegmentInfo previousSegment) {
-        Log.d(TAG, "Last segment is shorter than maxDuration, merging with trimmed previous segment");
+        Log.d(TAG, "Last segment is shorter than maxDuration, merging all available segments");
 
         try {
             File recordingsDir = getRecordingsDirectory();
             long timestamp = System.currentTimeMillis();
             File mergedFile = new File(recordingsDir, "merged_" + timestamp + ".m4a");
 
-            // Calculate required duration from previous segment
-            double requiredFromPrevious = maxDuration - lastSegment.duration;
-            double actualRequiredDuration = Math.min(requiredFromPrevious, previousSegment.duration);
+            // Calculate total duration of all segments
+            double totalDuration = 0;
+            for (String segmentPath : segmentFiles) {
+                try {
+                    SegmentInfo info = getSegmentInfo(segmentPath);
+                    totalDuration += info.duration;
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to get info for segment: " + segmentPath, e);
+                }
+            }
 
-            Log.d(TAG, "Required from previous: " + requiredFromPrevious + "s, actual: " + actualRequiredDuration + "s");
+            Log.d(TAG, "Total duration of all segments: " + totalDuration + "s, maxDuration: " + maxDuration + "s");
 
-            // Merge segments
-            mergeSegmentsForRolling(new File(previousSegment.filePath), new File(lastSegment.filePath),
-                                  mergedFile, actualRequiredDuration);
+            // If we have more than 2 segments, we need to merge all of them
+            if (segmentFiles.size() > 2) {
+                Log.d(TAG, "Merging all " + segmentFiles.size() + " segments");
+                return mergeAllSegments(mergedFile);
+            } else {
+                // For 2 segments, use the existing logic but ensure we get the full duration
+                double requiredFromPrevious = maxDuration - lastSegment.duration;
+                double actualRequiredDuration = Math.min(requiredFromPrevious, previousSegment.duration);
 
-            // Clean up original segments
-            cleanupProcessedSegments(previousSegment.filePath, lastSegment.filePath);
-            segmentFiles.clear();
-            segmentFiles.add(mergedFile.getAbsolutePath());
+                Log.d(TAG, "Required from previous: " + requiredFromPrevious + "s, actual: " + actualRequiredDuration + "s");
 
-            Log.d(TAG, "Successfully merged segments into: " + mergedFile.getName());
-            return mergedFile.getAbsolutePath();
+                // Merge segments
+                mergeSegmentsForRolling(new File(previousSegment.filePath), new File(lastSegment.filePath),
+                                      mergedFile, actualRequiredDuration);
+
+                // Clean up original segments
+                cleanupProcessedSegments(previousSegment.filePath, lastSegment.filePath);
+                segmentFiles.clear();
+                segmentFiles.add(mergedFile.getAbsolutePath());
+
+                Log.d(TAG, "Successfully merged segments into: " + mergedFile.getName());
+                return mergedFile.getAbsolutePath();
+            }
         } catch (Exception e) {
             Log.e(TAG, "Failed to merge segments", e);
             return lastSegment.filePath;
@@ -1833,7 +1849,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         if (!serviceStarted) {
             try {
                 Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-                serviceIntent.setAction("START_RECORDING");
+                serviceIntent.setAction(AudioRecordingService.ACTION_START_RECORDING);
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     getContext().startForegroundService(serviceIntent);
@@ -3301,5 +3317,52 @@ public class CapacitorAudioEnginePlugin extends Plugin {
             Log.e(TAG, "Failed to destroy all playbacks", e);
             call.reject("Failed to destroy all playbacks: " + e.getMessage());
         }
+    }
+
+    private String mergeAllSegments(File outputFile) throws Exception {
+        Log.d(TAG, "Merging all " + segmentFiles.size() + " segments into: " + outputFile.getName());
+
+        if (segmentFiles.size() == 1) {
+            // Just copy the single segment
+            File sourceFile = new File(segmentFiles.get(0));
+            java.nio.file.Files.copy(sourceFile.toPath(), outputFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            return outputFile.getAbsolutePath();
+        }
+
+        // Merge segments sequentially using existing concatenateAudioFiles method
+        File currentMergedFile = new File(segmentFiles.get(0));
+
+        for (int i = 1; i < segmentFiles.size(); i++) {
+            File nextSegment = new File(segmentFiles.get(i));
+            File tempMergedFile;
+
+            if (i == segmentFiles.size() - 1) {
+                // Last iteration, use the final output file
+                tempMergedFile = outputFile;
+            } else {
+                // Create temporary file for intermediate merge
+                tempMergedFile = new File(outputFile.getParent(), "temp_merged_" + System.currentTimeMillis() + ".m4a");
+            }
+
+            Log.d(TAG, "Merging segment " + (i+1) + " of " + segmentFiles.size());
+            concatenateAudioFiles(currentMergedFile, nextSegment, tempMergedFile);
+
+            // Clean up previous merged file if it was temporary
+            if (i > 1 || i < segmentFiles.size() - 1) {
+                currentMergedFile.delete();
+            }
+
+            currentMergedFile = tempMergedFile;
+        }
+
+        // Clean up original segments
+        for (String segmentPath : segmentFiles) {
+            new File(segmentPath).delete();
+        }
+        segmentFiles.clear();
+        segmentFiles.add(outputFile.getAbsolutePath());
+
+        Log.d(TAG, "Successfully merged all segments into: " + outputFile.getName());
+        return outputFile.getAbsolutePath();
     }
 }
