@@ -110,6 +110,9 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     // Preloaded audio storage - thread-safe with proper state tracking
     private final Map<String, PreloadedAudio> preloadedAudioPlayers = new java.util.concurrent.ConcurrentHashMap<>();
 
+    // Track paused positions for each URI
+    private final Map<String, Integer> pausedPositions = new java.util.concurrent.ConcurrentHashMap<>();
+
     // Thread safety locks
     private final Object recordingLock = new Object();
     private final Object playbackLock = new Object();
@@ -1768,6 +1771,10 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 isPlaying = false;
             }
         }
+
+        // Clear paused positions
+        pausedPositions.clear();
+        currentPlaybackPath = null;
     }
 
     private void cleanupPreloadedAudio() {
@@ -2574,6 +2581,12 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         }
 
         try {
+            // Store the current position for the current URI
+            if (currentPlaybackPath != null) {
+                pausedPositions.put(currentPlaybackPath, mediaPlayer.getCurrentPosition());
+                Log.d(TAG, "Stored paused position for " + currentPlaybackPath + ": " + mediaPlayer.getCurrentPosition());
+            }
+
             mediaPlayer.pause();
             isPlaying = false;
             stopPlaybackProgressTimer();
@@ -2598,9 +2611,49 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         Float volume = call.getFloat("volume", 1.0f);
         Boolean loop = call.getBoolean("loop", false);
 
-        // If uri is provided, switch to that audio file
+        // If uri is provided, handle URI-specific resume logic
         if (uri != null) {
-            Log.d(TAG, "Resuming playback for new URI: " + uri);
+            Log.d(TAG, "Resuming playback for URI: " + uri);
+
+            // Check if this URI is the currently active one and is paused
+            if (uri.equals(currentPlaybackPath) && mediaPlayer != null && !isPlaying) {
+                Log.d(TAG, "Resuming currently paused URI: " + uri);
+                try {
+                    // Apply options to current player
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        mediaPlayer.setPlaybackParams(mediaPlayer.getPlaybackParams().setSpeed(speed));
+                    }
+                    mediaPlayer.setVolume(volume, volume);
+                    mediaPlayer.setLooping(loop);
+
+                    mediaPlayer.start();
+                    isPlaying = true;
+                    startPlaybackProgressTimer();
+
+                    // Notify listeners
+                    JSObject eventData = new JSObject();
+                    eventData.put("status", "playing");
+                    eventData.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
+                    eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
+                    notifyListeners("playbackStatusChange", eventData);
+
+                    call.resolve();
+                } catch (Exception e) {
+                    call.reject("Failed to resume current URI", e);
+                }
+                return;
+            }
+
+            // Check if this URI was previously paused and has a stored position
+            Integer pausedPosition = pausedPositions.get(uri);
+            boolean wasPlaying = uri.equals(currentPlaybackPath) && isPlaying;
+
+            if (wasPlaying) {
+                call.reject("URI is already playing");
+                return;
+            }
+
+            Log.d(TAG, "Starting playback for URI: " + uri + (pausedPosition != null ? " from position: " + pausedPosition : " from beginning"));
 
             // Stop current playback if any
             if (mediaPlayer != null) {
@@ -2611,6 +2664,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 } catch (Exception e) {
                     Log.w(TAG, "Error stopping current playback: " + e.getMessage());
                 }
+                mediaPlayer = null;
             }
 
             // Try to use preloaded audio first
@@ -2629,6 +2683,12 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                     mediaPlayer.setVolume(volume, volume);
                     mediaPlayer.setLooping(loop);
 
+                    // Seek to paused position if available
+                    if (pausedPosition != null) {
+                        mediaPlayer.seekTo(pausedPosition);
+                        pausedPositions.remove(uri); // Clear the stored position
+                    }
+
                     mediaPlayer.start();
                     startPlaybackProgressTimer();
 
@@ -2646,9 +2706,8 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 return;
             }
 
-            // If not preloaded, start new playback
+            // If not preloaded, create new MediaPlayer and load the URI
             try {
-                // Create new MediaPlayer for the URI
                 mediaPlayer = new MediaPlayer();
                 currentPlaybackPath = uri;
 
@@ -2667,6 +2726,12 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 mediaPlayer.setVolume(volume, volume);
                 mediaPlayer.setLooping(loop);
 
+                // Seek to paused position if available
+                if (pausedPosition != null) {
+                    mediaPlayer.seekTo(pausedPosition);
+                    pausedPositions.remove(uri); // Clear the stored position
+                }
+
                 mediaPlayer.start();
                 isPlaying = true;
                 startPlaybackProgressTimer();
@@ -2680,7 +2745,7 @@ public class CapacitorAudioEnginePlugin extends Plugin {
 
                 call.resolve();
             } catch (Exception e) {
-                call.reject("Failed to start playback for new URI", e);
+                call.reject("Failed to start playback for URI", e);
             }
             return;
         }
@@ -2729,6 +2794,12 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         }
 
         try {
+            // Clear paused position for current URI when stopping
+            if (currentPlaybackPath != null) {
+                pausedPositions.remove(currentPlaybackPath);
+                Log.d(TAG, "Cleared paused position for stopped URI: " + currentPlaybackPath);
+            }
+
             mediaPlayer.stop();
             isPlaying = false;
             stopPlaybackProgressTimer();
@@ -3210,6 +3281,9 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 }
             }
             preloadedAudioPlayers.clear();
+
+            // Clear paused positions
+            pausedPositions.clear();
 
             // Reset playback state
             playbackSpeed = 1.0f;

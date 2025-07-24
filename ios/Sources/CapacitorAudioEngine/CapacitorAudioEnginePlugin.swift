@@ -100,6 +100,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     private var preloadedAudioPlayers: [String: AVAudioPlayer] = [:]
     private var preloadedAudioData: [String: Data] = [:]
 
+    // Track paused positions for each URI
+    private var pausedPositions: [String: TimeInterval] = [:]
+
     // Network monitoring
     private var networkMonitor: NWPathMonitor?
     private var isNetworkAvailable = true
@@ -1698,6 +1701,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         urlSessionTask = nil
         stopPlaybackProgressTimer()
 
+        // Clear paused positions
+        pausedPositions.removeAll()
+        currentPlaybackPath = nil
+
         // Clean up preloaded audio resources
         log("Cleaning up \(preloadedAudioPlayers.count) preloaded audio players")
         for (uri, player) in preloadedAudioPlayers {
@@ -2714,6 +2721,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             return
         }
 
+        // Store the current position for the current URI
+        if let currentPath = currentPlaybackPath {
+            pausedPositions[currentPath] = audioPlayer.currentTime
+            log("Stored paused position for \(currentPath): \(audioPlayer.currentTime)")
+        }
+
         audioPlayer.pause()
         isPlaying = false
         stopPlaybackProgressTimer()
@@ -2734,9 +2747,49 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         let volume = call.getFloat("volume") ?? 1.0
         let loop = call.getBool("loop") ?? false
 
-        // If uri is provided, switch to that audio file
+        // If uri is provided, handle URI-specific resume logic
         if let uri = uri {
-            log("Resuming playback for new URI: \(uri)")
+            log("Resuming playback for URI: \(uri)")
+
+            // Check if this URI is the currently active one and is paused
+            if uri == currentPlaybackPath, let currentPlayer = audioPlayer, !isPlaying {
+                log("Resuming currently paused URI: \(uri)")
+
+                // Apply options to current player
+                currentPlayer.enableRate = true
+                currentPlayer.rate = speed
+                currentPlayer.volume = volume
+                currentPlayer.numberOfLoops = loop ? -1 : 0
+
+                let started = currentPlayer.play()
+                if started {
+                    isPlaying = true
+                    startPlaybackProgressTimer()
+
+                    // Notify listeners
+                    let eventData: [String: Any] = [
+                        "status": "playing",
+                        "currentTime": currentPlayer.currentTime,
+                        "duration": currentPlayer.duration
+                    ]
+                    notifyListeners("playbackStatusChange", data: eventData)
+                    call.resolve()
+                } else {
+                    call.reject("Failed to resume current URI")
+                }
+                return
+            }
+
+            // Check if this URI was previously paused and has a stored position
+            let pausedPosition = pausedPositions[uri]
+            let wasPlaying = uri == currentPlaybackPath && isPlaying
+
+            if wasPlaying {
+                call.reject("URI is already playing")
+                return
+            }
+
+            log("Starting playback for URI: \(uri)" + (pausedPosition != nil ? " from position: \(pausedPosition!)" : " from beginning"))
 
             // Stop current playback if any
             if let currentPlayer = audioPlayer {
@@ -2752,20 +2805,26 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 isPlaying = true
 
                 // Apply options
-                audioPlayer?.enableRate = true
-                audioPlayer?.rate = speed
-                audioPlayer?.volume = volume
-                audioPlayer?.numberOfLoops = loop ? -1 : 0
+                preloadedPlayer.enableRate = true
+                preloadedPlayer.rate = speed
+                preloadedPlayer.volume = volume
+                preloadedPlayer.numberOfLoops = loop ? -1 : 0
 
-                let started = audioPlayer?.play() ?? false
+                // Seek to paused position if available
+                if let pausedPosition = pausedPosition {
+                    preloadedPlayer.currentTime = pausedPosition
+                    pausedPositions.removeValue(forKey: uri) // Clear the stored position
+                }
+
+                let started = preloadedPlayer.play()
                 if started {
                     startPlaybackProgressTimer()
 
                     // Notify listeners
                     let eventData: [String: Any] = [
                         "status": "playing",
-                        "currentTime": audioPlayer?.currentTime ?? 0,
-                        "duration": audioPlayer?.duration ?? 0
+                        "currentTime": preloadedPlayer.currentTime,
+                        "duration": preloadedPlayer.duration
                     ]
                     notifyListeners("playbackStatusChange", data: eventData)
                     call.resolve()
@@ -2775,11 +2834,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
                 return
             }
 
-            // If not preloaded, load and play
+            // If not preloaded, load and play with proper position handling
             if isRemoteURL(uri) {
-                playRemoteAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: 0.0, call: call)
+                playRemoteAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: pausedPosition ?? 0.0, call: call)
+                if pausedPosition != nil {
+                    pausedPositions.removeValue(forKey: uri) // Clear the stored position
+                }
             } else {
-                playLocalAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: 0.0, call: call)
+                playLocalAudio(uri: uri, speed: speed, volume: volume, loop: loop, startTime: pausedPosition ?? 0.0, call: call)
+                if pausedPosition != nil {
+                    pausedPositions.removeValue(forKey: uri) // Clear the stored position
+                }
             }
             return
         }
@@ -2823,6 +2888,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         guard let audioPlayer = audioPlayer else {
             call.reject("No active playback to stop")
             return
+        }
+
+        // Clear paused position for current URI when stopping
+        if let currentPath = currentPlaybackPath {
+            pausedPositions.removeValue(forKey: currentPath)
+            log("Cleared paused position for stopped URI: \(currentPath)")
         }
 
         audioPlayer.stop()
@@ -3260,6 +3331,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
             }
             preloadedAudioPlayers.removeAll()
             preloadedAudioData.removeAll()
+
+            // Clear paused positions
+            pausedPositions.removeAll()
 
             // Reset playback state
             playbackSpeed = 1.0

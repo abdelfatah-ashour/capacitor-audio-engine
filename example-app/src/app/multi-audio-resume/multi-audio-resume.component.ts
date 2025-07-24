@@ -40,7 +40,11 @@ import {
   refreshOutline,
   checkmarkCircleOutline,
   playCircleOutline,
-  stopCircleOutline
+  stopCircleOutline,
+  flashOutline,
+  swapHorizontalOutline,
+  pauseCircleOutline,
+  informationCircleOutline
 } from 'ionicons/icons';
 import { CapacitorAudioEngine, AudioFileInfo } from 'capacitor-audio-engine';
 
@@ -56,6 +60,14 @@ interface AudioRecord {
   speed: number;
   volume: number;
   loop: boolean;
+  pausedAt?: number; // Track where this audio was paused
+}
+
+interface PausedAudioState {
+  id: string;
+  name: string;
+  pausedAt: number;
+  duration: number;
 }
 
 @Component({
@@ -153,6 +165,9 @@ export class MultiAudioResumeComponent implements OnInit, OnDestroy {
   globalSpeed = signal<number>(1.0);
   globalVolume = signal<number>(1.0);
 
+  // Track paused audio states for the demo
+  pausedAudioStates = signal<PausedAudioState[]>([]);
+
   constructor() {
     addIcons({
       playOutline,
@@ -167,7 +182,11 @@ export class MultiAudioResumeComponent implements OnInit, OnDestroy {
       refreshOutline,
       checkmarkCircleOutline,
       playCircleOutline,
-      stopCircleOutline
+      stopCircleOutline,
+      flashOutline,
+      swapHorizontalOutline,
+      pauseCircleOutline,
+      informationCircleOutline
     });
   }
 
@@ -334,8 +353,29 @@ export class MultiAudioResumeComponent implements OnInit, OnDestroy {
   async pauseAudioRecord(audioId: string) {
     try {
       if (this.currentPlayingAudio() === audioId) {
+        // Get current playback status to store the paused position
+        const status = await CapacitorAudioEngine.getPlaybackStatus();
+
         await CapacitorAudioEngine.pausePlayback();
-        console.log(`Paused ${audioId}`);
+
+        // Update the audio record with paused position
+        const records = this.audioRecords();
+        const recordIndex = records.findIndex(r => r.id === audioId);
+        if (recordIndex >= 0) {
+          const updatedRecords = [...records];
+          updatedRecords[recordIndex] = {
+            ...updatedRecords[recordIndex],
+            pausedAt: status.currentTime,
+            currentTime: status.currentTime
+          };
+          this.audioRecords.set(updatedRecords);
+
+          // Add to paused states for demo display
+          const record = updatedRecords[recordIndex];
+          this.updatePausedStates(audioId, record.name, status.currentTime, record.duration);
+        }
+
+        console.log(`Paused ${audioId} at position: ${status.currentTime}s`);
       }
     } catch (error) {
       console.error(`Failed to pause ${audioId}:`, error);
@@ -358,6 +398,9 @@ export class MultiAudioResumeComponent implements OnInit, OnDestroy {
 
       this.currentPlayingAudio.set(audioId);
       console.log(`Resumed playing ${record.name} with options`);
+
+      // Remove from paused states since it's now playing
+      this.removePausedState(audioId);
     } catch (error) {
       console.error(`Failed to resume ${audioId}:`, error);
       this.showAlert('Playback Error', `Failed to resume audio: ${error}`);
@@ -369,6 +412,23 @@ export class MultiAudioResumeComponent implements OnInit, OnDestroy {
       if (this.currentPlayingAudio() === audioId) {
         await CapacitorAudioEngine.stopPlayback();
         this.currentPlayingAudio.set(null);
+
+        // Clear paused state when stopping (stop resets to beginning)
+        this.removePausedState(audioId);
+
+        // Reset current time in record
+        const records = this.audioRecords();
+        const recordIndex = records.findIndex(r => r.id === audioId);
+        if (recordIndex >= 0) {
+          const updatedRecords = [...records];
+          updatedRecords[recordIndex] = {
+            ...updatedRecords[recordIndex],
+            currentTime: 0,
+            pausedAt: undefined
+          };
+          this.audioRecords.set(updatedRecords);
+        }
+
         console.log(`Stopped ${audioId}`);
       }
     } catch (error) {
@@ -450,6 +510,93 @@ export class MultiAudioResumeComponent implements OnInit, OnDestroy {
     this.audioRecords.set(updatedRecords);
 
     this.showAlert('Settings Applied', 'Global speed and volume settings have been applied to all audio records.');
+  }
+
+  // Demo Methods for Resume Functionality
+  async quickDemo() {
+    try {
+      const firstAudio = this.audioRecords()[0];
+      if (!firstAudio) return;
+
+      await this.showAlert('Quick Demo Starting', 'Playing first audio for 3 seconds, then pausing, then resuming...');
+
+      // Play first audio
+      await this.playAudioRecord(firstAudio.id);
+
+      // Wait 3 seconds
+      setTimeout(async () => {
+        await this.pauseAudioRecord(firstAudio.id);
+
+        // Wait 2 seconds then resume
+        setTimeout(async () => {
+          await this.resumeAudioRecord(firstAudio.id);
+          await this.showAlert('Quick Demo Complete', 'Notice how the audio resumed from where it was paused, not from the beginning!');
+        }, 2000);
+      }, 3000);
+
+    } catch (error) {
+      console.error('Quick demo failed:', error);
+    }
+  }
+
+  async crossAudioDemo() {
+    try {
+      const audioRecords = this.audioRecords();
+      if (audioRecords.length < 2) return;
+
+      await this.showAlert('Cross-Audio Demo Starting', 'Playing and pausing multiple audio files to show position memory...');
+
+      // Play first audio for 2 seconds, then pause
+      await this.playAudioRecord(audioRecords[0].id);
+      setTimeout(async () => {
+        await this.pauseAudioRecord(audioRecords[0].id);
+
+        // Play second audio for 2 seconds, then pause
+        setTimeout(async () => {
+          await this.playAudioRecord(audioRecords[1].id);
+          setTimeout(async () => {
+            await this.pauseAudioRecord(audioRecords[1].id);
+
+            await this.showAlert('Cross-Audio Demo Complete',
+              'Now you can resume either audio from their paused positions using the "Resume Here" buttons below!');
+          }, 2000);
+        }, 1000);
+      }, 2000);
+
+    } catch (error) {
+      console.error('Cross-audio demo failed:', error);
+    }
+  }
+
+  async resumeSpecificAudio(audioId: string) {
+    try {
+      await this.resumeAudioRecord(audioId);
+      await this.showAlert('Resume Success', 'Audio resumed from its stored paused position!');
+    } catch (error) {
+      console.error('Resume specific audio failed:', error);
+    }
+  }
+
+  // Helper methods for managing paused states
+  private updatePausedStates(audioId: string, name: string, pausedAt: number, duration: number) {
+    const currentStates = this.pausedAudioStates();
+    const existingIndex = currentStates.findIndex(state => state.id === audioId);
+
+    if (existingIndex >= 0) {
+      // Update existing paused state
+      const updatedStates = [...currentStates];
+      updatedStates[existingIndex] = { id: audioId, name, pausedAt, duration };
+      this.pausedAudioStates.set(updatedStates);
+    } else {
+      // Add new paused state
+      this.pausedAudioStates.set([...currentStates, { id: audioId, name, pausedAt, duration }]);
+    }
+  }
+
+  private removePausedState(audioId: string) {
+    const currentStates = this.pausedAudioStates();
+    const filteredStates = currentStates.filter(state => state.id !== audioId);
+    this.pausedAudioStates.set(filteredStates);
   }
 
   formatTime(seconds: number): string {

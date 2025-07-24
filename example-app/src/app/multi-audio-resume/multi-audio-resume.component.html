@@ -59,6 +59,66 @@
     </ion-card>
   }
 
+  <!-- Resume Demo Section -->
+  <ion-card class="resume-demo">
+    <ion-card-header>
+      <ion-card-title>
+        <ion-icon name="play-circle-outline"></ion-icon>
+        Resume Functionality Demo
+      </ion-card-title>
+    </ion-card-header>
+    <ion-card-content>
+      <p>Test the new resume functionality with these controls:</p>
+
+      <!-- Quick Actions -->
+      <div class="quick-actions">
+        <ion-button
+          expand="block"
+          fill="outline"
+          (click)="quickDemo()"
+          color="primary">
+          <ion-icon name="flash-outline" slot="start"></ion-icon>
+          Quick Demo: Play → Pause → Resume
+        </ion-button>
+
+        <ion-button
+          expand="block"
+          fill="outline"
+          (click)="crossAudioDemo()"
+          color="secondary">
+          <ion-icon name="swap-horizontal-outline" slot="start"></ion-icon>
+          Cross-Audio Demo: Multiple Paused States
+        </ion-button>
+      </div>
+
+      <!-- Resume Status Display -->
+      @if (pausedAudioStates().length > 0) {
+        <div class="paused-states">
+          <h4>Currently Paused Audio (with positions):</h4>
+          <ion-list>
+            @for (state of pausedAudioStates(); track state.id) {
+              <ion-item>
+                <ion-icon name="pause-circle-outline" slot="start" color="warning"></ion-icon>
+                <ion-label>
+                  <h3>{{ state.name }}</h3>
+                  <p>Paused at: {{ formatTime(state.pausedAt) }} / {{ formatTime(state.duration) }}</p>
+                </ion-label>
+                <ion-button
+                  slot="end"
+                  fill="clear"
+                  (click)="resumeSpecificAudio(state.id)"
+                  color="success">
+                  <ion-icon name="play-outline"></ion-icon>
+                  Resume Here
+                </ion-button>
+              </ion-item>
+            }
+          </ion-list>
+        </div>
+      }
+    </ion-card-content>
+  </ion-card>
+
   <!-- Audio Records List -->
   <ion-card class="audio-records">
     <ion-card-header>
@@ -186,18 +246,26 @@
     <ion-card-header>
       <ion-card-title>
         <ion-icon name="information-circle-outline"></ion-icon>
-        How to Use
+        Resume Playback Features
       </ion-card-title>
     </ion-card-header>
     <ion-card-content>
+      <p><strong>New Resume Functionality:</strong></p>
       <ul>
-        <li>Each audio record can be played, paused, and resumed independently</li>
-        <li>When you pause an audio, you can resume it with the same settings</li>
-        <li>You can also resume with different settings (speed, volume, loop)</li>
-        <li>Only one audio can play at a time - starting a new one stops the current</li>
-        <li>All audio files are preloaded for faster playback</li>
-        <li>Use global settings to apply the same speed/volume to all records</li>
+        <li><strong>Smart Resume:</strong> Each audio remembers its paused position</li>
+        <li><strong>URI-Specific Resume:</strong> Resume any previously paused audio by clicking its Resume button</li>
+        <li><strong>Cross-Audio Resume:</strong> You can resume a different audio than the currently active one</li>
+        <li><strong>Position Memory:</strong> Audio resumes from the exact position where it was paused, not from the beginning</li>
+        <li><strong>Settings Preservation:</strong> Resume with the same or different speed/volume/loop settings</li>
       </ul>
+      <p><strong>Try This:</strong></p>
+      <ol>
+        <li>Play Audio 1, let it play for 10 seconds, then pause it</li>
+        <li>Play Audio 2, let it play for 5 seconds, then pause it</li>
+        <li>Click "Resume" on Audio 1 - it should resume from 10 seconds, not from the beginning</li>
+        <li>Click "Resume" on Audio 2 - it should resume from 5 seconds</li>
+        <li>Change speed/volume settings and resume - it will apply the new settings while maintaining position</li>
+      </ol>
     </ion-card-content>
   </ion-card>
 
