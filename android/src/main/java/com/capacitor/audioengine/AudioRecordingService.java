@@ -98,11 +98,24 @@ public class AudioRecordingService extends Service {
         }
     }
 
+    /**
+     * Starts the service in the foreground with a notification.
+     *
+     * IMPORTANT: Android requires that any foreground service (such as this one, used for background audio recording)
+     * must display a notification to the user. This is enforced by the OS for privacy and security reasons—users must
+     * always be aware when their microphone is being accessed in the background. Attempting to remove or hide this
+     * notification will result in the service being killed or the app crashing. The notification is made as minimal as
+     * possible, but cannot be removed entirely.
+     *
+     * References:
+     * - https://developer.android.com/guide/components/foreground-services
+     * - https://developer.android.com/about/versions/oreo/background#services
+     */
     private void startForegroundRecording() {
         Log.d(TAG, "Starting foreground recording service");
         isRecordingActive = true;
 
-        Notification notification = createRecordingNotification("Recording audio...");
+        Notification notification = createRecordingNotification("Recording...");
 
         // Use FOREGROUND_SERVICE_TYPE_MICROPHONE for Android 10+ (API 29+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
