@@ -605,8 +605,11 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     @PluginMethod
     public void stopRecording(PluginCall call) {
         synchronized (recordingLock) {
-            if (mediaRecorder == null || !isRecording) {
-                call.reject("No active recording to stop");
+            // Allow stop if:
+            // - isRecording is true (normal case), OR
+            // - wasRecordingBeforeInterruption is true (paused due to interruption)
+            if (mediaRecorder == null || (!isRecording && !wasRecordingBeforeInterruption)) {
+                call.reject("No active or interrupted recording to stop");
                 return;
             }
 
@@ -627,10 +630,14 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 // Stop background service
                 stopRecordingService();
 
-                // Stop the actual MediaRecorder
-                mediaRecorder.stop();
+                // If currently recording, stop the actual MediaRecorder
+                // If paused due to interruption, do not call stop() again (it is already paused)
+                if (isRecording) {
+                    mediaRecorder.stop();
+                }
                 mediaRecorder.release();
                 isRecording = false;
+                wasRecordingBeforeInterruption = false;
 
                 String fileToReturn = currentRecordingPath;
 

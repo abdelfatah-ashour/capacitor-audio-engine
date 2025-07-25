@@ -859,15 +859,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
     }
 
     @objc func stopRecording(_ call: CAPPluginCall) {
-        guard let recorder = audioRecorder, isRecording else { // isRecording is the plugin's overall session state
-            call.reject("No active recording to stop.")
+        // Allow stop if:
+        // - isRecording is true (normal case), OR
+        // - wasRecordingBeforeInterruption is true (paused due to interruption)
+        guard let recorder = audioRecorder, isRecording || wasRecordingBeforeInterruption else {
+            call.reject("No active or interrupted recording to stop.")
             return
         }
 
         // Stop duration monitoring
         stopDurationMonitoring()
-
-        // Don't reset currentDuration here to maintain total duration from start to stop
 
         // Stop monitoring for interruptions
         stopInterruptionMonitoring()
@@ -875,9 +876,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPla
         // Stop segment timer if active
         stopSegmentTimer()
 
-        // Stop the actual AVAudioRecorder
-        recorder.stop()
-        isRecording = false // Update plugin's session state
+        // If currently recording, stop the actual AVAudioRecorder
+        // If paused due to interruption, do not call stop() again (it is already paused)
+        if isRecording {
+            recorder.stop()
+        }
+        // Mark as not recording
+        isRecording = false
+        // If we were interrupted, clear the flag
+        if wasRecordingBeforeInterruption {
+            wasRecordingBeforeInterruption = false
+        }
 
         // Get the file to return (last segment or regular recording)
         guard let path = recordingPath else {
