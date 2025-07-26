@@ -18,7 +18,6 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
     - [Methods](#methods)
       - [Permission Management](#permission-management)
       - [Recording Control](#recording-control)
-      - [Segmented Recording](#segmented-recording)
       - [Status & Information](#status--information)
       - [Audio Processing](#audio-processing)
       - [Microphone Management](#microphone-management)
@@ -39,6 +38,8 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 
 ## ✨ Features
 
+### 🎙️ Audio Recording
+
 - 🎯 Record high-quality audio on Android and iOS
 - ⏯️ Pause and resume your recordings
 - 📊 Monitor recording status in real-time
@@ -47,8 +48,19 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 📝 Get detailed recording metadata
 - 🎙️ **Microphone management** - Detect and switch between available microphones
 - 🔍 **Microphone status** - Check if microphone is busy/in use by other apps
-- 🎵 **Audio playback** - Play, pause, stop, and control recorded audio files
-- 🎚️ **Playback controls** - Speed control, seeking, volume, and looping
+
+### 🎵 Audio Playback
+
+- 📂 **Playlist support** - Initialize and manage playlists of multiple audio tracks
+- ▶️ **Full playback controls** - Play, pause, resume, stop with seamless track transitions
+- ⏭️ **Navigation** - Skip to next/previous track or jump to specific track index
+- 🎯 **Seeking** - Seek to any position within the current track
+- 📊 **Real-time info** - Get current track, position, duration, and playback status
+- 🔔 **Event notifications** - Track changes, playback state, and error handling
+- 🔄 **Auto-advance** - Automatically play next track when current track ends
+- 📱 **Lock screen controls** - Native media controls on iOS and Android
+- 🔊 **Background playback** - Continue playing when app is backgrounded
+- 🎨 **Metadata support** - Display track title, artist, and artwork
 - ⚡ **Audio preloading** - Preload audio files for faster playback start times
 - 🎼 **Multi-audio resume** - Resume any of multiple audio files with custom settings
 - 📋 **Audio information** - Get detailed metadata from local and remote audio files
@@ -68,7 +80,6 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 | Permission Handling  | ✅      | ✅  | 🔜  |
 | Status Monitoring    | ✅      | ✅  | 🔜  |
 | Audio Trimming       | ✅      | ✅  | 🔜  |
-| Segmented Recording  | ✅      | ✅  | 🔜  |
 | Microphone Detection | ✅      | ✅  | 🔜  |
 | Microphone Switching | ✅      | ✅  | 🔜  |
 | Audio Playback       | ✅      | ✅  | 🔜  |
@@ -167,10 +178,6 @@ export interface AudioFileInfo {
 ```typescript
 export interface RecordingOptions {
   /**
-   * Maximum duration in seconds to keep at the end of recording
-   */
-  maxDuration?: number;
-  /**
    * Audio sample rate (Hz). Default: 44100
    */
   sampleRate?: number;
@@ -188,17 +195,6 @@ export interface RecordingOptions {
 }
 ```
 
-#### `SegmentedRecordingOptions`
-
-```typescript
-export interface SegmentedRecordingOptions extends RecordingOptions {
-  /**
-   * Duration of each segment in seconds (default: 30)
-   */
-  segmentDuration?: number;
-}
-```
-
 #### `RecordingStatus`
 
 ```typescript
@@ -208,15 +204,7 @@ type RecordingStatus = 'idle' | 'recording' | 'paused';
 #### `AudioRecordingEventName`
 
 ```typescript
-type AudioRecordingEventName = 'recordingInterruption' | 'durationChange' | 'error';
-```
-
-#### `RecordingInterruptionData`
-
-```typescript
-export interface RecordingInterruptionData {
-  message: string;
-}
+type AudioRecordingEventName = 'durationChange' | 'error';
 ```
 
 #### `DurationChangeData`
@@ -478,24 +466,6 @@ Stop the current recording and get the recorded file information.
 stopRecording(): Promise<AudioFileInfo>;
 ```
 
-#### Segmented Recording
-
-##### `startSegmentedRecording()`
-
-Start recording audio in segments (chunks) that will be merged when stopped.
-
-```typescript
-startSegmentedRecording(options?: SegmentedRecordingOptions): Promise<void>;
-```
-
-##### `stopSegmentedRecording()`
-
-Stop segmented recording and merge all segments into a single file.
-
-```typescript
-stopSegmentedRecording(): Promise<AudioFileInfo>;
-```
-
 #### Status & Information
 
 ##### `getDuration()`
@@ -629,134 +599,171 @@ if (externalMic) {
 
 #### Audio Playback
 
-##### `preload()`
+The Audio Engine now supports comprehensive playlist-based audio playback with full control over multiple tracks.
 
-Preload an audio file for playback to reduce latency when starting playback.
+##### `initPlaylist()`
+
+Initialize a playlist with audio tracks and preload the first track for optimal performance.
 
 ```typescript
-preload(options: PreloadOptions): Promise<void>;
+initPlaylist(options: PlaylistOptions): Promise<void>;
+
+interface PlaylistOptions {
+  tracks: AudioTrack[];
+  preloadNext?: boolean; // Default: true
+}
+
+interface AudioTrack {
+  id: string;
+  url: string;
+  title?: string;
+  artist?: string;
+  artworkUrl?: string;
+}
 ```
 
 **Example:**
 
 ```typescript
-await CapacitorAudioEngine.preload({
-  uri: 'file:///path/to/audio.m4a',
-  prepare: true,
+const playlist = [
+  {
+    id: '1',
+    url: 'https://example.com/song1.mp3',
+    title: 'Song One',
+    artist: 'Artist One',
+    artworkUrl: 'https://example.com/artwork1.jpg',
+  },
+  {
+    id: '2',
+    url: 'file:///path/to/local/song2.m4a',
+    title: 'Song Two',
+    artist: 'Artist Two',
+  },
+];
+
+await CapacitorAudioEngine.initPlaylist({
+  tracks: playlist,
+  preloadNext: true,
 });
 ```
 
-##### `startPlayback()`
+##### `playAudio()`
 
-Start playing an audio file with optional playback controls.
+Start playback of the current track in the playlist.
 
 ```typescript
-startPlayback(options: PlaybackOptions & { uri: string }): Promise<void>;
+playAudio(): Promise<void>;
 ```
 
 **Example:**
 
 ```typescript
-await CapacitorAudioEngine.startPlayback({
-  uri: 'file:///path/to/audio.m4a',
-  speed: 1.5, // 1.5x speed
-  startTime: 10, // Start at 10 seconds
-  loop: false, // Don't loop
-  volume: 0.8, // 80% volume
-});
+await CapacitorAudioEngine.playAudio();
 ```
 
-##### `pausePlayback()`
+##### `pauseAudio()`
 
 Pause the current audio playback.
 
 ```typescript
-pausePlayback(): Promise<void>;
+pauseAudio(): Promise<void>;
 ```
 
-##### `resumePlayback()`
+##### `resumeAudio()`
 
-Resume paused audio playbook with optional settings to switch to a different audio file or modify playback parameters.
+Resume paused audio playback.
 
 ```typescript
-resumePlayback(options?: ResumePlaybackOptions): Promise<void>;
+resumeAudio(): Promise<void>;
 ```
 
-**Examples:**
+##### `stopAudio()`
+
+Stop audio playback and reset to the beginning of the current track.
 
 ```typescript
-// Resume current playback (existing behavior)
-await CapacitorAudioEngine.resumePlayback();
-
-// Resume with custom settings
-await CapacitorAudioEngine.resumePlayback({
-  speed: 1.5, // 1.5x speed
-  volume: 0.8, // 80% volume
-  loop: true, // Enable looping
-});
-
-// Resume a different audio file
-await CapacitorAudioEngine.resumePlayback({
-  uri: 'file:///path/to/other-audio.m4a',
-  speed: 1.0,
-  volume: 1.0,
-  loop: false,
-});
-
-// Resume preloaded audio with custom settings
-await CapacitorAudioEngine.resumePlayback({
-  uri: 'https://example.com/audio/track2.mp3',
-  speed: 1.2,
-  volume: 0.9,
-});
+stopAudio(): Promise<void>;
 ```
 
-**Key Features:**
-- **Backwards Compatible**: Calling without options resumes current playback
-- **Multi-Audio Support**: Can switch to any audio file using the `uri` parameter
-- **Custom Settings**: Apply different speed, volume, and loop settings on resume
-- **Preloaded Audio**: Automatically uses preloaded audio when available for faster playback
-- **Smart Fallback**: If URI not preloaded, loads and plays the audio file automatically
+##### `seekAudio()`
 
-##### `stopPlayback()`
-
-Stop the current audio playback completely.
+Seek to a specific position within the current track.
 
 ```typescript
-stopPlayback(): Promise<void>;
-```
+seekAudio(options: SeekOptions): Promise<void>;
 
-##### `seekTo()`
-
-Seek to a specific time position in the current audio.
-
-```typescript
-seekTo(options: { time: number }): Promise<void>;
+interface SeekOptions {
+  seconds: number;
+}
 ```
 
 **Example:**
 
 ```typescript
 // Seek to 30 seconds
-await CapacitorAudioEngine.seekTo({ time: 30 });
+await CapacitorAudioEngine.seekAudio({ seconds: 30 });
 ```
 
-##### `getPlaybackStatus()`
+##### `skipToNext()`
 
-Get the current playback status and information.
+Skip to the next track in the playlist.
 
 ```typescript
-getPlaybackStatus(): Promise<AudioPlayerInfo>;
+skipToNext(): Promise<void>;
+```
+
+##### `skipToPrevious()`
+
+Skip to the previous track in the playlist.
+
+```typescript
+skipToPrevious(): Promise<void>;
+```
+
+##### `skipToIndex()`
+
+Jump to a specific track in the playlist by index.
+
+```typescript
+skipToIndex(options: SkipToIndexOptions): Promise<void>;
+
+interface SkipToIndexOptions {
+  index: number; // Zero-based track index
+}
 ```
 
 **Example:**
 
 ```typescript
-const status = await CapacitorAudioEngine.getPlaybackStatus();
-console.log('Current time:', status.currentTime);
-console.log('Duration:', status.duration);
-console.log('Status:', status.status);
-console.log('Speed:', status.speed);
+// Jump to the third track (index 2)
+await CapacitorAudioEngine.skipToIndex({ index: 2 });
+```
+
+##### `getPlaybackInfo()`
+
+Get comprehensive information about the current playback state.
+
+```typescript
+getPlaybackInfo(): Promise<PlaybackInfo>;
+
+interface PlaybackInfo {
+  currentTrack: AudioTrack | null;
+  currentIndex: number;
+  currentPosition: number; // in seconds
+  duration: number; // in seconds
+  isPlaying: boolean;
+  status: PlaybackStatus; // 'idle' | 'loading' | 'playing' | 'paused' | 'stopped'
+}
+```
+
+**Example:**
+
+```typescript
+const info = await CapacitorAudioEngine.getPlaybackInfo();
+console.log('Current track:', info.currentTrack?.title);
+console.log('Position:', `${info.currentPosition}s / ${info.duration}s`);
+console.log('Playing:', info.isPlaying);
+console.log('Track index:', info.currentIndex);
 ```
 
 #### Event Handling
@@ -766,33 +773,58 @@ console.log('Speed:', status.speed);
 Add a listener for recording or playback events.
 
 ```typescript
-// Recording events
-addListener(
-  eventName: AudioRecordingEventName,
-  callback: (data: RecordingInterruptionData | DurationChangeData | ErrorEventData) => void,
+addListener<T extends AudioEventName>(
+  eventName: T,
+  callback: (event: AudioEventMap[T]) => void,
 ): Promise<PluginListenerHandle>;
+```
 
-// Playback events
-addListener(
-  eventName: AudioPlaybackEventName,
-  callback: (data: PlaybackProgressData | PlaybackStatusData | PlaybackCompletedData | PlaybackErrorData) => void,
-): Promise<PluginListenerHandle>;
+**Recording Event Examples:**
+
+```typescript
+// Listen for recording duration changes
+await CapacitorAudioEngine.addListener('durationChange', (event) => {
+  console.log('Recording duration:', event.duration, 'seconds');
+});
+
+// Listen for recording errors
+await CapacitorAudioEngine.addListener('error', (event) => {
+  console.error('Recording error:', event.message);
+});
 ```
 
 **Playback Event Examples:**
 
 ```typescript
-// Listen for playback progress updates
-await CapacitorAudioEngine.addListener('playbackProgress', (data) => {
-  console.log('Progress:', data.currentTime, '/', data.duration);
+// Listen for track changes
+await CapacitorAudioEngine.addListener('trackChanged', (event) => {
+  console.log('Track changed:', event.track.title, 'at index', event.index);
+  // Update UI to show new track info
 });
 
-// Listen for playback status changes
-await CapacitorAudioEngine.addListener('playbackStatusChange', (data) => {
-  console.log('Status changed to:', data.status);
+// Listen for track completion
+await CapacitorAudioEngine.addListener('trackEnded', (event) => {
+  console.log('Track ended:', event.track.title);
+  // Track will auto-advance to next if available
 });
 
-// Listen for playback completion
+// Listen for playback start
+await CapacitorAudioEngine.addListener('playbackStarted', (event) => {
+  console.log('Playback started:', event.track.title);
+  // Update play/pause button state
+});
+
+// Listen for playback pause
+await CapacitorAudioEngine.addListener('playbackPaused', (event) => {
+  console.log('Playback paused:', event.track.title, 'at', event.position, 'seconds');
+  // Update play/pause button state
+});
+
+// Listen for playback errors
+await CapacitorAudioEngine.addListener('playbackError', (event) => {
+  console.error('Playback error:', event.message);
+  // Show error message to user
+});
 await CapacitorAudioEngine.addListener('playbackCompleted', (data) => {
   console.log('Playback completed, duration:', data.duration);
 });
@@ -876,7 +908,6 @@ class AudioRecorder {
 
       // Start recording
       await CapacitorAudioEngine.startRecording({
-        maxDuration: 300, // 5 minutes
         sampleRate: 44100,
         channels: 1,
         bitrate: 128000,
@@ -946,10 +977,10 @@ class AudioRecorder {
     try {
       // Resume with custom options - can switch to different audio files
       await CapacitorAudioEngine.resumePlayback({
-        uri,           // Optional: switch to different audio file
-        speed,         // Optional: custom playback speed
-        volume,        // Optional: custom volume level
-        loop          // Optional: enable/disable looping
+        uri, // Optional: switch to different audio file
+        speed, // Optional: custom playback speed
+        volume, // Optional: custom volume level
+        loop, // Optional: enable/disable looping
       });
       console.log('Playback resumed with custom options');
     } catch (error) {
@@ -997,10 +1028,6 @@ class AudioRecorder {
 
   private async setupEventListeners() {
     // Recording event listeners
-    await CapacitorAudioEngine.addListener('recordingInterruption', (data) => {
-      console.log('Recording interrupted:', data.message);
-    });
-
     await CapacitorAudioEngine.addListener('durationChange', (data) => {
       console.log('Recording duration:', data.duration);
     });

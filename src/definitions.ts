@@ -1,13 +1,16 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 
 export type RecordingStatus = 'idle' | 'recording' | 'paused';
-export type PlaybackStatus = 'idle' | 'loaded' | 'playing' | 'paused' | 'stopped' | 'completed' | 'error';
-export type AudioRecordingEventName = 'recordingInterruption' | 'durationChange' | 'error';
+export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
+export type AudioRecordingEventName = 'durationChange' | 'error';
 export type AudioPlaybackEventName =
-  | 'playbackStatusChange'
+  | 'trackChanged'
+  | 'trackEnded'
+  | 'playbackStarted'
+  | 'playbackPaused'
+  | 'playbackError'
   | 'playbackProgress'
-  | 'playbackCompleted'
-  | 'playbackError';
+  | 'playbackStatusChanged';
 export type AudioEventName = AudioRecordingEventName | AudioPlaybackEventName;
 
 export interface AudioRecordingEvent<T = any> {
@@ -21,23 +24,21 @@ export interface AudioPlaybackEvent<T = any> {
 }
 
 export type AudioRecordingEventMap = {
-  recordingInterruption: RecordingInterruptionData;
   durationChange: DurationChangeData;
   error: ErrorEventData;
 };
 
 export type AudioPlaybackEventMap = {
-  playbackStatusChange: PlaybackStatusData;
+  trackChanged: TrackChangedData;
+  trackEnded: TrackEndedData;
+  playbackStarted: PlaybackStartedData;
+  playbackPaused: PlaybackPausedData;
+  playbackError: ErrorEventData;
   playbackProgress: PlaybackProgressData;
-  playbackCompleted: PlaybackCompletedData;
-  playbackError: PlaybackErrorData;
+  playbackStatusChanged: PlaybackStatusChangedData;
 };
 
 export type AudioEventMap = AudioRecordingEventMap & AudioPlaybackEventMap;
-
-export interface RecordingInterruptionData {
-  message: string;
-}
 
 export interface DurationChangeData {
   duration: number;
@@ -49,13 +50,55 @@ export interface ErrorEventData {
   details?: any;
 }
 
+export interface AudioTrack {
+  id: string;
+  url: string;
+  title?: string;
+  artist?: string;
+  artworkUrl?: string;
+}
+
+export interface TrackChangedData {
+  track: AudioTrack;
+  index: number;
+}
+
+export interface TrackEndedData {
+  track: AudioTrack;
+  index: number;
+}
+
+export interface PlaybackStartedData {
+  track: AudioTrack;
+  index: number;
+}
+
+export interface PlaybackPausedData {
+  track: AudioTrack;
+  index: number;
+  position: number;
+}
+
+export interface PlaybackProgressData {
+  track: AudioTrack;
+  index: number;
+  currentPosition: number;
+  duration: number;
+  isPlaying: boolean;
+}
+
+export interface PlaybackStatusChangedData {
+  track: AudioTrack | null;
+  index: number;
+  status: PlaybackStatus;
+  currentPosition: number;
+  duration: number;
+  isPlaying: boolean;
+}
+
 export interface RecordingOptions {
   /**
-   * Maximum duration in seconds to keep at the end of recording
-   */
-  maxDuration?: number;
-  /**
-   * Audio sample rate (Hz). Default: 44100
+   * Audio sample rate (Hz). Default: 22050 (optimized for smaller file sizes)
    */
   sampleRate?: number;
   /**
@@ -63,19 +106,34 @@ export interface RecordingOptions {
    */
   channels?: number;
   /**
-   * Audio bitrate (bps). Default: 128000
+   * Audio bitrate (bps). Default: 64000 (optimized for smaller file sizes)
    */
   bitrate?: number;
   /**
-   * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
+   * Audio quality preset. If specified, overrides individual sampleRate and bitrate settings.
+   * - 'low': 16kHz, 32kbps - smallest files, suitable for voice notes
+   * - 'medium': 22.05kHz, 64kbps - balanced quality/size (default)
+   * - 'high': 44.1kHz, 128kbps - higher quality, larger files
    */
-}
-
-export interface SegmentedRecordingOptions extends RecordingOptions {
+  quality?: 'low' | 'medium' | 'high';
   /**
-   * Duration of each segment in seconds (default: 30)
+   * Maximum recording duration in seconds.
+   * When set, enables segment rolling mode:
+   * - Records in 30-second segments
+   * - Maintains rolling buffer of last 10 minutes (20 segments)
+   * - Automatically merges segments when recording stops
+   * If not set, uses linear recording mode.
    */
-  segmentDuration?: number;
+  maxDuration?: number;
+  /**
+   * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
+   *
+   * Enhanced Recording Features:
+   * - Automatic segment rolling (30-second segments) for improved reliability
+   * - Rolling window retention (10 minutes max) for efficient memory usage
+   * - Automatic segment merging when recording stops
+   * - Better handling of long recording sessions and interruptions
+   */
 }
 
 export interface AudioFileInfo {
@@ -92,7 +150,13 @@ export interface AudioFileInfo {
   filename: string;
   /**
    * Base64-encoded audio data with MIME prefix (Data URI format)
-   * Format: "data:audio/m4a;base64,<base64-data>"
+   *
+   * iOS may return compressed data for better performance:
+   * - Compressed: "data:audio/m4a;base64,lzfse:<compressed-base64-data>"
+   * - Uncompressed: "data:audio/m4a;base64,<base64-data>"
+   *
+   * Use compression-utils.ts helpers to parse and handle compressed data.
+   * Compression is lossless LZFSE algorithm optimized for iOS.
    */
   base64?: string;
 }
@@ -124,105 +188,35 @@ export interface SwitchMicrophoneResult {
   microphoneId: number;
 }
 
-export interface PlaybackOptions {
-  /**
-   * Playback speed (0.5 - 2.0). Default: 1.0
-   */
-  speed?: number;
-  /**
-   * Start time in seconds. Default: 0
-   */
-  startTime?: number;
-  /**
-   * Whether to loop the audio. Default: false
-   */
-  loop?: boolean;
-  /**
-   * Volume level (0.0 - 1.0). Default: 1.0
-   */
-  volume?: number;
+export interface PlaylistOptions {
+  tracks: AudioTrack[];
+  preloadNext?: boolean;
 }
 
-export interface ResumePlaybackOptions {
-  /**
-   * URI of the audio file to resume
-   * If not provided, resumes the currently paused playback
-   */
-  uri?: string;
-  /**
-   * Playback speed (0.5 - 2.0). Default: 1.0
-   */
-  speed?: number;
-  /**
-   * Volume level (0.0 - 1.0). Default: 1.0
-   */
-  volume?: number;
-  /**
-   * Whether to loop the audio. Default: false
-   */
-  loop?: boolean;
-}
-
-export interface PreloadOptions {
-  /**
-   * URI of the audio file to preload
-   */
-  uri: string;
-  /**
-   * Whether to prepare for playback immediately. Default: true
-   */
-  prepare?: boolean;
-}
-
-export interface AudioPlayerInfo {
+export interface PlaybackInfo {
+  currentTrack: AudioTrack | null;
+  currentIndex: number;
+  currentPosition: number;
+  duration: number;
+  isPlaying: boolean;
   status: PlaybackStatus;
-  currentTime: number;
-  duration: number;
-  speed?: number;
-  volume?: number;
-  isLooping?: boolean;
-  uri?: string;
 }
 
-export interface PlaybackProgressData {
-  currentTime: number;
-  duration: number;
-  position: number; // Playback position as percentage (0-100)
+export interface SeekOptions {
+  seconds: number;
 }
 
-export interface PlaybackStatusData {
-  status: PlaybackStatus;
-  currentTime?: number;
-  duration?: number;
-}
-
-export interface PlaybackErrorData {
-  message: string;
-  code?: string | number;
-  details?: any;
-}
-
-export interface PlaybackCompletedData {
-  duration: number;
-}
-
-export interface GetAudioInfoOptions {
-  /**
-   * URI of the audio file to analyze
-   * Supports:
-   * - Local file URIs (from stopRecording)
-   * - Remote CDN URLs (HTTP/HTTPS)
-   */
-  uri: string;
+export interface SkipToIndexOptions {
+  index: number;
 }
 
 /**
- * Interface for the Native Audio Plugin that provides audio recording and playback capabilities.
+ * Interface for the Native Audio Plugin that provides audio recording capabilities.
  *
  * Platform-specific implementations:
- * - Web: Uses MediaRecorder API with WebM/Opus format for recording, and AudioContext for playback
- * - Android: Uses MediaRecorder with AAC format in MP4 container for recording, and Android MediaPlayer for playback
- * - iOS: Uses AVAudioRecorder with AAC format in M4A container for recording, and AVAudioPlayer for playback
+ * - Web: Uses MediaRecorder API with WebM/Opus format for recording
+ * - Android: Uses MediaRecorder with AAC format in MP4 container for recording
+ * - iOS: Uses AVAudioRecorder with AAC format in M4A container for recording
  *
  * Common settings across platforms:
  * - Sample Rate: 44.1kHz
@@ -265,7 +259,6 @@ export interface CapacitorAudioEnginePlugin {
   /**
    * Start recording audio from the device's microphone.
    * @param options - Recording options
-   * @param options.maxDuration - Maximum duration in seconds to keep at the end of recording
    * @returns Promise that resolves when recording starts successfully
    * @throws {Error} If recording is already in progress
    * @throws {Error} If microphone permission is not granted
@@ -320,13 +313,11 @@ export interface CapacitorAudioEnginePlugin {
    * @returns Promise that resolves with the current recording status
    * @property {RecordingStatus} status - The current state of the recorder
    * @property {boolean} isRecording - True if the recording session is active
-   * @property {number} currentSegment - The current segment number
    * @property {number} duration - The current recording duration in seconds
    */
   getStatus(): Promise<{
     status: RecordingStatus;
     isRecording: boolean;
-    currentSegment: number;
     duration: number;
   }>;
 
@@ -345,13 +336,30 @@ export interface CapacitorAudioEnginePlugin {
   trimAudio(options: { uri: string; start: number; end: number }): Promise<AudioFileInfo>;
 
   /**
-   * Add a listener for recording or playback events
+   * Add a listener for recording events
    * @param eventName - The name of the event to listen to
    * @param callback - The callback to invoke when the event occurs
    * @returns A promise that resolves with a handle to the listener
-   * @platform web Not supported for playback events, recording events use MediaRecorder
-   * @platform android Uses MediaRecorder events and MediaPlayer events
-   * @platform ios Uses AVAudioSession notifications and AVAudioPlayer notifications
+   * @platform web Not supported, recording events use MediaRecorder
+   * @platform android Uses MediaRecorder events
+   * @platform ios Uses AVAudioSession notifications
+   *
+   * @example
+   * ```typescript
+   * // Listen for playback progress updates (every 500ms)
+   * const progressListener = await CapacitorAudioEngine.addListener('playbackProgress', (data) => {
+   *   console.log(`Progress: ${data.currentPosition}/${data.duration} seconds`);
+   * });
+   *
+   * // Listen for status changes
+   * const statusListener = await CapacitorAudioEngine.addListener('playbackStatusChanged', (data) => {
+   *   console.log(`Status: ${data.status}, Playing: ${data.isPlaying}`);
+   * });
+   *
+   * // Don't forget to remove listeners when done
+   * progressListener.remove();
+   * statusListener.remove();
+   * ```
    */
   addListener<T extends AudioEventName>(
     eventName: T,
@@ -397,133 +405,71 @@ export interface CapacitorAudioEnginePlugin {
    */
   switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
 
+  // ==================== AUDIO PLAYBACK METHODS ====================
+
   /**
-   * Start audio playback.
-   * @param options - Playback options
-   * @param options.uri - URI of the audio file to play
-   * @param options.speed - Playback speed (0.5 - 2.0). Default: 1.0
-   * @param options.startTime - Start time in seconds. Default: 0
-   * @param options.loop - Whether to loop the audio. Default: false
-   * @param options.volume - Volume level (0.0 - 1.0). Default: 1.0
+   * Initialize playlist with audio tracks and preload first track
+   * @param options - Playlist options containing tracks and preload settings
+   * @returns Promise that resolves when playlist is initialized
+   * @platform web Uses HTML5 Audio API
+   * @platform android Uses ExoPlayer with ConcatenatingMediaSource
+   * @platform ios Uses AVQueuePlayer or AVPlayer with queue management
+   */
+  initPlaylist(options: PlaylistOptions): Promise<void>;
+
+  /**
+   * Start or resume playback of current track
    * @returns Promise that resolves when playback starts
-   * @throws {Error} If playback is already in progress
-   * @throws {Error} If audio session setup fails
-   * @platform web Uses AudioContext and MediaElementAudioSourceNode
-   * @platform android Uses Android MediaPlayer
-   * @platform ios Uses AVAudioPlayer
    */
-  startPlayback(options: PlaybackOptions & { uri: string }): Promise<void>;
+  playAudio(): Promise<void>;
 
   /**
-   * Pause the current playback.
+   * Pause audio playback
    * @returns Promise that resolves when playback is paused
-   * @throws {Error} If no active playback exists or if playback is already paused
-   * @platform web Uses AudioContext.suspend()
-   * @platform android Uses MediaPlayer.pause()
-   * @platform ios Uses AVAudioPlayer.pause()
    */
-  pausePlayback(): Promise<void>;
+  pauseAudio(): Promise<void>;
 
   /**
-   * Resume the current playback if it was previously paused.
-   * @param options - Resume playback options
-   * @param options.uri - URI of the audio file to resume. If not provided, resumes the currently paused playback
-   * @param options.speed - Playback speed (0.5 - 2.0). Default: 1.0
-   * @param options.volume - Volume level (0.0 - 1.0). Default: 1.0
-   * @param options.loop - Whether to loop the audio. Default: false
-   * @returns Promise that resolves when playback is resumed
-   * @throws {Error} If no active playback exists or if playback is not paused
-   * @platform web Uses AudioContext.resume()
-   * @platform android Uses MediaPlayer.start()
-   * @platform ios Uses AVAudioPlayer.play()
+   * Resume audio playback from paused state
+   * @returns Promise that resolves when playback resumes
    */
-  resumePlayback(options?: ResumePlaybackOptions): Promise<void>;
+  resumeAudio(): Promise<void>;
 
   /**
-   * Stop the current playback.
-   * @returns Promise that resolves when playback is stopped
-   * @throws {Error} If no active playback exists
-   * @platform web Uses AudioContext.close()
-   * @platform android Uses MediaPlayer.stop()
-   * @platform ios Uses AVAudioPlayer.stop()
+   * Stop audio playback and reset to beginning
+   * @returns Promise that resolves when playback stops
    */
-  stopPlayback(): Promise<void>;
+  stopAudio(): Promise<void>;
 
   /**
-   * Seek to a specific time in the currently playing audio.
-   * @param options - Seek options
-   * @param options.time - Time in seconds to seek to
-   * @returns Promise that resolves when seek is complete
-   * @throws {Error} If no active playback exists
-   * @platform web Uses AudioContext.currentTime
-   * @platform android Uses MediaPlayer.seekTo()
-   * @platform ios Uses AVAudioPlayer.setCurrentTime()
+   * Seek to specific position in current track
+   * @param options - Seek options with time in seconds
+   * @returns Promise that resolves when seek completes
    */
-  seekTo(options: { time: number }): Promise<void>;
+  seekAudio(options: SeekOptions): Promise<void>;
 
   /**
-   * Get the current playback status.
-   * @returns Promise that resolves with the current playback status
-   * @property {PlaybackStatus} status - The current state of the player
-   * @property {number} currentTime - The current playback position in seconds
-   * @property {number} duration - The total duration of the audio in seconds
-   * @property {number} speed - The current playback speed
-   * @property {number} volume - The current volume level
-   * @property {boolean} isLooping - Whether the audio is looping
-   * @property {string} uri - The URI of the current audio file
+   * Skip to next track in playlist
+   * @returns Promise that resolves when skip completes
    */
-  getPlaybackStatus(): Promise<AudioPlayerInfo>;
+  skipToNext(): Promise<void>;
 
   /**
-   * Add a listener for playback events
-   * @param eventName - The name of the event to listen to
-   * @param callback - The callback to invoke when the event occurs
-   * @returns A promise that resolves with a handle to the listener
-   * @platform web Not supported
-   * @platform android Uses MediaPlayer events
-   * @platform ios Uses AVAudioPlayer notifications
+   * Skip to previous track in playlist
+   * @returns Promise that resolves when skip completes
    */
-  addPlaybackListener(eventName: AudioPlaybackEventName, callback: (event: any) => void): Promise<PluginListenerHandle>;
+  skipToPrevious(): Promise<void>;
 
   /**
-   * Remove all playback listeners
-   * @returns Promise that resolves when all listeners are removed
+   * Skip to specific track index in playlist
+   * @param options - Options with target track index
+   * @returns Promise that resolves when skip completes
    */
-  removeAllPlaybackListeners(): Promise<void>;
+  skipToIndex(options: SkipToIndexOptions): Promise<void>;
 
   /**
-   * Preload an audio file for faster playback start.
-   * @param options - Preload options
-   * @param options.uri - URI of the audio file to preload
-   * @param options.prepare - Whether to prepare for playback immediately. Default: true
-   * @returns Promise that resolves with audio file information when preloading is complete
-   * @throws {Error} If preloading fails
-   * @platform web Not supported
-   * @platform android Uses MediaPlayer.prepareAsync()
-   * @platform ios Uses AVAudioPlayer.prepareToPlay()
+   * Get current playback information
+   * @returns Promise that resolves with current playback state
    */
-  preload(options: PreloadOptions): Promise<AudioFileInfo>;
-
-  /**
-   * Get information about an audio file.
-   * @param options - Options for getting audio info
-   * @param options.uri - URI of the audio file (local file or CDN URL)
-   * @returns Promise that resolves with audio file information
-   * @throws {Error} If file cannot be accessed or analyzed
-   * @platform web Not supported
-   * @platform android Uses MediaMetadataRetriever to extract audio metadata
-   * @platform ios Uses AVAsset to extract audio metadata
-   */
-  getAudioInfo(options: GetAudioInfoOptions): Promise<AudioFileInfo>;
-
-  /**
-   * Destroy all active playback sessions and clear all preloaded audio.
-   * This method stops all current playback, releases all MediaPlayer/AVAudioPlayer instances,
-   * and clears all preloaded audio from memory.
-   * @returns Promise that resolves when all playback resources are destroyed
-   * @platform web Not supported
-   * @platform android Stops MediaPlayer and clears preloaded audio
-   * @platform ios Stops AVAudioPlayer and clears preloaded audio
-   */
-  destroyAllPlaybacks(): Promise<void>;
+  getPlaybackInfo(): Promise<PlaybackInfo>;
 }

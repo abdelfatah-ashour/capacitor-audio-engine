@@ -1,0 +1,261 @@
+.recording-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+// Segment Rolling Styles
+.recording-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+
+  ion-label h3 {
+    margin: 0;
+    color: var(--ion-color-primary);
+  }
+}
+
+.segment-info {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--ion-color-light);
+  border-radius: 8px;
+  border-left: 4px solid var(--ion-color-primary);
+
+  ion-note {
+    line-height: 1.4;
+  }
+}
+
+.duration-buttons {
+  margin: 12px 0;
+
+  ion-button {
+    font-weight: 500;
+
+    &[color='primary'] {
+      --background: var(--ion-color-primary);
+      --color: var(--ion-color-primary-contrast);
+    }
+  }
+}
+
+.segment-status {
+  text-align: center;
+  color: var(--ion-color-primary-contrast);
+
+  ion-label {
+    text-align: center;
+
+    h4 {
+      margin: 0 0 4px 0;
+      font-size: 0.9rem;
+    }
+
+    p {
+      margin: 0;
+      font-size: 1.2rem;
+      font-weight: bold;
+    }
+  }
+
+  ion-progress-bar {
+    margin: 8px 0;
+  }
+
+  ion-note {
+    display: block;
+    margin-top: 4px;
+  }
+}
+
+.progress-container {
+  margin: 16px 0;
+
+  ion-label {
+    font-size: 14px;
+    margin-bottom: 8px;
+    display: block;
+  }
+}
+
+.loading-container {
+  text-align: center;
+  padding: 16px;
+
+  p {
+    margin-top: 12px;
+    color: var(--ion-color-primary-contrast);
+  }
+}
+
+.file-path {
+  word-break: break-all;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--ion-color-medium);
+}
+
+ion-segment {
+  margin: 16px;
+}
+
+ion-card {
+  margin: 16px;
+}
+
+ion-chip {
+  margin-right: 8px;
+}
+
+ion-item {
+  --padding-start: 16px;
+  --padding-end: 16px;
+}
+
+ion-range {
+  width: 120px;
+}
+
+ion-button {
+  margin: 4px 0;
+}
+
+.microphone-item {
+  --background: var(--ion-color-light);
+  border-radius: 8px;
+  margin: 8px 0;
+}
+
+.audio-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  ion-card {
+    margin: 8px;
+  }
+
+  ion-range {
+    width: 100px;
+  }
+
+  .recording-status {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}
+
+/* Recording pulse animation */
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+ion-chip[color='danger'] {
+  animation: pulse 2s infinite;
+}
+
+/* Progress bar styling */
+ion-progress-bar {
+  --background: var(--ion-color-light);
+  --progress-background: var(--ion-color-primary);
+  border-radius: 4px;
+}
+
+/* Badge styling */
+ion-badge {
+  font-size: 10px;
+  font-weight: bold;
+}
+
+/* Segment button styling */
+ion-segment-button {
+  min-height: 50px;
+}
+
+/* List item hover effect */
+ion-item[button]:hover {
+  --background: var(--ion-color-light);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+/* Card header styling */
+ion-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Button group styling */
+ion-grid ion-button {
+  margin: 0;
+}
+
+/* Audio file list styling */
+.audio-file-list {
+  ion-item {
+    border-bottom: 1px solid var(--ion-color-light);
+
+    &:last-child {
+      border-bottom: none;
+    }
+  }
+}
+
+/* Status indicators */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background: var(--ion-color-light);
+
+  &.recording {
+    background: var(--ion-color-danger);
+    color: var(--ion-color-danger-contrast);
+  }
+
+  &.playing {
+    background: var(--ion-color-success);
+    color: var(--ion-color-success-contrast);
+  }
+
+  &.paused {
+    background: var(--ion-color-warning);
+    color: var(--ion-color-warning-contrast);
+  }
+}
+
+/* Responsive grid */
+@media (max-width: 576px) {
+  ion-col {
+    padding: 4px;
+  }
+
+  ion-button {
+    font-size: 12px;
+    --padding-start: 8px;
+    --padding-end: 8px;
+  }
+}

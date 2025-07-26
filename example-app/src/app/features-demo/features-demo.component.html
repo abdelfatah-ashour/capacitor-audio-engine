@@ -1,0 +1,746 @@
+<ion-header>
+  <ion-toolbar color="primary">
+    <ion-title>Native Audio Engine Demo</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content>
+  <!-- Permission Check Section -->
+  @if (!hasPermission()) {
+    <ion-card color="warning">
+      <ion-card-header>
+        <ion-card-title>
+          <ion-icon name="settings"></ion-icon>
+          Microphone Permission Required
+        </ion-card-title>
+      </ion-card-header>
+      <ion-card-content>
+        <p>This app needs microphone permission to record audio.</p>
+        <ion-button expand="block" fill="solid" (click)="requestPermission()">
+          Request Permission
+        </ion-button>
+      </ion-card-content>
+    </ion-card>
+  } @else {
+    <!-- Main Content -->
+    <ion-segment [value]="activeTab()" (ionChange)="selectTab($event.detail.value)">
+      <ion-segment-button value="recording">
+        <ion-icon name="mic-circle"></ion-icon>
+        <ion-label>Recording</ion-label>
+      </ion-segment-button>
+      <ion-segment-button value="playback">
+        <ion-icon name="musical-notes"></ion-icon>
+        <ion-label>Playback</ion-label>
+      </ion-segment-button>
+      <ion-segment-button value="microphones">
+        <ion-icon name="volume-high"></ion-icon>
+        <ion-label>Microphones</ion-label>
+      </ion-segment-button>
+      <ion-segment-button value="audio-info">
+        <ion-icon name="information-circle"></ion-icon>
+        <ion-label>Audio Info</ion-label>
+      </ion-segment-button>
+    </ion-segment>
+
+    <!-- Recording Tab -->
+    @if (activeTab() === 'recording') {
+      <ion-card>
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="mic-circle"></ion-icon>
+            Audio Recording
+          </ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          <!-- Recording Status -->
+          <div class="recording-status">
+            <ion-chip
+              [color]="
+                recordingStatus() === 'recording'
+                  ? 'danger'
+                  : recordingStatus() === 'paused'
+                    ? 'warning'
+                    : 'medium'
+              "
+            >
+              @if (recordingStatus() === 'recording') {
+                <ion-icon name="mic-circle"></ion-icon>
+                <ion-label>Recording</ion-label>
+              } @else if (recordingStatus() === 'paused') {
+                <ion-icon name="micOffCircle"></ion-icon>
+                <ion-label>Paused</ion-label>
+              } @else {
+                <ion-icon name="mic-off-circle"></ion-icon>
+                <ion-label>Idle</ion-label>
+              }
+            </ion-chip>
+
+            @if (recordingDuration() > 0) {
+              <ion-note>{{ formattedDuration() }}</ion-note>
+            }
+          </div>
+
+          <!-- Recording Controls -->
+          <ion-grid>
+            <ion-row>
+              <ion-col size="6">
+                <ion-button expand="block" [disabled]="!canRecord()" (click)="startRecording()">
+                  <ion-icon name="mic-circle" slot="start"></ion-icon>
+                  Start Recording
+                </ion-button>
+              </ion-col>
+              <ion-col size="6">
+                <ion-button
+                  expand="block"
+                  color="warning"
+                  [disabled]="!canPause()"
+                  (click)="pauseRecording()"
+                >
+                  <ion-icon name="mic-off-circle" slot="start"></ion-icon>
+                  Pause
+                </ion-button>
+              </ion-col>
+            </ion-row>
+            <ion-row>
+              <ion-col size="6">
+                <ion-button
+                  expand="block"
+                  color="success"
+                  [disabled]="!canResume()"
+                  (click)="resumeRecording()"
+                >
+                  <ion-icon name="mic-circle" slot="start"></ion-icon>
+                  Resume
+                </ion-button>
+              </ion-col>
+              <ion-col size="6">
+                <ion-button
+                  expand="block"
+                  color="danger"
+                  [disabled]="!canStop()"
+                  (click)="stopRecording()"
+                >
+                  <ion-icon name="mic-off-circle" slot="start"></ion-icon>
+                  Stop
+                </ion-button>
+              </ion-col>
+            </ion-row>
+          </ion-grid>
+
+          <!-- Recording Options -->
+          @if (recordingStatus() === 'idle') {
+            <ion-card color="light">
+              <ion-card-header>
+                <ion-card-title>Recording Options</ion-card-title>
+              </ion-card-header>
+              <ion-card-content>
+                <ion-item>
+                  <ion-label>Sample Rate (Hz)</ion-label>
+                  <ion-note>{{ recordingOptions().sampleRate }} Hz</ion-note>
+                </ion-item>
+                <ion-item>
+                  <ion-grid>
+                    <ion-row>
+                      @for (rate of sampleRateOptions; track rate.value) {
+                        <ion-col size="2.4">
+                          <ion-button
+                            size="small"
+                            [fill]="
+                              recordingOptions().sampleRate === rate.value ? 'solid' : 'outline'
+                            "
+                            [color]="
+                              recordingOptions().sampleRate === rate.value ? 'primary' : 'medium'
+                            "
+                            (click)="updateSampleRate(rate.value)"
+                          >
+                            {{ rate.label }}
+                          </ion-button>
+                        </ion-col>
+                      }
+                    </ion-row>
+                  </ion-grid>
+                </ion-item>
+
+                <ion-item>
+                  <ion-label>Channels</ion-label>
+                  <ion-note>{{ recordingOptions().channels === 1 ? 'Mono' : 'Stereo' }}</ion-note>
+                </ion-item>
+                <ion-item>
+                  <ion-grid>
+                    <ion-row>
+                      @for (channel of channelOptions; track channel.value) {
+                        <ion-col size="6">
+                          <ion-button
+                            expand="block"
+                            [fill]="
+                              recordingOptions().channels === channel.value ? 'solid' : 'outline'
+                            "
+                            [color]="
+                              recordingOptions().channels === channel.value ? 'primary' : 'medium'
+                            "
+                            (click)="updateChannels(channel.value)"
+                          >
+                            {{ channel.label }}
+                          </ion-button>
+                        </ion-col>
+                      }
+                    </ion-row>
+                  </ion-grid>
+                </ion-item>
+
+                <ion-item>
+                  <ion-label>Bitrate (bps)</ion-label>
+                  <ion-note>{{ recordingOptions().bitrate! / 1000 }}k bps</ion-note>
+                </ion-item>
+                <ion-item>
+                  <ion-grid>
+                    <ion-row>
+                      @for (bitrate of bitrateOptions; track bitrate.value) {
+                        <ion-col size="2.4">
+                          <ion-button
+                            size="small"
+                            [fill]="
+                              recordingOptions().bitrate === bitrate.value ? 'solid' : 'outline'
+                            "
+                            [color]="
+                              recordingOptions().bitrate === bitrate.value ? 'primary' : 'medium'
+                            "
+                            (click)="updateBitrate(bitrate.value)"
+                          >
+                            {{ bitrate.label }}
+                          </ion-button>
+                        </ion-col>
+                      }
+                    </ion-row>
+                  </ion-grid>
+                </ion-item>
+
+                <ion-item>
+                  <ion-checkbox
+                    [checked]="isSegmentRollingEnabled()"
+                    (ionChange)="isSegmentRollingEnabled.set($event.detail.checked)"
+                  ></ion-checkbox>
+                  <ion-label>Enable Segment Rolling</ion-label>
+                </ion-item>
+
+                @if (isSegmentRollingEnabled()) {
+                  <ion-item>
+                    <ion-label>Max Duration (seconds)</ion-label>
+                    <ion-note>{{ maxDurationSeconds() }}s</ion-note>
+                  </ion-item>
+                  <ion-item>
+                    <ion-grid>
+                      <ion-row>
+                        @for (duration of maxDurationOptions; track duration.value) {
+                          <ion-col size="3">
+                            <ion-button
+                              size="small"
+                              [fill]="maxDurationSeconds() === duration.value ? 'solid' : 'outline'"
+                              [color]="
+                                maxDurationSeconds() === duration.value ? 'primary' : 'medium'
+                              "
+                              (click)="updateMaxDuration(duration.value)"
+                            >
+                              {{ duration.label }}
+                            </ion-button>
+                          </ion-col>
+                        }
+                      </ion-row>
+                    </ion-grid>
+                  </ion-item>
+                }
+              </ion-card-content>
+            </ion-card>
+          }
+
+          <!-- Recording Progress (for segment rolling) -->
+          @if (isSegmentRollingEnabled() && recordingStatus() !== 'idle') {
+            <ion-card>
+              <ion-card-content>
+                <ion-label>Recording Progress</ion-label>
+                <ion-progress-bar [value]="recordingProgressPercent() / 100"></ion-progress-bar>
+                <ion-note>{{ recordingProgressPercent().toFixed(1) }}% complete</ion-note>
+              </ion-card-content>
+            </ion-card>
+          }
+
+          <!-- Recorded Files -->
+          @if (recordedFiles().length > 0) {
+            <ion-card>
+              <ion-card-header>
+                <ion-card-title>Recorded Files</ion-card-title>
+              </ion-card-header>
+              <ion-card-content>
+                <!-- Current playback status for recorded audio -->
+                @if (currentRecordedFile() && recordedPlaylistInitialized()) {
+                  <ion-card color="light">
+                    <ion-card-content>
+                      <h4>Now Playing: {{ currentRecordedFile()?.filename }}</h4>
+                      <ion-progress-bar
+                        [value]="recordedPlaybackProgress() / 100"
+                      ></ion-progress-bar>
+                      <ion-note>{{ formattedRecordedPlaybackTime() }}</ion-note>
+
+                      <!-- Playback controls -->
+                      <ion-grid style="margin-top: 10px">
+                        <ion-row>
+                          <ion-col size="4">
+                            @if (isRecordedAudioPlaying()) {
+                              <ion-button
+                                expand="block"
+                                fill="solid"
+                                (click)="pauseRecordedAudio()"
+                              >
+                                <ion-icon name="pause"></ion-icon>
+                              </ion-button>
+                            } @else {
+                              <ion-button expand="block" fill="solid" (click)="playRecordedAudio()">
+                                <ion-icon name="play"></ion-icon>
+                              </ion-button>
+                            }
+                          </ion-col>
+                          <ion-col size="4">
+                            <ion-button expand="block" fill="outline" (click)="stopRecordedAudio()">
+                              <ion-icon name="stop"></ion-icon>
+                            </ion-button>
+                          </ion-col>
+                          <ion-col size="4">
+                            <ion-button
+                              expand="block"
+                              fill="outline"
+                              (click)="seekRecordedAudio(0)"
+                            >
+                              <ion-icon name="refresh"></ion-icon>
+                            </ion-button>
+                          </ion-col>
+                        </ion-row>
+                      </ion-grid>
+                    </ion-card-content>
+                  </ion-card>
+                }
+
+                <ion-list>
+                  @for (file of recordedFiles(); track file.uri) {
+                    <ion-item>
+                      <ion-label>
+                        <h3>{{ file.filename }}</h3>
+                        <p>Duration: {{ formatTime(file.duration) }}</p>
+                        <p>Size: {{ formatFileSize(file.size) }}</p>
+                        @if (file.isSegmentRolled) {
+                          <ion-chip color="primary" size="small">
+                            <ion-label>Segment Rolled</ion-label>
+                          </ion-chip>
+                        }
+                        @if (isFilePreloaded(file.uri)) {
+                          <ion-chip color="success" size="small">
+                            <ion-icon name="checkmark-circle"></ion-icon>
+                            <ion-label>Preloaded</ion-label>
+                          </ion-chip>
+                        }
+                        @if (isCurrentlyPlaying(file)) {
+                          <ion-chip color="warning" size="small">
+                            <ion-icon name="play"></ion-icon>
+                            <ion-label>Playing</ion-label>
+                          </ion-chip>
+                        }
+                      </ion-label>
+
+                      <!-- Action buttons -->
+                      <div slot="end" style="display: flex; gap: 8px">
+                        @if (!isFilePreloaded(file.uri)) {
+                          <ion-button fill="clear" (click)="preloadRecordedAudio(file)">
+                            <ion-icon name="download"></ion-icon>
+                          </ion-button>
+                        }
+
+                        @if (isCurrentlyPlaying(file)) {
+                          <ion-button fill="clear" color="warning" (click)="pauseRecordedAudio()">
+                            <ion-icon name="pause"></ion-icon>
+                          </ion-button>
+                        } @else {
+                          <ion-button
+                            fill="clear"
+                            color="success"
+                            (click)="playRecordedAudio(file)"
+                          >
+                            <ion-icon name="play"></ion-icon>
+                          </ion-button>
+                        }
+
+                        <ion-button fill="clear" (click)="trimAudio(file)">
+                          <ion-icon name="cut"></ion-icon>
+                        </ion-button>
+                      </div>
+                    </ion-item>
+                  }
+                </ion-list>
+              </ion-card-content>
+            </ion-card>
+          }
+        </ion-card-content>
+      </ion-card>
+    }
+
+    <!-- Playback Tab -->
+    @if (activeTab() === 'playback') {
+      <ion-card>
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="musical-notes"></ion-icon>
+            Audio Playback Demo
+          </ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          <p>Demo playlist with 3 sample tracks</p>
+
+          <!-- Playlist Control -->
+          @if (!playlistInitialized()) {
+            <ion-button expand="block" fill="solid" (click)="initializePlaylist()">
+              <ion-icon name="musical-notes" slot="start"></ion-icon>
+              Initialize Demo Playlist
+            </ion-button>
+          } @else {
+            <!-- Current Track Info -->
+            @if (currentTrack()) {
+              <ion-card>
+                <ion-card-content>
+                  <h3>{{ currentTrack()?.title }}</h3>
+                  <p>{{ currentTrack()?.artist }}</p>
+                  <p>
+                    Track {{ currentTrackIndex() + 1 }} of {{ demoPlaylist.length }}
+                    @if (realtimeUpdatesActive()) {
+                      <ion-chip color="success" size="small">
+                        <ion-icon name="refresh"></ion-icon>
+                        Live Updates
+                      </ion-chip>
+                    }
+                  </p>
+
+                  <!-- Progress Bar -->
+                  <ion-progress-bar [value]="playbackProgress() / 100"></ion-progress-bar>
+                  <ion-note>{{ formattedPlaybackTime() }}</ion-note>
+                </ion-card-content>
+              </ion-card>
+            }
+
+            <!-- Playback Controls -->
+            <ion-grid>
+              <ion-row>
+                <ion-col size="12">
+                  <ion-button expand="block" fill="outline" (click)="skipToPrevious()">
+                    <ion-icon name="play-skip-back" slot="start"></ion-icon>
+                    Previous
+                  </ion-button>
+                </ion-col>
+              </ion-row>
+              <ion-row>
+                <ion-col size="4">
+                  @if (isPlaying()) {
+                    <ion-button expand="block" fill="solid" (click)="pauseAudio()">
+                      <ion-icon name="pause"></ion-icon>
+                    </ion-button>
+                  } @else {
+                    <ion-button expand="block" fill="solid" (click)="playAudio()">
+                      <ion-icon name="play"></ion-icon>
+                    </ion-button>
+                  }
+                </ion-col>
+                <ion-col size="4">
+                  <ion-button expand="block" fill="outline" (click)="stopAudio()">
+                    <ion-icon name="stop"></ion-icon>
+                  </ion-button>
+                </ion-col>
+                <ion-col size="4">
+                  <ion-button expand="block" fill="outline" (click)="skipToNext()">
+                    <ion-icon name="play-skip-forward"></ion-icon>
+                  </ion-button>
+                </ion-col>
+              </ion-row>
+              <ion-row>
+                <ion-col size="12">
+                  <ion-button expand="block" fill="outline" (click)="skipToNext()">
+                    <ion-icon name="play-skip-forward" slot="start"></ion-icon>
+                    Next
+                  </ion-button>
+                </ion-col>
+              </ion-row>
+            </ion-grid>
+
+            <!-- Playlist -->
+            <ion-card>
+              <ion-card-header>
+                <ion-card-title>Demo Playlist</ion-card-title>
+              </ion-card-header>
+              <ion-card-content>
+                <ion-list>
+                  @for (track of demoPlaylist; track track.id; let i = $index) {
+                    <ion-item
+                      [color]="i === currentTrackIndex() ? 'primary' : undefined"
+                      (click)="skipToTrack(i)"
+                    >
+                      <ion-label>
+                        <h3>{{ track.title }}</h3>
+                        <p>{{ track.artist }}</p>
+                      </ion-label>
+                      @if (i === currentTrackIndex()) {
+                        <ion-icon [name]="isPlaying() ? 'pause' : 'play'" slot="end"></ion-icon>
+                      }
+                    </ion-item>
+                  }
+                </ion-list>
+              </ion-card-content>
+            </ion-card>
+
+            <!-- Quick Seek Buttons -->
+            <ion-card>
+              <ion-card-header>
+                <ion-card-title>Quick Seek</ion-card-title>
+              </ion-card-header>
+              <ion-card-content>
+                <ion-grid>
+                  <ion-row>
+                    <ion-col size="3">
+                      <ion-button size="small" fill="outline" (click)="seekToPosition(0)">
+                        0s
+                      </ion-button>
+                    </ion-col>
+                    <ion-col size="3">
+                      <ion-button size="small" fill="outline" (click)="seekToPosition(5)">
+                        5s
+                      </ion-button>
+                    </ion-col>
+                    <ion-col size="3">
+                      <ion-button size="small" fill="outline" (click)="seekToPosition(10)">
+                        10s
+                      </ion-button>
+                    </ion-col>
+                    <ion-col size="3">
+                      <ion-button size="small" fill="outline" (click)="seekToPosition(15)">
+                        15s
+                      </ion-button>
+                    </ion-col>
+                  </ion-row>
+                </ion-grid>
+              </ion-card-content>
+            </ion-card>
+
+            <!-- Playback Status -->
+            @if (playbackInfo()) {
+              <ion-card>
+                <ion-card-header>
+                  <ion-card-title>Playback Status</ion-card-title>
+                </ion-card-header>
+                <ion-card-content>
+                  <ion-item>
+                    <ion-label>Status</ion-label>
+                    <ion-chip [color]="isPlaying() ? 'success' : 'medium'">
+                      {{ playbackInfo()?.status | titlecase }}
+                    </ion-chip>
+                  </ion-item>
+                  <ion-item>
+                    <ion-label>Position</ion-label>
+                    <ion-note>{{ playbackPosition().toFixed(1) }}s</ion-note>
+                  </ion-item>
+                  <ion-item>
+                    <ion-label>Duration</ion-label>
+                    <ion-note>{{ trackDuration().toFixed(1) }}s</ion-note>
+                  </ion-item>
+                  <ion-item>
+                    <ion-label>Progress</ion-label>
+                    <ion-note>{{ playbackProgress().toFixed(1) }}%</ion-note>
+                  </ion-item>
+                  @if (realtimeUpdatesActive()) {
+                    <ion-item>
+                      <ion-label>Real-time Updates</ion-label>
+                      <ion-chip color="success" size="small">
+                        <ion-icon name="refresh"></ion-icon>
+                        Active
+                      </ion-chip>
+                    </ion-item>
+                  }
+                </ion-card-content>
+              </ion-card>
+            }
+          }
+        </ion-card-content>
+      </ion-card>
+    }
+
+    <!-- Microphones Tab -->
+    @if (activeTab() === 'microphones') {
+      <ion-card>
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="volume-high"></ion-icon>
+            Microphone Management
+          </ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          <ion-button expand="block" fill="outline" (click)="loadAvailableMicrophones()">
+            <ion-icon name="refresh" slot="start"></ion-icon>
+            Refresh Microphones
+          </ion-button>
+
+          <ion-button expand="block" fill="outline" (click)="checkMicrophoneStatus()">
+            <ion-icon name="informationCircle" slot="start"></ion-icon>
+            Check Microphone Status
+          </ion-button>
+
+          @if (microphoneBusy()) {
+            <ion-card color="warning">
+              <ion-card-content>
+                <p>⚠️ Microphone is currently busy or in use by another application.</p>
+              </ion-card-content>
+            </ion-card>
+          }
+
+          @if (availableMicrophones().length > 0) {
+            <ion-list>
+              <ion-item-group>
+                <ion-item-divider>
+                  <ion-label>Available Microphones</ion-label>
+                </ion-item-divider>
+                @for (mic of availableMicrophones(); track mic.id) {
+                  <ion-item button (click)="switchMicrophone(mic.id)">
+                    <ion-label>
+                      <h3>{{ mic.name }}</h3>
+                      <p>Type: {{ mic.type | titlecase }}</p>
+                      @if (mic.description) {
+                        <p>{{ mic.description }}</p>
+                      }
+                    </ion-label>
+                    @if (currentMicrophone() === mic.id) {
+                      <ion-chip color="success" slot="end">
+                        <ion-label>Active</ion-label>
+                      </ion-chip>
+                    }
+                  </ion-item>
+                }
+              </ion-item-group>
+            </ion-list>
+          } @else {
+            <ion-card color="light">
+              <ion-card-content>
+                <p>
+                  No microphones detected. Click "Refresh Microphones" to scan for available
+                  devices.
+                </p>
+              </ion-card-content>
+            </ion-card>
+          }
+        </ion-card-content>
+      </ion-card>
+    }
+
+    <!-- Audio Info Tab -->
+    @if (activeTab() === 'audio-info') {
+      <ion-card>
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="information-circle"></ion-icon>
+            Audio File Information
+          </ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          @if (recordedFiles().length > 0) {
+            <ion-list>
+              @for (file of recordedFiles(); track file.uri) {
+                <ion-item button (click)="selectedAudioInfo.set(file)">
+                  <ion-label>
+                    <h3>{{ file.filename }}</h3>
+                    <p>{{ formatTime(file.duration) }} • {{ formatFileSize(file.size) }}</p>
+                  </ion-label>
+                  @if (selectedAudioInfo() === file) {
+                    <ion-icon name="checkmarkCircle" color="success" slot="end"></ion-icon>
+                  }
+                </ion-item>
+              }
+            </ion-list>
+
+            @if (selectedAudioInfo()) {
+              <ion-card color="light">
+                <ion-card-header>
+                  <ion-card-title>{{ selectedAudioInfo()!.filename }}</ion-card-title>
+                </ion-card-header>
+                <ion-card-content>
+                  <ion-grid>
+                    <ion-row>
+                      <ion-col size="6">
+                        <ion-label>
+                          <h3>Duration</h3>
+                          <p>{{ formatTime(selectedAudioInfo()!.duration) }}</p>
+                        </ion-label>
+                      </ion-col>
+                      <ion-col size="6">
+                        <ion-label>
+                          <h3>File Size</h3>
+                          <p>{{ formatFileSize(selectedAudioInfo()!.size) }}</p>
+                        </ion-label>
+                      </ion-col>
+                    </ion-row>
+                    <ion-row>
+                      <ion-col size="6">
+                        <ion-label>
+                          <h3>Sample Rate</h3>
+                          <p>{{ selectedAudioInfo()!.sampleRate }} Hz</p>
+                        </ion-label>
+                      </ion-col>
+                      <ion-col size="6">
+                        <ion-label>
+                          <h3>Channels</h3>
+                          <p>{{ selectedAudioInfo()!.channels === 1 ? 'Mono' : 'Stereo' }}</p>
+                        </ion-label>
+                      </ion-col>
+                    </ion-row>
+                    <ion-row>
+                      <ion-col size="6">
+                        <ion-label>
+                          <h3>Bitrate</h3>
+                          <p>{{ selectedAudioInfo()!.bitrate / 1000 }}k bps</p>
+                        </ion-label>
+                      </ion-col>
+                      <ion-col size="6">
+                        <ion-label>
+                          <h3>MIME Type</h3>
+                          <p>{{ selectedAudioInfo()!.mimeType }}</p>
+                        </ion-label>
+                      </ion-col>
+                    </ion-row>
+                    <ion-row>
+                      <ion-col size="12">
+                        <ion-label>
+                          <h3>File Path</h3>
+                          <p style="word-break: break-all">{{ selectedAudioInfo()!.path }}</p>
+                        </ion-label>
+                      </ion-col>
+                    </ion-row>
+                    @if (selectedAudioInfo()!.isSegmentRolled) {
+                      <ion-row>
+                        <ion-col size="12">
+                          <ion-chip color="primary">
+                            <ion-icon name="time"></ion-icon>
+                            <ion-label>Segment Rolled Recording</ion-label>
+                          </ion-chip>
+                          <p>Max Duration: {{ selectedAudioInfo()!.maxDurationSeconds }}s</p>
+                        </ion-col>
+                      </ion-row>
+                    }
+                  </ion-grid>
+                </ion-card-content>
+              </ion-card>
+            }
+          } @else {
+            <ion-card color="light">
+              <ion-card-content>
+                <p>
+                  No recorded files available. Record some audio first to see detailed information
+                  here.
+                </p>
+              </ion-card-content>
+            </ion-card>
+          }
+        </ion-card-content>
+      </ion-card>
+    }
+  }
+</ion-content>

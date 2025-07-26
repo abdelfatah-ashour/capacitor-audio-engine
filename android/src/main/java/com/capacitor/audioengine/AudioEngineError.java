@@ -13,7 +13,6 @@ public enum AudioEngineError {
     INVALID_STATE("INVALID_STATE", "Operation not allowed in current state"),
     RECORDING_IN_PROGRESS("RECORDING_IN_PROGRESS", "Recording is already in progress"),
     NO_ACTIVE_RECORDING("NO_ACTIVE_RECORDING", "No active recording session"),
-    NO_ACTIVE_PLAYBACK("NO_ACTIVE_PLAYBACK", "No active playback session"),
 
     // File errors
     FILE_NOT_FOUND("FILE_NOT_FOUND", "Audio file not found"),
@@ -39,7 +38,7 @@ public enum AudioEngineError {
     // Processing errors
     TRIMMING_FAILED("TRIMMING_FAILED", "Audio trimming operation failed"),
     CONCATENATION_FAILED("CONCATENATION_FAILED", "Audio concatenation failed"),
-    SEGMENT_PROCESSING_FAILED("SEGMENT_PROCESSING_FAILED", "Segment processing failed"),
+
 
     // Validation errors
     INVALID_URI("INVALID_URI", "Invalid or empty URI"),

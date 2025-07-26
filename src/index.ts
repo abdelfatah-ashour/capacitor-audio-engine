@@ -7,4 +7,5 @@ const CapacitorAudioEngine = registerPlugin<CapacitorAudioEnginePlugin>('Capacit
 });
 
 export * from './definitions';
+export * from './compression-utils';
 export { CapacitorAudioEngine };
