@@ -204,6 +204,23 @@ export interface PlaybackInfo {
 
 export interface SeekOptions {
   seconds: number;
+  url?: string;
+}
+
+export interface PlayAudioOptions {
+  url?: string;
+}
+
+export interface PauseAudioOptions {
+  url?: string;
+}
+
+export interface ResumeAudioOptions {
+  url?: string;
+}
+
+export interface StopAudioOptions {
+  url?: string;
 }
 
 export interface SkipToIndexOptions {
@@ -418,32 +435,36 @@ export interface CapacitorAudioEnginePlugin {
   preloadTracks(options: PreloadTracksOptions): Promise<void>;
 
   /**
-   * Start or resume playback of current track
+   * Start or resume playback of current track or specific preloaded track by URL
+   * @param options - Optional playback options with URL to play specific preloaded track
    * @returns Promise that resolves when playback starts
    */
-  playAudio(): Promise<void>;
+  playAudio(options?: PlayAudioOptions): Promise<void>;
 
   /**
-   * Pause audio playback
+   * Pause audio playback for current track or specific preloaded track by URL
+   * @param options - Optional pause options with URL to pause specific preloaded track
    * @returns Promise that resolves when playback is paused
    */
-  pauseAudio(): Promise<void>;
+  pauseAudio(options?: PauseAudioOptions): Promise<void>;
 
   /**
-   * Resume audio playback from paused state
+   * Resume audio playback from paused state for current track or specific preloaded track by URL
+   * @param options - Optional resume options with URL to resume specific preloaded track
    * @returns Promise that resolves when playback resumes
    */
-  resumeAudio(): Promise<void>;
+  resumeAudio(options?: ResumeAudioOptions): Promise<void>;
 
   /**
-   * Stop audio playback and reset to beginning
+   * Stop audio playback and reset to beginning for current track or specific preloaded track by URL
+   * @param options - Optional stop options with URL to stop specific preloaded track
    * @returns Promise that resolves when playback stops
    */
-  stopAudio(): Promise<void>;
+  stopAudio(options?: StopAudioOptions): Promise<void>;
 
   /**
-   * Seek to specific position in current track
-   * @param options - Seek options with time in seconds
+   * Seek to specific position in current track or specific preloaded track by URL
+   * @param options - Seek options with time in seconds and optional URL for specific preloaded track
    * @returns Promise that resolves when seek completes
    */
   seekAudio(options: SeekOptions): Promise<void>;

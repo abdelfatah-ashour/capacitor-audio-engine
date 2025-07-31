@@ -259,3 +259,63 @@ ion-grid ion-button {
     --padding-end: 8px;
   }
 }
+
+// Per-URL Playback Styles
+.track-info {
+  margin-bottom: 12px;
+
+  ion-progress-bar {
+    margin: 6px 0 4px 0;
+  }
+
+  ion-note {
+    font-size: 0.85rem;
+    color: var(--ion-color-medium);
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  ion-chip {
+    margin: 0 4px 0 0;
+  }
+}
+
+.per-url-track-card {
+  margin-bottom: 12px;
+
+  &[color='primary'] {
+    --background: rgba(var(--ion-color-primary-rgb), 0.1);
+    --border-color: var(--ion-color-primary);
+    border: 1px solid var(--border-color);
+  }
+
+  ion-card-header {
+    padding-bottom: 8px;
+
+    ion-card-title {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 1.1rem;
+    }
+
+    ion-note {
+      font-size: 0.9rem;
+      color: var(--ion-color-medium);
+    }
+  }
+
+  ion-card-content {
+    padding-top: 0;
+  }
+}
+
+.playback-summary {
+  .summary-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+  }
+}

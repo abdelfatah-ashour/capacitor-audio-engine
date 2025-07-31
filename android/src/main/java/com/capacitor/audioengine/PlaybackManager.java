@@ -9,6 +9,7 @@ import android.os.Looper;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 
@@ -371,6 +372,109 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
 
     public PlaybackStatus getStatus() {
         return status;
+    }
+
+    // Per-URL Playback Methods
+
+    public void playByUrl(String url) throws Exception {
+        int trackIndex = findTrackIndex(url);
+        if (trackIndex == -1) {
+            throw new Exception("Track with URL '" + url + "' not found in preloaded tracks");
+        }
+
+        // Switch to the track and play
+        currentIndex = trackIndex;
+        switchToTrack(trackIndex);
+        play();
+    }
+
+    public void pauseByUrl(String url) {
+        int trackIndex = findTrackIndex(url);
+        if (trackIndex == -1) {
+            Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
+            return;
+        }
+
+        // Only pause if this is the currently playing track
+        if (trackIndex == currentIndex) {
+            pause();
+        }
+    }
+
+    public void resumeByUrl(String url) {
+        int trackIndex = findTrackIndex(url);
+        if (trackIndex == -1) {
+            Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
+            return;
+        }
+
+        // Switch to the track and resume/play
+        currentIndex = trackIndex;
+        switchToTrack(trackIndex);
+        play();
+    }
+
+    public void stopByUrl(String url) {
+        int trackIndex = findTrackIndex(url);
+        if (trackIndex == -1) {
+            Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
+            return;
+        }
+
+        // Only stop if this is the currently playing track
+        if (trackIndex == currentIndex) {
+            stop();
+        }
+    }
+
+    public void seekByUrl(String url, double seconds) {
+        int trackIndex = findTrackIndex(url);
+        if (trackIndex == -1) {
+            Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
+            return;
+        }
+
+        // Switch to the track and seek
+        currentIndex = trackIndex;
+        switchToTrack(trackIndex);
+        seekTo(seconds);
+    }
+
+    // Helper Methods
+
+    private int findTrackIndex(String url) {
+        if (playlist == null) {
+            return -1;
+        }
+
+        for (int i = 0; i < playlist.size(); i++) {
+            if (playlist.get(i).getUrl().equals(url)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void switchToTrack(int index) {
+        // Ensure we're on the main thread
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(() -> switchToTrack(index));
+            return;
+        }
+
+        if (player != null && index >= 0 && index < playlist.size()) {
+            // Reset status to allow proper playback control after track switch
+            if (status == PlaybackStatus.PLAYING) {
+                status = PlaybackStatus.PAUSED;
+            }
+
+            player.seekTo(index, 0);
+
+            AudioTrack newTrack = playlist.get(index);
+            if (listener != null) {
+                listener.onTrackChanged(newTrack, index);
+            }
+        }
     }
 
     public void release() {

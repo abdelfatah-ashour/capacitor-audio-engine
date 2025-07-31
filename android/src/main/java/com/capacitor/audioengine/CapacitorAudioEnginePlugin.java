@@ -936,7 +936,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     @PluginMethod
     public void playAudio(PluginCall call) {
         try {
-            playbackManager.play();
+            String url = call.getString("url");
+            if (url != null) {
+                // Play specific preloaded track by URL
+                playbackManager.playByUrl(url);
+            } else {
+                // Play current track
+                playbackManager.play();
+            }
             call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "Failed to play audio", e);
@@ -947,7 +954,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     @PluginMethod
     public void pauseAudio(PluginCall call) {
         try {
-            playbackManager.pause();
+            String url = call.getString("url");
+            if (url != null) {
+                // Pause specific preloaded track by URL
+                playbackManager.pauseByUrl(url);
+            } else {
+                // Pause current track
+                playbackManager.pause();
+            }
             call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "Failed to pause audio", e);
@@ -958,7 +972,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     @PluginMethod
     public void resumeAudio(PluginCall call) {
         try {
-            playbackManager.resume();
+            String url = call.getString("url");
+            if (url != null) {
+                // Resume specific preloaded track by URL
+                playbackManager.resumeByUrl(url);
+            } else {
+                // Resume current track
+                playbackManager.resume();
+            }
             call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "Failed to resume audio", e);
@@ -969,7 +990,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     @PluginMethod
     public void stopAudio(PluginCall call) {
         try {
-            playbackManager.stop();
+            String url = call.getString("url");
+            if (url != null) {
+                // Stop specific preloaded track by URL
+                playbackManager.stopByUrl(url);
+            } else {
+                // Stop current track
+                playbackManager.stop();
+            }
             call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "Failed to stop audio", e);
@@ -985,7 +1013,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             return;
         }
 
-        playbackManager.seekTo(seconds);
+        String url = call.getString("url");
+        if (url != null) {
+            // Seek in specific preloaded track by URL
+            playbackManager.seekByUrl(url, seconds);
+        } else {
+            // Seek in current track
+            playbackManager.seekTo(seconds);
+        }
         call.resolve();
     }
 

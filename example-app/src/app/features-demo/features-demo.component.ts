@@ -48,7 +48,7 @@ import {
   checkmarkCircle,
 } from 'ionicons/icons';
 import { addIcons } from 'ionicons';
-import { CapacitorAudioEngine } from 'capacitor-audio-engine';
+import { CapacitorAudioEngine } from '../../../../src';
 import type {
   AudioFileInfo,
   RecordingOptions,
@@ -57,7 +57,12 @@ import type {
   AudioTrack,
   PlaybackInfo,
   PlaybackStatus,
-} from 'capacitor-audio-engine';
+  TrackChangedData,
+  TrackEndedData,
+  PlaybackStartedData,
+  PlaybackPausedData,
+  ErrorEventData,
+} from '../../../../src';
 
 // Extended interface for demo to track segment rolling metadata
 interface AudioFileInfoWithMetadata extends AudioFileInfo {
@@ -154,10 +159,9 @@ export class FeaturesDemoComponent {
   protected readonly recordedFiles = signal<AudioFileInfoWithMetadata[]>([]);
   protected readonly selectedAudioInfo = signal<AudioFileInfoWithMetadata | null>(null);
 
-  // Playback signals
-  protected readonly playbackInfo = signal<PlaybackInfo | null>(null);
-  protected readonly playlistInitialized = signal(false);
-  protected readonly currentTrackIndex = signal(0);
+  // Per-URL Playback signals
+  protected readonly trackPlaybackStates = signal<Map<string, PlaybackInfo>>(new Map());
+  protected readonly preloadedTracks = signal<Set<string>>(new Set());
   protected readonly realtimeUpdatesActive = signal(false);
 
   // Recorded audio playback signals
@@ -166,7 +170,7 @@ export class FeaturesDemoComponent {
   protected readonly currentRecordedFile = signal<AudioFileInfoWithMetadata | null>(null);
   protected readonly preloadedFiles = signal<Set<string>>(new Set());
 
-  // Demo playlist
+  // Demo playlist for per-URL playback
   protected readonly demoPlaylist: AudioTrack[] = [
     {
       id: 'demo1',
@@ -255,19 +259,49 @@ export class FeaturesDemoComponent {
 
   protected readonly formattedDuration = computed(() => this.formatTime(this.recordingDuration()));
 
-  // Playback computed signals
-  protected readonly isPlaying = computed(() => this.playbackInfo()?.isPlaying || false);
-  protected readonly currentTrack = computed(() => this.playbackInfo()?.currentTrack || null);
-  protected readonly playbackPosition = computed(() => this.playbackInfo()?.currentPosition || 0);
-  protected readonly trackDuration = computed(() => this.playbackInfo()?.duration || 0);
-  protected readonly playbackProgress = computed(() => {
-    const position = this.playbackPosition();
-    const duration = this.trackDuration();
+  // Per-URL Playback computed signals
+  protected readonly hasPreloadedTracks = computed(() => this.preloadedTracks().size > 0);
+
+  // Helper methods for track-specific state
+  getTrackPlaybackInfo(url: string): PlaybackInfo | null {
+    return this.trackPlaybackStates().get(url) || null;
+  }
+
+  isTrackPlaying(url: string): boolean {
+    return this.getTrackPlaybackInfo(url)?.isPlaying || false;
+  }
+
+  getTrackPosition(url: string): number {
+    return this.getTrackPlaybackInfo(url)?.currentPosition || 0;
+  }
+
+  getTrackDuration(url: string): number {
+    return this.getTrackPlaybackInfo(url)?.duration || 0;
+  }
+
+  getTrackProgress(url: string): number {
+    const position = this.getTrackPosition(url);
+    const duration = this.getTrackDuration(url);
     return duration > 0 ? (position / duration) * 100 : 0;
-  });
-  protected readonly formattedPlaybackTime = computed(
-    () => `${this.formatTime(this.playbackPosition())} / ${this.formatTime(this.trackDuration())}`
-  );
+  }
+
+  getFormattedTrackTime(url: string): string {
+    return `${this.formatTime(this.getTrackPosition(url))} / ${this.formatTime(this.getTrackDuration(url))}`;
+  }
+
+  isTrackPreloaded(url: string): boolean {
+    return this.preloadedTracks().has(url);
+  }
+
+  // Helper methods for template complex operations
+  hasAnyTrackPlaying(): boolean {
+    return this.demoPlaylist.some(track => this.isTrackPlaying(track.url));
+  }
+
+  getCurrentlyPlayingTrack(): string {
+    const playingTrack = this.demoPlaylist.find(track => this.isTrackPlaying(track.url));
+    return playingTrack?.title || 'None';
+  }
 
   // Recorded audio playback computed signals
   protected readonly isRecordedAudioPlaying = computed(
@@ -423,142 +457,158 @@ export class FeaturesDemoComponent {
     }
   }
 
-  // Playback methods
-  async initializePlaylist(): Promise<void> {
-    // Extract URLs from the demo playlist for the new preloadTracks interface
-    const trackUrls = this.demoPlaylist.map(track => track.url);
+  // Per-URL Playback methods
+  async preloadTrack(url: string): Promise<void> {
+    try {
+      await CapacitorAudioEngine.preloadTracks({
+        tracks: [url],
+        preloadNext: false,
+      });
 
-    CapacitorAudioEngine.preloadTracks({
-      tracks: trackUrls,
-      preloadNext: true,
-    })
-      .then(async () => {
-        this.playlistInitialized.set(true);
-        await this.updatePlaybackInfo();
-        await this.showToast('Playlist initialized with 4 demo tracks', 'success');
+      this.preloadedTracks.update(tracks => new Set([...Array.from(tracks), url]));
+      const track = this.demoPlaylist.find(t => t.url === url);
+      await this.showToast(`Preloaded: ${track?.title || 'Track'}`, 'success');
 
-        // Set up event listeners
+      // Initialize event listeners if this is the first preloaded track
+      if (this.preloadedTracks().size === 1) {
         this.setupPlaybackEventListeners();
-      })
-      .catch(async error => {
-        console.error('Failed to initialize playlist:', error);
-        await this.showToast('Failed to initialize playlist', 'danger');
+      }
+    } catch (error) {
+      console.error('Failed to preload track:', error);
+      await this.showToast('Failed to preload track', 'danger');
+    }
+  }
+
+  async preloadAllTracks(): Promise<void> {
+    try {
+      const trackUrls = this.demoPlaylist.map(track => track.url);
+      await CapacitorAudioEngine.preloadTracks({
+        tracks: trackUrls,
+        preloadNext: true,
       });
+
+      this.preloadedTracks.set(new Set(trackUrls));
+      await this.showToast('All demo tracks preloaded', 'success');
+
+      // Set up event listeners
+      this.setupPlaybackEventListeners();
+    } catch (error) {
+      console.error('Failed to preload all tracks:', error);
+      await this.showToast('Failed to preload tracks', 'danger');
+    }
   }
 
-  async playAudio(): Promise<void> {
-    console.log(
-      '🚀 ~ FeaturesDemoComponent ~ playAudio ~ !this.playlistInitialized():',
-      !this.playlistInitialized()
-    );
-    if (!this.playlistInitialized()) {
-      await this.initializePlaylist();
+  async playTrack(url: string): Promise<void> {
+    try {
+      // Preload if not already preloaded
+      if (!this.isTrackPreloaded(url)) {
+        await this.preloadTrack(url);
+      }
+
+      await CapacitorAudioEngine.playAudio({ url });
+      await this.updateTrackPlaybackInfo(url);
+
+      const track = this.demoPlaylist.find(t => t.url === url);
+      await this.showToast(`Playing: ${track?.title || 'Track'}`, 'success');
+    } catch (error) {
+      console.error('Failed to play track:', error);
+      await this.showToast('Failed to play track', 'danger');
     }
-    CapacitorAudioEngine.playAudio()
-      .then(async () => {
-        await this.updatePlaybackInfo();
-      })
-      .catch(async () => {
-        console.error('Failed to play audio');
-        await this.showToast('Failed to play audio', 'danger');
+  }
+
+  async pauseTrack(url: string): Promise<void> {
+    try {
+      await CapacitorAudioEngine.pauseAudio({ url });
+      await this.updateTrackPlaybackInfo(url);
+    } catch (error) {
+      console.error('Failed to pause track:', error);
+      await this.showToast('Failed to pause track', 'danger');
+    }
+  }
+
+  async resumeTrack(url: string): Promise<void> {
+    try {
+      await CapacitorAudioEngine.resumeAudio({ url });
+      await this.updateTrackPlaybackInfo(url);
+    } catch (error) {
+      console.error('Failed to resume track:', error);
+      await this.showToast('Failed to resume track', 'danger');
+    }
+  }
+
+  async stopTrack(url: string): Promise<void> {
+    try {
+      await CapacitorAudioEngine.stopAudio({ url });
+      await this.updateTrackPlaybackInfo(url);
+
+      // Clear playback state for this track
+      this.trackPlaybackStates.update(states => {
+        const newStates = new Map(states);
+        newStates.delete(url);
+        return newStates;
       });
-  }
-
-  async pauseAudio(): Promise<void> {
-    try {
-      await CapacitorAudioEngine.pauseAudio();
-      await this.updatePlaybackInfo();
     } catch (error) {
-      console.error('Failed to pause audio:', error);
-      await this.showToast('Failed to pause audio', 'danger');
+      console.error('Failed to stop track:', error);
+      await this.showToast('Failed to stop track', 'danger');
     }
   }
 
-  async stopAudio(): Promise<void> {
+  async seekTrack(url: string, seconds: number): Promise<void> {
     try {
-      await CapacitorAudioEngine.stopAudio();
-      await this.updatePlaybackInfo();
-      // Reset real-time indicator when stopping
-      this.realtimeUpdatesActive.set(false);
+      await CapacitorAudioEngine.seekAudio({ seconds, url });
+      await this.updateTrackPlaybackInfo(url);
     } catch (error) {
-      console.error('Failed to stop audio:', error);
-      await this.showToast('Failed to stop audio', 'danger');
-    }
-  }
-
-  async skipToNext(): Promise<void> {
-    try {
-      await CapacitorAudioEngine.skipToNext();
-      await this.updatePlaybackInfo();
-    } catch (error) {
-      console.error('Failed to skip to next:', error);
-      await this.showToast('Failed to skip to next track', 'danger');
-    }
-  }
-
-  async skipToPrevious(): Promise<void> {
-    try {
-      await CapacitorAudioEngine.skipToPrevious();
-      await this.updatePlaybackInfo();
-    } catch (error) {
-      console.error('Failed to skip to previous:', error);
-      await this.showToast('Failed to skip to previous track', 'danger');
-    }
-  }
-
-  async skipToTrack(index: number): Promise<void> {
-    try {
-      await CapacitorAudioEngine.skipToIndex({ index });
-      await this.updatePlaybackInfo();
-    } catch (error) {
-      console.error('Failed to skip to track:', error);
-      await this.showToast('Failed to skip to track', 'danger');
-    }
-  }
-
-  async seekToPosition(seconds: number): Promise<void> {
-    try {
-      await CapacitorAudioEngine.seekAudio({ seconds });
-      await this.updatePlaybackInfo();
-    } catch (error) {
-      console.error('Failed to seek:', error);
+      console.error('Failed to seek track:', error);
       await this.showToast('Failed to seek', 'danger');
     }
   }
 
-  private async updatePlaybackInfo(): Promise<void> {
+  private async updateTrackPlaybackInfo(url: string): Promise<void> {
     try {
       const info = await CapacitorAudioEngine.getPlaybackInfo();
-      this.playbackInfo.set(info);
-      this.currentTrackIndex.set(info.currentIndex);
+
+      // Update the specific track's playback state
+      this.trackPlaybackStates.update(states => {
+        const newStates = new Map(states);
+        newStates.set(url, info);
+        return newStates;
+      });
     } catch (error) {
-      console.error('Failed to get playback info:', error);
+      console.error('Failed to get track playback info:', error);
     }
   }
 
   private setupPlaybackEventListeners(): void {
-    CapacitorAudioEngine.addListener('trackChanged', async event => {
+    CapacitorAudioEngine.addListener('trackChanged', async (event: TrackChangedData) => {
       console.log('Track changed to:', event.track.title);
-      await this.updatePlaybackInfo();
+      if (event.track?.url) {
+        await this.updateTrackPlaybackInfo(event.track.url);
+      }
       await this.showToast(`Now playing: ${event.track.title}`, 'success');
     });
 
-    CapacitorAudioEngine.addListener('trackEnded', async event => {
+    CapacitorAudioEngine.addListener('trackEnded', async (event: TrackEndedData) => {
       console.log('Track ended:', event.track.title);
-      await this.updatePlaybackInfo();
+      if (event.track?.url) {
+        await this.updateTrackPlaybackInfo(event.track.url);
+      }
     });
 
-    CapacitorAudioEngine.addListener('playbackStarted', async event => {
+    CapacitorAudioEngine.addListener('playbackStarted', async (event: PlaybackStartedData) => {
       console.log('Playback started:', event.track.title);
-      await this.updatePlaybackInfo();
+      if (event.track?.url) {
+        await this.updateTrackPlaybackInfo(event.track.url);
+      }
     });
 
-    CapacitorAudioEngine.addListener('playbackPaused', async event => {
+    CapacitorAudioEngine.addListener('playbackPaused', async (event: PlaybackPausedData) => {
       console.log('Playback paused:', event.track.title);
-      await this.updatePlaybackInfo();
+      if (event.track?.url) {
+        await this.updateTrackPlaybackInfo(event.track.url);
+      }
     });
 
-    CapacitorAudioEngine.addListener('playbackError', async event => {
+    CapacitorAudioEngine.addListener('playbackError', async (event: ErrorEventData) => {
       console.error('Playback error:', event.message);
       await this.showToast(`Playback error: ${event.message}`, 'danger');
     });
@@ -570,49 +620,48 @@ export class FeaturesDemoComponent {
       // Indicate that real-time updates are working
       this.realtimeUpdatesActive.set(true);
 
-      // Update playback info in real-time without API call
-      this.playbackInfo.update(currentInfo => {
-        if (currentInfo) {
-          return {
-            ...currentInfo,
+      // Update track-specific playback info in real-time without API call
+      if (event.track?.url) {
+        this.trackPlaybackStates.update(states => {
+          const newStates = new Map(states);
+          const currentState = newStates.get(event.track.url) || {};
+
+          newStates.set(event.track.url, {
+            ...currentState,
             currentPosition: event.currentPosition,
             duration: event.duration,
             isPlaying: event.isPlaying,
             currentTrack: event.track,
-          };
-        }
-        return currentInfo;
-      });
+            currentIndex: 0,
+            status: event.isPlaying ? 'playing' : 'paused',
+          });
+
+          return newStates;
+        });
+      }
     });
 
     // Listen for status changes
     CapacitorAudioEngine.addListener('playbackStatusChanged' as any, (event: any) => {
       console.log(`Status changed to: ${event.status}, Playing: ${event.isPlaying}`);
-      // Update playback info in real-time without API call
-      this.playbackInfo.update(currentInfo => {
-        if (currentInfo) {
-          return {
-            ...currentInfo,
-            status: event.status as PlaybackStatus,
+
+      // Update track-specific playback info in real-time without API call
+      if (event.track?.url) {
+        this.trackPlaybackStates.update(states => {
+          const newStates = new Map(states);
+
+          newStates.set(event.track.url, {
+            currentTrack: event.track,
+            currentIndex: event.index,
             currentPosition: event.currentPosition,
             duration: event.duration,
             isPlaying: event.isPlaying,
-            currentTrack: event.track,
-            currentIndex: event.index,
-          };
-        }
-        return {
-          currentTrack: event.track,
-          currentIndex: event.index,
-          currentPosition: event.currentPosition,
-          duration: event.duration,
-          isPlaying: event.isPlaying,
-          status: event.status as PlaybackStatus,
-        };
-      });
+            status: event.status as PlaybackStatus,
+          });
 
-      // Update current track index
-      this.currentTrackIndex.set(event.index);
+          return newStates;
+        });
+      }
     });
   }
 
@@ -635,7 +684,7 @@ export class FeaturesDemoComponent {
           // Mark as preloaded
           this.preloadedFiles.update(files => new Set([...Array.from(files), file.uri]));
         })
-        .catch(error => {
+        .catch((error: any) => {
           console.error('Failed to preload recorded audio:', error);
           this.showToast('Failed to preload audio', 'danger');
         });
@@ -817,7 +866,19 @@ export class FeaturesDemoComponent {
         this.loadAvailableMicrophones();
         this.checkMicrophoneStatus();
       } else if (tab === 'playback') {
-        this.updatePlaybackInfo();
+        // Refresh playback info for all preloaded tracks
+        this.refreshAllTrackStates();
+      }
+    }
+  }
+
+  // Helper method to refresh all track states
+  private async refreshAllTrackStates(): Promise<void> {
+    for (const url of Array.from(this.preloadedTracks())) {
+      try {
+        await this.updateTrackPlaybackInfo(url);
+      } catch (error) {
+        console.error('Failed to refresh track state:', error);
       }
     }
   }
