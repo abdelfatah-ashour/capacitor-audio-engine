@@ -425,14 +425,17 @@ export class FeaturesDemoComponent {
 
   // Playback methods
   async initializePlaylist(): Promise<void> {
-    CapacitorAudioEngine.initPlaylist({
-      tracks: this.demoPlaylist,
+    // Extract URLs from the demo playlist for the new preloadTracks interface
+    const trackUrls = this.demoPlaylist.map(track => track.url);
+
+    CapacitorAudioEngine.preloadTracks({
+      tracks: trackUrls,
       preloadNext: true,
     })
       .then(async () => {
         this.playlistInitialized.set(true);
         await this.updatePlaybackInfo();
-        await this.showToast('Playlist initialized with 3 demo tracks', 'success');
+        await this.showToast('Playlist initialized with 4 demo tracks', 'success');
 
         // Set up event listeners
         this.setupPlaybackEventListeners();
@@ -615,17 +618,9 @@ export class FeaturesDemoComponent {
 
   // Recorded audio playback methods
   async preloadRecordedAudio(file: AudioFileInfoWithMetadata): Promise<void> {
-      // Create a single-track playlist for the recorded file
-      const audioTrack: AudioTrack = {
-        id: file.uri,
-        url: file.uri,
-        title: file.filename,
-        artist: 'Recorded Audio',
-        artworkUrl: undefined,
-      };
-
-      await CapacitorAudioEngine.initPlaylist({
-        tracks: [audioTrack],
+      // Use the file URI directly with the new preloadTracks interface
+      await CapacitorAudioEngine.preloadTracks({
+        tracks: [file.uri],
         preloadNext: false,
       })
         .then(async () => {

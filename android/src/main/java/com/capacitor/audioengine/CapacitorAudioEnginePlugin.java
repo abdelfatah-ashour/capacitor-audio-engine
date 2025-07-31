@@ -903,7 +903,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     // ==================== PLAYBACK METHODS ====================
 
     @PluginMethod
-    public void initPlaylist(PluginCall call) {
+    public void preloadTracks(PluginCall call) {
         try {
             JSArray tracksArray = call.getArray("tracks");
             if (tracksArray == null) {
@@ -911,34 +911,25 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 return;
             }
 
-            List<AudioTrack> tracks = new ArrayList<>();
+            List<String> trackUrls = new ArrayList<>();
 
             for (int i = 0; i < tracksArray.length(); i++) {
-                JSObject trackData = JSObject.fromJSONObject(tracksArray.getJSONObject(i));
-                String id = trackData.getString("id");
-                String url = trackData.getString("url");
-
-                if (id == null || url == null) {
-                    call.reject("Invalid track data - missing id or url");
+                String url = tracksArray.getString(i);
+                if (url == null || url.trim().isEmpty()) {
+                    call.reject("Invalid track URL at index " + i);
                     return;
                 }
-
-                String title = trackData.getString("title");
-                String artist = trackData.getString("artist");
-                String artworkUrl = trackData.getString("artworkUrl");
-
-                AudioTrack track = new AudioTrack(id, url, title, artist, artworkUrl);
-                tracks.add(track);
+                trackUrls.add(url);
             }
 
             Boolean preloadNext = call.getBoolean("preloadNext", true);
 
-            playbackManager.initPlaylist(tracks, Boolean.TRUE.equals(preloadNext));
+            playbackManager.preloadTracks(trackUrls, Boolean.TRUE.equals(preloadNext));
             call.resolve();
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to initialize playlist", e);
-            call.reject("Failed to initialize playlist: " + e.getMessage());
+            Log.e(TAG, "Failed to preload tracks", e);
+            call.reject("Failed to preload tracks: " + e.getMessage());
         }
     }
 

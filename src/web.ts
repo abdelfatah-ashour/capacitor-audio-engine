@@ -14,7 +14,7 @@ import type {
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
   AudioTrack,
-  PlaylistOptions,
+  PreloadTracksOptions,
   PlaybackInfo,
   SeekOptions,
   SkipToIndexOptions,
@@ -226,13 +226,20 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   private status: PlaybackStatus = 'idle';
 
   /**
-   * Initialize playlist with audio tracks and preload first track
-   * @param options - Playlist options containing tracks and preload settings
-   * @returns Promise that resolves when playlist is initialized
+   * Preload audio tracks from URLs and initialize playlist
+   * @param options - Preload options containing track URLs and preload settings
+   * @returns Promise that resolves when tracks are preloaded
    * @platform web Uses HTML5 Audio API
    */
-  async initPlaylist(options: PlaylistOptions): Promise<void> {
-    this.playlist = [...options.tracks];
+  async preloadTracks(options: PreloadTracksOptions): Promise<void> {
+    // Convert URLs to AudioTrack objects
+    this.playlist = options.tracks.map((url, index) => ({
+      id: `track_${index}`,
+      url: url,
+      title: undefined,
+      artist: undefined,
+      artworkUrl: undefined
+    }));
     this.currentIndex = 0;
     this.status = 'loading';
 
@@ -249,7 +256,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async playAudio(): Promise<void> {
     if (!this.audio) {
-      throw new Error('No audio initialized. Call initPlaylist first.');
+              throw new Error('No audio initialized. Call preloadTracks first.');
     }
 
     try {

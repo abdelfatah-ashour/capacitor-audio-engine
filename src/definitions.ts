@@ -188,8 +188,8 @@ export interface SwitchMicrophoneResult {
   microphoneId: number;
 }
 
-export interface PlaylistOptions {
-  tracks: AudioTrack[];
+export interface PreloadTracksOptions {
+  tracks: string[];
   preloadNext?: boolean;
 }
 
@@ -408,14 +408,14 @@ export interface CapacitorAudioEnginePlugin {
   // ==================== AUDIO PLAYBACK METHODS ====================
 
   /**
-   * Initialize playlist with audio tracks and preload first track
-   * @param options - Playlist options containing tracks and preload settings
-   * @returns Promise that resolves when playlist is initialized
+   * Preload audio tracks from URLs and initialize playlist
+   * @param options - Preload options containing track URLs and preload settings
+   * @returns Promise that resolves when tracks are preloaded
    * @platform web Uses HTML5 Audio API
    * @platform android Uses ExoPlayer with ConcatenatingMediaSource
    * @platform ios Uses AVQueuePlayer or AVPlayer with queue management
    */
-  initPlaylist(options: PlaylistOptions): Promise<void>;
+  preloadTracks(options: PreloadTracksOptions): Promise<void>;
 
   /**
    * Start or resume playback of current track

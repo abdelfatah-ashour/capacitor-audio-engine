@@ -601,48 +601,30 @@ if (externalMic) {
 
 The Audio Engine now supports comprehensive playlist-based audio playback with full control over multiple tracks.
 
-##### `initPlaylist()`
+##### `preloadTracks()`
 
-Initialize a playlist with audio tracks and preload the first track for optimal performance.
+Preload audio tracks from URLs and initialize playlist for optimal performance.
 
 ```typescript
-initPlaylist(options: PlaylistOptions): Promise<void>;
+preloadTracks(options: PreloadTracksOptions): Promise<void>;
 
-interface PlaylistOptions {
-  tracks: AudioTrack[];
+interface PreloadTracksOptions {
+  tracks: string[]; // Array of audio URLs
   preloadNext?: boolean; // Default: true
-}
-
-interface AudioTrack {
-  id: string;
-  url: string;
-  title?: string;
-  artist?: string;
-  artworkUrl?: string;
 }
 ```
 
 **Example:**
 
 ```typescript
-const playlist = [
-  {
-    id: '1',
-    url: 'https://example.com/song1.mp3',
-    title: 'Song One',
-    artist: 'Artist One',
-    artworkUrl: 'https://example.com/artwork1.jpg',
-  },
-  {
-    id: '2',
-    url: 'file:///path/to/local/song2.m4a',
-    title: 'Song Two',
-    artist: 'Artist Two',
-  },
+const trackUrls = [
+  'https://example.com/song1.mp3',
+  'file:///path/to/local/song2.m4a',
+  'https://example.com/song3.mp3'
 ];
 
-await CapacitorAudioEngine.initPlaylist({
-  tracks: playlist,
+await CapacitorAudioEngine.preloadTracks({
+  tracks: trackUrls,
   preloadNext: true,
 });
 ```

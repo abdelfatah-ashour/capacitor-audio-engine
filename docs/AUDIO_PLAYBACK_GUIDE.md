@@ -38,9 +38,15 @@ const playlist = [
 ### Initialize Playlist
 
 ```typescript
-// Initialize playlist with preloading enabled
-await CapacitorAudioEngine.initPlaylist({
-  tracks: playlist,
+// Preload tracks with URLs
+const trackUrls = [
+  'https://example.com/song1.mp3',
+  'https://example.com/song2.mp3',
+  'https://example.com/song3.mp3'
+];
+
+await CapacitorAudioEngine.preloadTracks({
+  tracks: trackUrls,
   preloadNext: true,
 });
 ```
@@ -161,8 +167,11 @@ const AudioPlayer: React.FC = () => {
 
   const initializePlaylist = async () => {
     try {
-      await CapacitorAudioEngine.initPlaylist({
-        tracks: playlist,
+      // Extract URLs from playlist for preloadTracks
+      const trackUrls = playlist.map(track => track.url);
+
+      await CapacitorAudioEngine.preloadTracks({
+        tracks: trackUrls,
         preloadNext: true
       });
       setIsInitialized(true);

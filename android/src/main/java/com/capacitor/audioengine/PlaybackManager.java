@@ -141,9 +141,24 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         });
     }
 
-    public void initPlaylist(List<AudioTrack> tracks, boolean preloadNext) throws Exception {
-        if (tracks == null || tracks.isEmpty()) {
-            throw new Exception("Playlist cannot be empty");
+    public void preloadTracks(List<String> trackUrls, boolean preloadNext) throws Exception {
+        if (trackUrls == null || trackUrls.isEmpty()) {
+            throw new Exception("Track URLs list cannot be empty");
+        }
+
+        // Convert URLs to AudioTrack objects
+        List<AudioTrack> tracks = new ArrayList<>();
+        for (int i = 0; i < trackUrls.size(); i++) {
+            String url = trackUrls.get(i);
+            // Create AudioTrack with URL as both id and url, no additional metadata
+            AudioTrack track = new AudioTrack(
+                "track_" + i,  // Generate ID
+                url,          // URL
+                null,         // title
+                null,         // artist
+                null          // artworkUrl
+            );
+            tracks.add(track);
         }
 
         // Ensure we're on the main thread
@@ -153,7 +168,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
                     initPlaylistOnMainThread(tracks, preloadNext);
                 } catch (Exception e) {
                     if (listener != null) {
-                        listener.onPlaybackError("Failed to initialize playlist: " + e.getMessage());
+                        listener.onPlaybackError("Failed to preload tracks: " + e.getMessage());
                     }
                 }
             });

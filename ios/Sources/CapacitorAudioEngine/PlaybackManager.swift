@@ -46,9 +46,14 @@ class PlaybackManager: NSObject {
 
     // MARK: - Public Methods
 
-    func initPlaylist(tracks: [AudioTrack], preloadNext: Bool = true) throws {
-        guard !tracks.isEmpty else {
+    func preloadTracks(trackUrls: [String], preloadNext: Bool = true) throws {
+        guard !trackUrls.isEmpty else {
             throw PlaybackError.emptyPlaylist
+        }
+
+        // Convert URLs to AudioTrack objects
+        let tracks = trackUrls.enumerated().map { index, url in
+            AudioTrack(id: "track_\(index)", url: url, title: nil, artist: nil, artworkUrl: nil)
         }
 
         var thrownError: Error?

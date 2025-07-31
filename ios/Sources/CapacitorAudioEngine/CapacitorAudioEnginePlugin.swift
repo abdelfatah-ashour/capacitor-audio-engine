@@ -29,7 +29,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getAudioInfo", returnType: CAPPluginReturnPromise),
         // Playback methods
-        CAPPluginMethod(name: "initPlaylist", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "preloadTracks", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "playAudio", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pauseAudio", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resumeAudio", returnType: CAPPluginReturnPromise),
@@ -538,36 +538,32 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
     // MARK: - Playback Methods
 
-    @objc func initPlaylist(_ call: CAPPluginCall) {
-        guard let tracksArray = call.getArray("tracks") as? [[String: Any]] else {
-            call.reject("Invalid tracks array")
+    @objc func preloadTracks(_ call: CAPPluginCall) {
+        guard let tracksArray = call.getArray("tracks") as? [String] else {
+            call.reject("Invalid tracks array - expected array of URLs")
             return
         }
 
         var tracks: [AudioTrack] = []
 
-        for trackData in tracksArray {
-            guard let id = trackData["id"] as? String,
-                  let url = trackData["url"] as? String else {
-                call.reject("Invalid track data - missing id or url")
+        for (index, url) in tracksArray.enumerated() {
+            if url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                call.reject("Invalid track URL at index \(index)")
                 return
             }
 
-            let title = trackData["title"] as? String
-            let artist = trackData["artist"] as? String
-            let artworkUrl = trackData["artworkUrl"] as? String
-
-            let track = AudioTrack(id: id, url: url, title: title, artist: artist, artworkUrl: artworkUrl)
+            // Create AudioTrack with URL, generating ID and no additional metadata
+            let track = AudioTrack(id: "track_\(index)", url: url, title: nil, artist: nil, artworkUrl: nil)
             tracks.append(track)
         }
 
         let preloadNext = call.getBool("preloadNext") ?? true
 
         do {
-            try playbackManager.initPlaylist(tracks: tracks, preloadNext: preloadNext)
+            try playbackManager.preloadTracks(trackUrls: tracksArray, preloadNext: preloadNext)
             call.resolve()
         } catch {
-            call.reject("Failed to initialize playlist: \(error.localizedDescription)")
+            call.reject("Failed to preload tracks: \(error.localizedDescription)")
         }
     }
 
