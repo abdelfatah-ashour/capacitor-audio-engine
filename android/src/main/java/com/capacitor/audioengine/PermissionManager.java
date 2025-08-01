@@ -138,7 +138,7 @@ public class PermissionManager {
             throw new SecurityException(AudioEngineError.MICROPHONE_PERMISSION_DENIED.getMessage());
         }
 
-        // Check notification permission for Android 13+ (required for foreground service)
+        // Check notification permission for Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission()) {
             throw new SecurityException(AudioEngineError.NOTIFICATION_PERMISSION_DENIED.getMessage());
         }

@@ -142,31 +142,19 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         });
     }
 
-    public void preloadTracks(List<String> trackUrls, boolean preloadNext) throws Exception {
+    public void preloadTracks(List<String> trackUrls) throws Exception {
         if (trackUrls == null || trackUrls.isEmpty()) {
             throw new Exception("Track URLs list cannot be empty");
         }
 
         // Convert URLs to AudioTrack objects
-        List<AudioTrack> tracks = new ArrayList<>();
-        for (int i = 0; i < trackUrls.size(); i++) {
-            String url = trackUrls.get(i);
-            // Create AudioTrack with URL as both id and url, no additional metadata
-            AudioTrack track = new AudioTrack(
-                "track_" + i,  // Generate ID
-                url,          // URL
-                null,         // title
-                null,         // artist
-                null          // artworkUrl
-            );
-            tracks.add(track);
-        }
+      List<AudioTrack> tracks = getAudioTracks(trackUrls);
 
-        // Ensure we're on the main thread
+      // Ensure we're on the main thread
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post(() -> {
                 try {
-                    initPlaylistOnMainThread(tracks, preloadNext);
+                    initPlaylistOnMainThread(tracks);
                 } catch (Exception e) {
                     if (listener != null) {
                         listener.onPlaybackError("Failed to preload tracks: " + e.getMessage());
@@ -176,10 +164,28 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             return;
         }
 
-        initPlaylistOnMainThread(tracks, preloadNext);
+        initPlaylistOnMainThread(tracks);
     }
 
-    private void initPlaylistOnMainThread(List<AudioTrack> tracks, boolean preloadNext) throws Exception {
+  @NonNull
+  private static List<AudioTrack> getAudioTracks(List<String> trackUrls) {
+    List<AudioTrack> tracks = new ArrayList<>();
+    for (int i = 0; i < trackUrls.size(); i++) {
+        String url = trackUrls.get(i);
+        // Create AudioTrack with URL as both id and url, no additional metadata
+        AudioTrack track = new AudioTrack(
+            "track_" + i,  // Generate ID
+            url,          // URL
+            null,         // title
+            null,         // artist
+            null          // artworkUrl
+        );
+        tracks.add(track);
+    }
+    return tracks;
+  }
+
+  private void initPlaylistOnMainThread(List<AudioTrack> tracks) throws Exception {
         this.playlist = new ArrayList<>(tracks);
       this.currentIndex = 0;
         this.status = PlaybackStatus.LOADING;
@@ -581,23 +587,14 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     }
 
     private void updatePlaybackState() {
-        int state;
-        switch (status) {
-            case PLAYING:
-                state = PlaybackStateCompat.STATE_PLAYING;
-                break;
-            case PAUSED:
-                state = PlaybackStateCompat.STATE_PAUSED;
-                break;
-            case STOPPED:
-                state = PlaybackStateCompat.STATE_STOPPED;
-                break;
-            default:
-                state = PlaybackStateCompat.STATE_NONE;
-                break;
-        }
+        int state = switch (status) {
+          case PLAYING -> PlaybackStateCompat.STATE_PLAYING;
+          case PAUSED -> PlaybackStateCompat.STATE_PAUSED;
+          case STOPPED -> PlaybackStateCompat.STATE_STOPPED;
+          default -> PlaybackStateCompat.STATE_NONE;
+        };
 
-        PlaybackStateCompat playbackState = new PlaybackStateCompat.Builder()
+      PlaybackStateCompat playbackState = new PlaybackStateCompat.Builder()
             .setState(state, (long) (getCurrentPosition() * 1000), 1.0f)
             .setActions(PlaybackStateCompat.ACTION_PLAY |
                        PlaybackStateCompat.ACTION_PAUSE |

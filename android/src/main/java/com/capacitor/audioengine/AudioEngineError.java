@@ -7,7 +7,7 @@ public enum AudioEngineError {
     // Permission errors
     PERMISSION_DENIED("PERMISSION_DENIED", "Required permissions not granted"),
     MICROPHONE_PERMISSION_DENIED("MICROPHONE_PERMISSION_DENIED", "Microphone permission not granted"),
-    NOTIFICATION_PERMISSION_DENIED("NOTIFICATION_PERMISSION_DENIED", "Notification permission not granted (required for background recording)"),
+    NOTIFICATION_PERMISSION_DENIED("NOTIFICATION_PERMISSION_DENIED", "Notification permission not granted"),
 
     // State errors
     INVALID_STATE("INVALID_STATE", "Operation not allowed in current state"),

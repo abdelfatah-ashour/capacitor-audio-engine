@@ -11,7 +11,6 @@ import com.getcapacitor.JSObject;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -240,7 +239,7 @@ public class AudioFileProcessor {
                     info.put("mimeType", mimeType != null ? mimeType : "audio/mp4");
                     info.put("bitrate", bitrate != null ? Integer.parseInt(bitrate) : 0);
 
-                    // METADATA_KEY_SAMPLERATE requires API level 31
+                    // METADATA_KEY_SAMPLER requires API level 31
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         String sampleRate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE);
                         info.put("sampleRate", sampleRate != null ? Integer.parseInt(sampleRate) : 0);

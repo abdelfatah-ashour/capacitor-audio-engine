@@ -1,5 +1,6 @@
 package com.capacitor.audioengine;
 
+import android.content.Context;
 import android.media.MediaMuxer;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
@@ -26,8 +27,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * - Maintains a rolling buffer of the last 10 minutes (20 segments)
  * - Automatically removes oldest segments when buffer is full
  * - Merges segments into final audio file using MediaMuxer when recording stops
+ * - Handles audio interruptions (phone calls, audio focus loss, etc.)
  */
-public class SegmentRollingManager {
+public class SegmentRollingManager implements AudioInterruptionManager.InterruptionCallback {
     private static final String TAG = "SegmentRollingManager";
 
     // Segment rolling constants
@@ -85,11 +87,19 @@ public class SegmentRollingManager {
     // Synchronization
     private final Object recordingLock = new Object();
 
+    // Audio interruption handling
+    private final Context context;
+    private AudioInterruptionManager interruptionManager;
+    private boolean wasInterruptedByCall = false;
+    private AudioInterruptionManager.InterruptionType lastInterruptionType = null;
+
     /**
      * Initialize the segment rolling manager
+     * @param context Application context for audio interruption handling
      * @param baseDirectory Base directory where segments will be stored
      */
-    public SegmentRollingManager(File baseDirectory) throws IOException {
+    public SegmentRollingManager(Context context, File baseDirectory) throws IOException {
+        this.context = context.getApplicationContext();
         // Create segments directory
         segmentsDirectory = new File(baseDirectory, "AudioSegments");
         if (!segmentsDirectory.exists() && !segmentsDirectory.mkdirs()) {
@@ -107,17 +117,27 @@ public class SegmentRollingManager {
             recoverFromPersistentIndex();
         }
 
-        Log.d(TAG, "SegmentRollingManager initialized with error recovery and persistent indexing");
+        // Initialize audio interruption manager
+        interruptionManager = new AudioInterruptionManager(context);
+        interruptionManager.setInterruptionCallback(this);
+
+        Log.d(TAG, "SegmentRollingManager initialized with error recovery, persistent indexing, and audio interruption handling");
     }
 
     /**
-     * Start segment rolling recording
+     * Start segment rolling recording with audio interruption handling
      * @param config Recording configuration
      */
     public void startSegmentRolling(AudioRecordingConfig config) throws IOException {
         synchronized (recordingLock) {
             if (isActive.get()) {
                 throw new IllegalStateException("Segment rolling already active");
+            }
+
+            // Start audio interruption monitoring
+            if (interruptionManager != null) {
+                interruptionManager.startMonitoring();
+                Log.d(TAG, "Audio interruption monitoring started");
             }
 
             this.recordingConfig = config;
@@ -1513,5 +1533,180 @@ public class SegmentRollingManager {
         }
 
         return debug.toString();
+    }
+
+    // MARK: - Audio Interruption Callback Implementation
+
+        /**
+     * Handle audio interruption began (phone calls, audio focus loss, etc.)
+     * Strategy: Pause only for critical interruptions (calls), log and continue for others
+     */
+    @Override
+    public void onInterruptionBegan(AudioInterruptionManager.InterruptionType type) {
+        Log.d(TAG, "Audio interruption began: " + type);
+
+        synchronized (recordingLock) {
+            if (!isActive.get()) {
+                return; // Not recording, nothing to interrupt
+            }
+
+            lastInterruptionType = type;
+
+            switch (type) {
+                case PHONE_CALL:
+                    Log.d(TAG, "Critical interruption (Phone call) - pausing recording");
+                    wasInterruptedByCall = true;
+                    pauseSegmentRolling();
+                    break;
+
+                case AUDIO_FOCUS_LOSS:
+                    Log.d(TAG, "Audio focus loss interruption - logging and continuing recording");
+                    // Don't pause for permanent audio focus loss - just log and continue
+                    break;
+
+                case AUDIO_FOCUS_LOSS_TRANSIENT:
+                case AUDIO_FOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                    Log.d(TAG, "Temporary audio focus loss - logging and continuing recording");
+                    // Don't pause for temporary focus loss - just log and continue
+                    break;
+
+                case SYSTEM_NOTIFICATION:
+                    Log.d(TAG, "System notification interruption - logging and continuing recording");
+                    // Don't pause for system notifications - just log and continue
+                    break;
+
+                case HEADPHONE_DISCONNECT:
+                    Log.d(TAG, "Headphone disconnected - continuing recording on built-in microphone");
+                    // Continue recording on built-in microphone
+                    break;
+
+                default:
+                    Log.d(TAG, "Unknown interruption type - logging and continuing recording");
+                    // For unknown types, log and continue rather than pause as precaution
+                    break;
+            }
+        }
+    }
+
+        /**
+     * Handle audio interruption ended
+     * Only resume if recording was actually paused (mainly for phone calls)
+     */
+    @Override
+    public void onInterruptionEnded(AudioInterruptionManager.InterruptionType type, boolean shouldResume) {
+        Log.d(TAG, "Audio interruption ended: " + type + ", should resume: " + shouldResume);
+
+        synchronized (recordingLock) {
+            if (!isActive.get()) {
+                return; // Not in recording session
+            }
+
+            if (lastInterruptionType != type) {
+                Log.w(TAG, "Interruption type mismatch - expected: " + lastInterruptionType + ", got: " + type);
+                return;
+            }
+
+            if (!shouldResume) {
+                Log.d(TAG, "Should not resume recording after interruption");
+                return;
+            }
+
+            switch (type) {
+                case PHONE_CALL:
+                    if (wasInterruptedByCall) {
+                        Log.d(TAG, "Phone call ended - resuming recording");
+                        try {
+                            resumeSegmentRolling();
+                            wasInterruptedByCall = false;
+                        } catch (IOException e) {
+                            Log.e(TAG, "Failed to resume recording after phone call", e);
+                        }
+                    }
+                    break;
+
+                case AUDIO_FOCUS_LOSS_TRANSIENT:
+                case AUDIO_FOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                    Log.d(TAG, "Temporary audio focus restored - recording was continuing (no resume needed)");
+                    // Recording was not paused for these, so no resume needed
+                    break;
+
+                case AUDIO_FOCUS_LOSS:
+                    Log.d(TAG, "Audio focus restored - recording was continuing (no resume needed)");
+                    // Recording was not paused for permanent focus loss, so no resume needed
+                    break;
+
+                case SYSTEM_NOTIFICATION:
+                    Log.d(TAG, "System notification ended - recording was continuing (no resume needed)");
+                    // Recording was not paused for system notifications, so no resume needed
+                    break;
+
+                default:
+                    Log.d(TAG, "Unknown interruption ended - recording was continuing (no resume needed)");
+                    // Recording was not paused for unknown interruptions, so no resume needed
+                    break;
+            }
+
+            lastInterruptionType = null;
+        }
+    }
+
+    /**
+     * Handle audio route changes (headphone connect/disconnect, etc.)
+     */
+    @Override
+    public void onAudioRouteChanged(String reason) {
+        Log.d(TAG, "Audio route changed: " + reason);
+
+        synchronized (recordingLock) {
+            if (!isActive.get()) {
+                return; // Not recording
+            }
+
+            // Log the route change but continue recording
+            // The MediaRecorder should automatically adapt to the new audio route
+            Log.d(TAG, "Recording continuing with new audio route: " + reason);
+        }
+    }
+
+    /**
+     * Check if currently interrupted by audio session issues
+     */
+    public boolean isInterruptedByAudio() {
+        return interruptionManager != null && interruptionManager.isInterrupted();
+    }
+
+    /**
+     * Get current interruption type if any
+     */
+    public AudioInterruptionManager.InterruptionType getCurrentInterruption() {
+        return interruptionManager != null ? interruptionManager.getCurrentInterruption() : null;
+    }
+
+    /**
+     * Clean up resources including audio interruption monitoring
+     */
+    public void cleanup() {
+        synchronized (recordingLock) {
+            // Stop interruption monitoring
+            if (interruptionManager != null) {
+                interruptionManager.stopMonitoring();
+                Log.d(TAG, "Audio interruption monitoring cleanup completed");
+            }
+
+            // Clean up recording resources
+            if (isActive.get()) {
+                try {
+                    stopSegmentRolling();
+                } catch (IOException e) {
+                    Log.w(TAG, "Error stopping segment rolling during cleanup", e);
+                }
+            }
+
+            // Reset interruption state
+            wasInterruptedByCall = false;
+            lastInterruptionType = null;
+
+            Log.d(TAG, "SegmentRollingManager cleanup completed");
+        }
     }
 }

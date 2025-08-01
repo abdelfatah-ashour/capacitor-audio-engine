@@ -143,7 +143,7 @@ public class MediaRecorderManager {
      * Pause recording (Android N+)
      */
     public void pauseRecording() throws RuntimeException {
-        if (mediaRecorder != null && isRecording && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+        if (mediaRecorder != null && isRecording) {
             mediaRecorder.pause();
             Log.d(TAG, "Recording paused");
         } else {
@@ -155,7 +155,7 @@ public class MediaRecorderManager {
      * Resume recording (Android N+)
      */
     public void resumeRecording() throws RuntimeException {
-        if (mediaRecorder != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+        if (mediaRecorder != null) {
             mediaRecorder.resume();
             Log.d(TAG, "Recording resumed");
         } else {

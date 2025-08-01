@@ -20,14 +20,14 @@ public class AudioRecordingConfig {
     private final int sampleRate;
     private final int channels;
     private final int bitrate;
-    private final boolean enableBackgroundRecording;
+
     private final String outputFormat;
 
     private AudioRecordingConfig(Builder builder) {
         this.sampleRate = builder.sampleRate;
         this.channels = builder.channels;
         this.bitrate = builder.bitrate;
-        this.enableBackgroundRecording = builder.enableBackgroundRecording;
+
         this.outputFormat = builder.outputFormat;
     }
 
@@ -45,9 +45,7 @@ public class AudioRecordingConfig {
 
 
 
-    public boolean isBackgroundRecordingEnabled() {
-        return enableBackgroundRecording;
-    }
+
 
     public String getOutputFormat() {
         return outputFormat;
@@ -72,7 +70,7 @@ public class AudioRecordingConfig {
         private int channels = 1;
         private int bitrate = 64000;      // Reduced from 128000 for smaller files
 
-        private boolean enableBackgroundRecording = true;
+
         private String outputFormat = "m4a";
 
         public Builder sampleRate(int sampleRate) {
@@ -92,14 +90,10 @@ public class AudioRecordingConfig {
 
 
 
-        public Builder enableBackgroundRecording(boolean enableBackgroundRecording) {
-            this.enableBackgroundRecording = enableBackgroundRecording;
-            return this;
-        }
 
-        public Builder outputFormat(String outputFormat) {
+
+        public void outputFormat(String outputFormat) {
             this.outputFormat = outputFormat;
-            return this;
         }
 
         /**
@@ -116,9 +110,7 @@ public class AudioRecordingConfig {
                 bitrate(call.getInt("bitrate"));
             }
 
-            if (call.getBoolean("enableBackgroundRecording") != null) {
-                enableBackgroundRecording(call.getBoolean("enableBackgroundRecording"));
-            }
+
             if (call.getString("outputFormat") != null) {
                 outputFormat(call.getString("outputFormat"));
             }
@@ -134,8 +126,8 @@ public class AudioRecordingConfig {
 
     @Override
     public String toString() {
-        return String.format("AudioRecordingConfig{sampleRate=%d, channels=%d, bitrate=%d, backgroundRecording=%s, outputFormat='%s'}",
-                sampleRate, channels, bitrate, enableBackgroundRecording, outputFormat);
+        return String.format("AudioRecordingConfig{sampleRate=%d, channels=%d, bitrate=%d, outputFormat='%s'}",
+                sampleRate, channels, bitrate, outputFormat);
     }
 
     @Override
@@ -148,7 +140,7 @@ public class AudioRecordingConfig {
         if (sampleRate != that.sampleRate) return false;
         if (channels != that.channels) return false;
         if (bitrate != that.bitrate) return false;
-        if (enableBackgroundRecording != that.enableBackgroundRecording) return false;
+
 
         return outputFormat != null ? outputFormat.equals(that.outputFormat) : that.outputFormat == null;
     }
@@ -159,7 +151,7 @@ public class AudioRecordingConfig {
         result = 31 * result + channels;
         result = 31 * result + bitrate;
 
-        result = 31 * result + (enableBackgroundRecording ? 1 : 0);
+
         result = 31 * result + (outputFormat != null ? outputFormat.hashCode() : 0);
         return result;
     }
@@ -249,51 +241,31 @@ public class AudioRecordingConfig {
      * Get device type string
      */
     public static String getDeviceType(AudioDeviceInfo device) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-            int type = device.getType();
-            switch (type) {
-                case AudioDeviceInfo.TYPE_BUILTIN_MIC:
-                    return "BUILTIN";
-                case AudioDeviceInfo.TYPE_WIRED_HEADSET:
-                    return "WIRED_HEADSET";
-                case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
-                    return "WIRED_HEADPHONES";
-                case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
-                    return "BLUETOOTH";
-                case AudioDeviceInfo.TYPE_USB_HEADSET:
-                    return "USB_HEADSET";
-                case AudioDeviceInfo.TYPE_USB_DEVICE:
-                    return "USB";
-                default:
-                    return "OTHER";
-            }
-        }
-        return "UNKNOWN";
+      int type = device.getType();
+      return switch (type) {
+        case AudioDeviceInfo.TYPE_BUILTIN_MIC -> "BUILTIN";
+        case AudioDeviceInfo.TYPE_WIRED_HEADSET -> "WIRED_HEADSET";
+        case AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "WIRED_HEADPHONES";
+        case AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BLUETOOTH";
+        case AudioDeviceInfo.TYPE_USB_HEADSET -> "USB_HEADSET";
+        case AudioDeviceInfo.TYPE_USB_DEVICE -> "USB";
+        default -> "OTHER";
+      };
     }
 
     /**
      * Get display name for device type
      */
     public static String getDeviceTypeDisplayName(int type) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-            switch (type) {
-                case AudioDeviceInfo.TYPE_BUILTIN_MIC:
-                    return "Built-in Microphone";
-                case AudioDeviceInfo.TYPE_WIRED_HEADSET:
-                    return "Wired Headset";
-                case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
-                    return "Wired Headphones";
-                case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
-                    return "Bluetooth Headset";
-                case AudioDeviceInfo.TYPE_USB_HEADSET:
-                    return "USB Headset";
-                case AudioDeviceInfo.TYPE_USB_DEVICE:
-                    return "USB Audio Device";
-                default:
-                    return "Other Audio Device";
-            }
-        }
-        return "Unknown Device";
+      return switch (type) {
+        case AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Microphone";
+        case AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset";
+        case AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones";
+        case AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth Headset";
+        case AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Headset";
+        case AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio Device";
+        default -> "Other Audio Device";
+      };
     }
 
     /**

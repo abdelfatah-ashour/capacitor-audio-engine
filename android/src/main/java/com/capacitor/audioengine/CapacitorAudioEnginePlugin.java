@@ -1,10 +1,14 @@
 package com.capacitor.audioengine;
 
 import android.Manifest;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 import android.util.Log;
 
@@ -36,7 +40,7 @@ import com.getcapacitor.annotation.Permission;
         )
     }
 )
-public class CapacitorAudioEnginePlugin extends Plugin implements PermissionManager.PermissionRequestCallback, EventManager.EventCallback, PlaybackManager.PlaybackManagerListener {
+public class CapacitorAudioEnginePlugin extends Plugin implements PermissionManager.PermissionRequestCallback, EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, AudioRecordingService.RecordingServiceListener {
     private static final String TAG = "CapacitorAudioEngine";
 
     // Core managers
@@ -44,9 +48,13 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     private EventManager eventManager;
     private MediaRecorderManager recorderManager;
     private DurationMonitor durationMonitor;
-    private RecordingServiceManager serviceManager;
+
     private FileDirectoryManager fileManager;
     private PlaybackManager playbackManager;
+
+    // Background recording service
+    private AudioRecordingService recordingService;
+    private boolean isServiceBound = false;
 
     // Segment rolling support
     private SegmentRollingManager segmentRollingManager;
@@ -70,7 +78,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         permissionManager = new PermissionManager(getContext(), this);
         eventManager = new EventManager(this);
         fileManager = new FileDirectoryManager(getContext());
-        serviceManager = new RecordingServiceManager(getContext());
+
 
         // Initialize recording configuration with defaults
         recordingConfig = new AudioRecordingConfig.Builder()
@@ -87,6 +95,25 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
         Log.d(TAG, "CapacitorAudioEngine plugin loaded");
     }
+
+    // Service connection for background recording service
+    private final ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            Log.d(TAG, "AudioRecordingService connected");
+            AudioRecordingService.LocalBinder binder = (AudioRecordingService.LocalBinder) service;
+            recordingService = binder.getService();
+            recordingService.setRecordingServiceListener(CapacitorAudioEnginePlugin.this);
+            isServiceBound = true;
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            Log.d(TAG, "AudioRecordingService disconnected");
+            recordingService = null;
+            isServiceBound = false;
+        }
+    };
 
     private void initializeCallbackManagers() {
         // Initialize duration monitor with callback
@@ -275,7 +302,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 if (segmentRollingManager != null) {
                     segmentRollingManager.pauseSegmentRolling();
                     // Do not stop duration monitor for segment rolling since we're not using it
-                    serviceManager.pauseService();
+
                     Log.d(TAG, "Segment rolling recording paused");
                     call.resolve();
                 } else {
@@ -286,7 +313,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 if (recorderManager.isPauseResumeSupported()) {
                     recorderManager.pauseRecording();
                     durationMonitor.stopMonitoring();
-                    serviceManager.pauseService();
+
                     Log.d(TAG, "Linear recording paused");
                     call.resolve();
                 } else {
@@ -312,7 +339,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 if (segmentRollingManager != null) {
                     segmentRollingManager.resumeSegmentRolling();
                     // Do not start duration monitor for segment rolling since we're not using it
-                    serviceManager.resumeService();
+
                     Log.d(TAG, "Segment rolling recording resumed");
                     call.resolve();
                 } else {
@@ -323,7 +350,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 if (recorderManager.isPauseResumeSupported()) {
                     recorderManager.resumeRecording();
                     durationMonitor.startMonitoring();
-                    serviceManager.resumeService();
+
                     Log.d(TAG, "Linear recording resumed");
                     call.resolve();
                 } else {
@@ -366,9 +393,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             durationMonitor.stopMonitoring();
         }
 
-        // Stop background service
-        serviceManager.stopService();
-
         String fileToReturn;
 
         if (isSegmentRollingEnabled) {
@@ -377,6 +401,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             if (segmentRollingManager != null) {
                 File mergedFile = segmentRollingManager.stopSegmentRolling();
                 fileToReturn = mergedFile.getAbsolutePath();
+
+                // Stop recording service as recording is complete
+                stopRecordingService();
+
                 Log.d(TAG, "Segment rolling stopped and merged to: " + mergedFile.getName());
             } else {
                 Log.e(TAG, "Segment rolling manager is null!");
@@ -392,6 +420,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 recorderManager.release();
             }
             fileToReturn = currentRecordingPath;
+
+            // Stop recording service as recording is complete
+            stopRecordingService();
         }
 
         isRecording = false;
@@ -673,8 +704,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     // Helper methods for the refactored implementation
 
     private void startLinearRecording() throws IOException {
-        // Start background service for long-running recording
-        serviceManager.startService();
+
 
         // Set maximum duration if provided
         if (maxDurationSeconds != null && maxDurationSeconds > 0) {
@@ -683,6 +713,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
         File audioFile = fileManager.createRecordingFile("recording");
         currentRecordingPath = audioFile.getAbsolutePath();
+
+        // Start foreground service for background recording
+        startRecordingService();
 
         recorderManager.setupMediaRecorder(currentRecordingPath, recordingConfig);
         recorderManager.startRecording();
@@ -701,7 +734,11 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         // Initialize segment rolling manager if needed
         if (segmentRollingManager == null) {
             File baseDirectory = fileManager.getRecordingsDirectory();
-            segmentRollingManager = new SegmentRollingManager(baseDirectory);
+            // Initialize segment rolling manager with context for interruption handling
+            segmentRollingManager = new SegmentRollingManager(getContext(), baseDirectory);
+
+
+
         }
 
         // Set maximum duration in segment rolling manager for rolling window management
@@ -728,8 +765,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         // Clear max duration from duration monitor since we're not using it for segment rolling
         durationMonitor.setMaxDuration(null);
 
-        // Start background service for long-running recording
-        serviceManager.startService();
+        // Start foreground service for background recording
+        startRecordingService();
 
         // Start segment rolling
         segmentRollingManager.startSegmentRolling(recordingConfig);
@@ -776,6 +813,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 segmentRollingManager = null;
             }
 
+            // Stop recording service
+            stopRecordingService();
+
             // Stop duration monitoring
             if (durationMonitor != null) {
                 try {
@@ -786,14 +826,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 }
             }
 
-            // Stop background service
-            if (serviceManager != null) {
-                try {
-                    serviceManager.stopService();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error stopping service during cleanup", e);
-                }
-            }
+
 
             // Reset all recording state flags
             isRecording = false;
@@ -924,7 +957,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
             Boolean preloadNext = call.getBoolean("preloadNext", true);
 
-            playbackManager.preloadTracks(trackUrls, Boolean.TRUE.equals(preloadNext));
+            playbackManager.preloadTracks(trackUrls);
             call.resolve();
 
         } catch (Exception e) {
@@ -1215,10 +1248,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 fileManager = null;
             }
 
-            if (serviceManager != null) {
-                serviceManager.stopService();
-                serviceManager = null;
-            }
+            // Unbind recording service
+            unbindRecordingService();
 
             // Clear main handler
             if (mainHandler != null) {
@@ -1230,6 +1261,101 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
         } catch (Exception e) {
             Log.e(TAG, "Error during plugin destruction", e);
+        }
+    }
+
+    private void log(String message) {
+        Log.d(TAG, message);
+    }
+
+    // MARK: - Background Recording Service Integration
+
+    /**
+     * Bind to the background recording service
+     */
+    private void bindRecordingService() {
+        if (!isServiceBound) {
+            Intent intent = new Intent(getContext(), AudioRecordingService.class);
+            getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+            Log.d(TAG, "Binding to AudioRecordingService");
+        }
+    }
+
+    /**
+     * Unbind from the background recording service
+     */
+    private void unbindRecordingService() {
+        if (isServiceBound) {
+            try {
+                getContext().unbindService(serviceConnection);
+                isServiceBound = false;
+                recordingService = null;
+                Log.d(TAG, "Unbound from AudioRecordingService");
+            } catch (Exception e) {
+                Log.w(TAG, "Error unbinding from recording service", e);
+            }
+        }
+    }
+
+    /**
+     * Start foreground service for background recording
+     */
+    private void startRecordingService() {
+        Intent intent = new Intent(getContext(), AudioRecordingService.class);
+        intent.setAction("START_RECORDING");
+        getContext().startForegroundService(intent);
+
+        // Bind to service for communication
+        bindRecordingService();
+    }
+
+    /**
+     * Stop foreground service
+     */
+    private void stopRecordingService() {
+        if (recordingService != null) {
+            recordingService.stopForegroundRecording();
+        }
+        unbindRecordingService();
+    }
+
+    // MARK: - AudioRecordingService.RecordingServiceListener Implementation
+
+    @Override
+    public void onScreenLocked() {
+        Log.d(TAG, "Screen locked - pausing duration counter but maintaining recording");
+
+        // Pause duration monitoring (timer continues but duration doesn't increment)
+        if (durationMonitor != null) {
+            durationMonitor.pauseDuration();
+        }
+
+        // Log for debugging
+        Log.d(TAG, "Duration monitoring paused during screen lock");
+    }
+
+    @Override
+    public void onScreenUnlocked() {
+        Log.d(TAG, "Screen unlocked - resuming duration counter");
+
+        // Resume duration monitoring
+        if (durationMonitor != null) {
+            durationMonitor.resumeDuration();
+        }
+
+        // Log for debugging
+        Log.d(TAG, "Duration monitoring resumed after screen unlock");
+    }
+
+    @Override
+    public void onRecordingStateChanged(boolean isRecording) {
+        Log.d(TAG, "Recording service state changed: " + (isRecording ? "started" : "stopped"));
+
+        // Could emit events to frontend if needed
+        if (eventManager != null) {
+            JSObject eventData = new JSObject();
+            eventData.put("serviceState", isRecording ? "started" : "stopped");
+            eventManager.emitRecordingStateChange("service", eventData);
         }
     }
 

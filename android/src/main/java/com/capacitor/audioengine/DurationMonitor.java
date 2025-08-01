@@ -22,6 +22,7 @@ public class DurationMonitor {
     private Timer durationTimer;
     private double currentDuration = 0.0;
     private boolean isMonitoring = false;
+    private boolean isPaused = false; // Track if duration monitoring is paused
     private Integer maxDurationSeconds; // Maximum duration in seconds
 
     public DurationMonitor(Handler mainHandler, DurationCallback callback) {
@@ -43,6 +44,12 @@ public class DurationMonitor {
             public void run() {
                 if (!isMonitoring) {
                     Log.d(TAG, "Timer fired but monitoring is not active, skipping");
+                    return;
+                }
+
+                // Only increment duration if not paused (i.e., actually recording)
+                if (isPaused) {
+                    Log.d(TAG, "Timer fired but duration monitoring is paused, skipping increment");
                     return;
                 }
 
@@ -80,10 +87,40 @@ public class DurationMonitor {
     }
 
     /**
+     * Pause duration monitoring (timer continues but duration doesn't increment)
+     * Used when recording is paused (e.g., screen lock, interruptions)
+     */
+    public void pauseDuration() {
+        if (!isPaused) {
+            isPaused = true;
+            Log.d(TAG, "Duration monitoring paused at " + currentDuration + " seconds");
+        }
+    }
+
+    /**
+     * Resume duration monitoring (duration starts incrementing again)
+     * Used when recording is resumed after being paused
+     */
+    public void resumeDuration() {
+        if (isPaused) {
+            isPaused = false;
+            Log.d(TAG, "Duration monitoring resumed at " + currentDuration + " seconds");
+        }
+    }
+
+    /**
+     * Check if duration monitoring is currently paused
+     */
+    public boolean isPaused() {
+        return isPaused;
+    }
+
+    /**
      * Reset duration to zero
      */
     public void resetDuration() {
         currentDuration = 0.0;
+        isPaused = false; // Reset pause state as well
         Log.d(TAG, "Duration reset to 0");
 
         // Emit the reset duration immediately
