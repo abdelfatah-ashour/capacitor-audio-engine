@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 @preconcurrency import AVFoundation
 
 /**
@@ -24,6 +25,8 @@ class SegmentRollingManager: NSObject {
     private var isActive: Bool = false
     private let segmentsDirectory: URL
 
+
+
     // Recording settings
     private var recordingSettings: [String: Any] = [:]
 
@@ -35,10 +38,97 @@ class SegmentRollingManager: NSObject {
 
     // Total recording duration tracking (never resets)
     private var totalRecordingDuration: TimeInterval = 0
-    private var recordingStartTime: Date?    // Thread safety
+    private var recordingStartTime: Date?
+
+    // Thread safety
     private let queue = DispatchQueue(label: "segment-rolling-queue", qos: .userInteractive)
     private let queueKey = DispatchSpecificKey<String>()
     private let queueValue = "segment-rolling-queue"
+
+    // MARK: - Initialization
+
+    // Throttled logging state
+    private static var lastLogTimes: [String: Date] = [:]
+
+    // MARK: - Custom Error Types
+
+    enum SegmentRecordingError: Error, LocalizedError {
+        case alreadyActive
+        case notActive
+        case noRecordingToResume
+        case noRecordingToStop
+        case noValidSegments
+        case recordingTooShort
+        case noRecordingFile
+        case recorderCreationFailed(Error)
+        case recordingStartFailed
+        case audioTrackCreationFailed
+        case exportSessionCreationFailed
+        case exportFailed(String)
+        case trimExportFailed(String)
+        case segmentRotationFailed(Error)
+        case cleanupFailed(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .alreadyActive:
+                return "Segment rolling already active"
+            case .notActive:
+                return "No segment rolling session active"
+            case .noRecordingToResume:
+                return "No segment rolling to resume"
+            case .noRecordingToStop:
+                return "No segment rolling to stop"
+            case .noValidSegments:
+                return "No valid recording segments found - recording may have been too short"
+            case .recordingTooShort:
+                return "Recording too short to process"
+            case .noRecordingFile:
+                return "No recording file found"
+            case .recorderCreationFailed(let error):
+                return "Failed to create audio recorder: \(error.localizedDescription)"
+            case .recordingStartFailed:
+                return "Failed to start segment recording"
+            case .audioTrackCreationFailed:
+                return "Failed to create audio track for composition"
+            case .exportSessionCreationFailed:
+                return "Failed to create export session"
+            case .exportFailed(let status):
+                return "Export failed with status: \(status)"
+            case .trimExportFailed(let status):
+                return "Audio trimming failed with status: \(status)"
+            case .segmentRotationFailed(let error):
+                return "Failed to rotate segment: \(error.localizedDescription)"
+            case .cleanupFailed(let error):
+                return "Cleanup failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    // MARK: - Queue Management Helper
+
+    /// Centralized queue check helper to prevent deadlocks and reduce boilerplate
+    private func performQueueSafeOperation<T>(_ operation: () throws -> T) rethrows -> T {
+        if DispatchQueue.getSpecific(key: queueKey) == queueValue {
+            return try operation()
+        } else {
+            return try queue.sync { try operation() }
+        }
+    }
+
+    /// Throttled logging to reduce spam and UI lag
+    private func throttledLog(_ message: String, throttleKey: String = "general", maxFrequency: TimeInterval = 1.0) {
+        #if DEBUG
+        let now = Date()
+
+        if let lastTime = Self.lastLogTimes[throttleKey], now.timeIntervalSince(lastTime) < maxFrequency {
+            return // Throttle this log message
+        }
+
+        Self.lastLogTimes[throttleKey] = now
+        print("[SegmentRollingManager] \(message)")
+        #endif
+    }
 
     // MARK: - Initialization
 
@@ -47,7 +137,9 @@ class SegmentRollingManager: NSObject {
         print("[SegmentRollingManager] SegmentRollingManager.init() - Starting initialization")
         #endif
 
-        // Initialize segmentsDirectory first
+
+
+        // Initialize segmentsDirectory
         #if DEBUG
         print("[SegmentRollingManager] SegmentRollingManager.init() - Getting documents directory")
         #endif
@@ -62,6 +154,8 @@ class SegmentRollingManager: NSObject {
             #if DEBUG
             print("[SegmentRollingManager] SegmentRollingManager.init() - Initialization completed with temporary directory")
             #endif
+
+
 
             // Set up queue-specific key for deadlock prevention
             queue.setSpecific(key: queueKey, value: queueValue)
@@ -80,6 +174,8 @@ class SegmentRollingManager: NSObject {
         #if DEBUG
         print("[SegmentRollingManager] SegmentRollingManager.init() - super.init() completed")
         #endif
+
+
 
         // Set up queue-specific key for deadlock prevention
         #if DEBUG
@@ -114,36 +210,36 @@ class SegmentRollingManager: NSObject {
      */
     func startSegmentRolling(with settings: [String: Any]) throws {
         log("startSegmentRolling called with settings: \(settings)")
-        // Avoid nested sync calls by checking if we're already on the queue
-        if DispatchQueue.getSpecific(key: queueKey) == queueValue {
+        try performQueueSafeOperation {
             try startSegmentRollingInternal(with: settings)
-        } else {
-            return try queue.sync {
-                try self.startSegmentRollingInternal(with: settings)
-            }
         }
     }
 
     private func startSegmentRollingInternal(with settings: [String: Any]) throws {
         log("Inside queue.sync block")
         guard !isActive else {
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Segment rolling already active"])
+            throw SegmentRecordingError.alreadyActive
         }
 
         // Store recording settings
         recordingSettings = settings
         log("Recording settings stored")
 
-        // Configure audio session
+        // Configure audio session for recording
         log("Getting audio session instance")
         let audioSession = AVAudioSession.sharedInstance()
         log("Setting audio session category")
-        try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
+        try audioSession.setCategory(.playAndRecord,
+                                   mode: .measurement,
+                                   options: [.allowBluetooth, .defaultToSpeaker, .mixWithOthers, .duckOthers])
         log("Activating audio session")
         try audioSession.setActive(true)
         recordingSession = audioSession
-        log("Audio session configured successfully")
+
+        // Set up audio session interruption handling
+        setupAudioInterruptionHandling()
+
+
 
         // Reset state
         segmentCounter = 0
@@ -179,7 +275,7 @@ class SegmentRollingManager: NSObject {
      * Pause segment rolling recording
      */
     func pauseSegmentRolling() {
-        queue.sync {
+        performQueueSafeOperation {
             guard isActive else { return }
 
             currentSegmentRecorder?.pause()
@@ -198,10 +294,9 @@ class SegmentRollingManager: NSObject {
      * Resume segment rolling recording
      */
     func resumeSegmentRolling() throws {
-        return try queue.sync {
+        try performQueueSafeOperation {
             guard isActive else {
-                throw NSError(domain: "SegmentRollingManager", code: -1,
-                            userInfo: [NSLocalizedDescriptionKey: "No segment rolling to resume"])
+                throw SegmentRecordingError.noRecordingToResume
             }
 
             // Resume current segment or start new one if needed
@@ -232,10 +327,9 @@ class SegmentRollingManager: NSObject {
      * - returns: URL of the merged audio file
      */
     func stopSegmentRolling() throws -> URL {
-        return try queue.sync {
+        return try performQueueSafeOperation {
             guard isActive else {
-                throw NSError(domain: "SegmentRollingManager", code: -1,
-                            userInfo: [NSLocalizedDescriptionKey: "No segment rolling to stop"])
+                throw SegmentRecordingError.noRecordingToStop
             }
 
             // Stop timer if using segment rolling
@@ -246,9 +340,14 @@ class SegmentRollingManager: NSObject {
                 }
             }
 
-            // Stop current segment recording
-            currentSegmentRecorder?.stop()
-            currentSegmentRecorder = nil
+            // Stop current segment recording with aggressive cleanup
+            if let recorder = currentSegmentRecorder {
+                if recorder.isRecording {
+                    recorder.stop()
+                }
+                recorder.delegate = nil
+                currentSegmentRecorder = nil
+            }
 
             let finalFileURL: URL
 
@@ -267,8 +366,7 @@ class SegmentRollingManager: NSObject {
                 // Check if we have any segments to merge
                 if segmentBuffer.isEmpty {
                     log("Warning: No segments in buffer, this might be a very short recording")
-                    throw NSError(domain: "SegmentRollingManager", code: -1,
-                                userInfo: [NSLocalizedDescriptionKey: "No valid recording segments found - recording may have been too short"])
+                    throw SegmentRecordingError.noValidSegments
                 }
 
                 // Merge all segments
@@ -290,8 +388,7 @@ class SegmentRollingManager: NSObject {
 
                 guard let lastSegmentURL = getLastSegmentURL(),
                       FileManager.default.fileExists(atPath: lastSegmentURL.path) else {
-                    throw NSError(domain: "SegmentRollingManager", code: -1,
-                                userInfo: [NSLocalizedDescriptionKey: "No recording file found"])
+                    throw SegmentRecordingError.noRecordingFile
                 }
 
                 // Move the single file to final location
@@ -327,12 +424,12 @@ class SegmentRollingManager: NSObject {
     }
 
     /**
-     * Get current recording duration across all segments
+     * Get elapsed recording time across all segments
      * For segment rolling: Returns total elapsed time since recording started (never resets)
      * For linear recording: Returns current recorder time
      */
-    func getCurrentDuration() -> TimeInterval {
-        return queue.sync {
+    func getElapsedRecordingTime() -> TimeInterval {
+        return performQueueSafeOperation {
             guard isActive else { return 0 }
 
             if useSegmentRolling {
@@ -356,9 +453,9 @@ class SegmentRollingManager: NSObject {
      * Get the duration of audio currently buffered (available for processing)
      * This represents the actual audio that will be included in the final recording
      */
-    func getBufferedDuration() -> TimeInterval {
-        return queue.sync {
-            guard isActive && useSegmentRolling else { return getCurrentDuration() }
+    func getBufferedAudioDuration() -> TimeInterval {
+        return performQueueSafeOperation {
+            guard isActive && useSegmentRolling else { return getElapsedRecordingTime() }
 
             let segmentsDuration = Double(segmentBuffer.count) * AudioEngineConstants.segmentDuration
             let currentSegmentDuration = currentSegmentRecorder?.currentTime ?? 0
@@ -367,10 +464,24 @@ class SegmentRollingManager: NSObject {
     }
 
     /**
+     * @deprecated Use getElapsedRecordingTime() instead
+     */
+    func getCurrentDuration() -> TimeInterval {
+        return getElapsedRecordingTime()
+    }
+
+    /**
+     * @deprecated Use getBufferedAudioDuration() instead
+     */
+    func getBufferedDuration() -> TimeInterval {
+        return getBufferedAudioDuration()
+    }
+
+    /**
      * Check if segment rolling is currently active
      */
     func isSegmentRollingActive() -> Bool {
-        return queue.sync { isActive }
+        return performQueueSafeOperation { isActive }
     }
 
     /**
@@ -379,7 +490,7 @@ class SegmentRollingManager: NSObject {
      * Not setting maxDuration (nil) enables linear recording mode
      */
     func setMaxDuration(_ duration: TimeInterval?) {
-        queue.sync {
+        performQueueSafeOperation {
             maxDuration = duration
             if let duration = duration {
                 log("Set max duration to \(duration) seconds - segment rolling mode will be used")
@@ -396,39 +507,312 @@ class SegmentRollingManager: NSObject {
         setMaxDuration(duration as TimeInterval?)
     }
 
+    /**
+     * Stop segment rolling asynchronously to avoid blocking UI with sync export
+     * - parameter completion: Completion handler with result containing the merged audio file URL
+     */
+    func stopSegmentRollingAsync(completion: @escaping (Result<URL, Error>) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let finalFileURL = try self.stopSegmentRolling()
+                DispatchQueue.main.async {
+                    completion(.success(finalFileURL))
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    // MARK: - Audio Session Interruption Handling
+
+    /**
+     * Set up AVAudioSession interruption handling to pause/resume recording safely
+     */
+    private func setupAudioInterruptionHandling() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioSessionInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioSessionRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
+        log("Audio interruption handling set up")
+    }
+
+        /**
+     * Handle AVAudioSession interruptions (phone calls, Siri, etc.)
+     * Strategy: Pause only for critical interruptions (calls), log and continue for others
+     */
+    @objc private func handleAudioSessionInterruption(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+        switch type {
+        case .began:
+            // Determine interruption severity and decide whether to pause or continue
+            let interruptionReason = determineInterruptionReason(userInfo)
+
+            switch interruptionReason {
+            case .phoneCall, .siri:
+                log("Critical audio session interruption began (\(interruptionReason)) - pausing recording")
+                pauseSegmentRolling()
+
+                        case .systemNotification, .audioFocusLoss, .unknown:
+                log("Non-critical audio session interruption began (\(interruptionReason)) - logging and continuing recording")
+                throttledLog("Recording continues during \(interruptionReason) interruption",
+                           throttleKey: "non_critical_interruption", maxFrequency: 10.0)
+
+                // For camera scanning and other app activities, ensure audio session remains active
+                do {
+                    let audioSession = AVAudioSession.sharedInstance()
+                    if !audioSession.isOtherAudioPlaying {
+                        try audioSession.setActive(true)
+                        log("Reactivated audio session during non-critical interruption")
+                    }
+                } catch {
+                    log("Warning: Could not reactivate audio session: \(error.localizedDescription)")
+                }
+                // Continue recording without pausing
+            }
+
+        case .ended:
+            log("Audio session interruption ended")
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    log("Resuming recording after interruption (if it was paused)")
+                    do {
+                        // Only try to resume if we're actually paused
+                        if !isSegmentRollingActive() || getCurrentSegmentRecorder()?.isRecording == false {
+                            // Reactivate audio session
+                            try AVAudioSession.sharedInstance().setActive(true)
+                            try resumeSegmentRolling()
+                        } else {
+                            log("Recording was not paused - no resume needed")
+                        }
+                    } catch {
+                        log("Failed to resume recording after interruption: \(error.localizedDescription)")
+                    }
+                }
+            }
+
+        @unknown default:
+            log("Unknown audio session interruption type: \(typeValue) - logging and continuing recording")
+            throttledLog("Recording continues during unknown interruption type \(typeValue)",
+                       throttleKey: "unknown_interruption", maxFrequency: 5.0)
+        }
+    }
+
+    /**
+     * Handle AVAudioSession route changes (headphone connect/disconnect, etc.)
+     */
+    @objc private func handleAudioSessionRouteChange(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+
+        throttledLog("Audio route changed: \(reason)", throttleKey: "route_change", maxFrequency: 5.0)
+
+        switch reason {
+        case .oldDeviceUnavailable:
+            // Handle headphone disconnect or other device removal
+            if let previousRoute = userInfo[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription {
+                for output in previousRoute.outputs {
+                    if output.portType == .headphones || output.portType == .bluetoothA2DP {
+                        log("Audio device disconnected, continuing recording on built-in speaker")
+                        // Could pause/resume here if desired behavior is to stop on headphone disconnect
+                        break
+                    }
+                }
+            }
+
+        case .newDeviceAvailable:
+            log("New audio device available")
+
+        case .categoryChange, .override:
+            log("Audio session category or override changed")
+
+        default:
+            break
+        }
+    }
+
+    /**
+     * Remove audio session interruption observers
+     */
+    private func removeAudioInterruptionHandling() {
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
+        log("Audio interruption handling removed")
+    }
+
+    /**
+     * Determine the reason for interruption to decide on pause vs continue strategy
+     */
+    private func determineInterruptionReason(_ userInfo: [AnyHashable: Any]) -> InterruptionReason {
+        log("Determining interruption reason from userInfo: \(userInfo)")
+
+        // Check for specific interruption reasons if available (iOS 14.5+)
+        if #available(iOS 14.5, *) {
+            if let reasonValue = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt {
+                let reason = AVAudioSession.InterruptionReason(rawValue: reasonValue)
+                log("iOS 14.5+ interruption reason value: \(reasonValue)")
+                switch reason {
+                case .default:
+                    // Default interruptions are often phone calls - check other indicators
+                    log("Default interruption reason - checking for phone call indicators")
+                    break
+                case .builtInMicMuted:
+                    log("Built-in mic muted interruption")
+                    return .systemNotification
+                @unknown default:
+                    log("Unknown iOS 14.5+ interruption reason: \(reasonValue)")
+                    break
+                }
+            }
+        }
+
+        // Enhanced phone call detection
+        let audioSession = AVAudioSession.sharedInstance()
+
+        // Method 1: Check if other audio is playing (phone call audio)
+        if audioSession.isOtherAudioPlaying {
+            log("Other audio is playing during interruption - likely phone call")
+            return .phoneCall
+        }
+
+        // Method 2: Check current route for phone call indicators
+        let currentRoute = audioSession.currentRoute
+        log("Current audio route outputs: \(currentRoute.outputs.map { $0.portType.rawValue })")
+
+        for output in currentRoute.outputs {
+            if output.portType == .builtInReceiver {
+                // Built-in receiver port is typically used during phone calls
+                log("Audio route using built-in receiver port - indicating phone call")
+                return .phoneCall
+            }
+        }
+
+        // Method 3: Check for significant interruption duration (phone calls are longer)
+        // This is a heuristic approach - we'll use a timer to check duration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            // If interruption lasts more than 1 second, it's likely a phone call
+            if AVAudioSession.sharedInstance().isOtherAudioPlaying {
+                self.log("Long-duration interruption detected - likely phone call")
+                // Update our detection if we're still interrupted
+                if !self.isSegmentRollingActive() {
+                    self.log("Retroactively detected phone call - should have paused recording")
+                }
+            }
+        }
+
+        // Try to infer from other context if available
+        if let wasSuspended = userInfo[AVAudioSessionInterruptionWasSuspendedKey] as? Bool,
+           wasSuspended {
+            log("Audio session was suspended - audio focus loss")
+            return .audioFocusLoss
+        }
+
+        // Enhanced default detection - assume phone calls for safety
+        // Better to pause unnecessarily than to corrupt recording
+        log("Could not determine specific interruption reason")
+        log("Audio session category: \(audioSession.category.rawValue)")
+        log("Audio session mode: \(audioSession.mode.rawValue)")
+
+        // If we can't determine for sure, default to phone call for safety
+        // This prevents file corruption at the cost of occasional unnecessary pauses
+        log("Defaulting to phone call for safety (prevents file corruption)")
+        return .phoneCall
+    }
+
+    /**
+     * Interruption reason categories for handling strategy
+     */
+    private enum InterruptionReason {
+        case phoneCall        // Always pause
+        case siri            // Always pause
+        case systemNotification  // Log and continue
+        case audioFocusLoss  // Log and continue
+        case unknown         // Log and continue
+
+        var description: String {
+            switch self {
+            case .phoneCall: return "Phone Call"
+            case .siri: return "Siri"
+            case .systemNotification: return "System Notification"
+            case .audioFocusLoss: return "Audio Focus Loss"
+            case .unknown: return "Unknown"
+            }
+        }
+    }
+
+    /**
+     * Get current segment recorder for interruption handling
+     */
+    private func getCurrentSegmentRecorder() -> AVAudioRecorder? {
+        return performQueueSafeOperation {
+            return currentSegmentRecorder
+        }
+    }
+
     // MARK: - Private Methods
 
     /**
-     * Start recording a new segment
+     * Start recording a new segment with improved error handling and resource management
      */
-        private func startNewSegment() throws {
+    private func startNewSegment() throws {
         log("startNewSegment() - Getting segment URL for counter: \(segmentCounter)")
         let segmentURL = getSegmentURL(for: segmentCounter)
         log("startNewSegment() - Segment URL: \(segmentURL.path)")
 
         log("startNewSegment() - Creating AVAudioRecorder with settings: \(recordingSettings)")
         do {
-            currentSegmentRecorder = try AVAudioRecorder(url: segmentURL, settings: recordingSettings)
-            log("startNewSegment() - AVAudioRecorder created successfully")
+            let recorder = try AVAudioRecorder(url: segmentURL, settings: recordingSettings)
+            recorder.delegate = self
+
+            // Use prepareToRecord() before attempting to record
+            if !recorder.prepareToRecord() {
+                log("startNewSegment() - prepareToRecord() failed")
+                throw SegmentRecordingError.recordingStartFailed
+            }
+
+            currentSegmentRecorder = recorder
+            log("startNewSegment() - AVAudioRecorder created and prepared successfully")
+        } catch let error as SegmentRecordingError {
+            log("startNewSegment() - SegmentRecordingError: \(error.localizedDescription)")
+            throw error
         } catch {
             log("startNewSegment() - Failed to create AVAudioRecorder: \(error.localizedDescription)")
-            throw error
+            throw SegmentRecordingError.recorderCreationFailed(error)
         }
-
-        currentSegmentRecorder?.delegate = self
-        log("startNewSegment() - Delegate set")
 
         guard let recorder = currentSegmentRecorder else {
             log("startNewSegment() - Current segment recorder is nil after creation")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Current segment recorder is nil"])
+            throw SegmentRecordingError.recordingStartFailed
         }
 
         log("startNewSegment() - Starting recording on AVAudioRecorder")
         if !recorder.record() {
             log("startNewSegment() - recorder.record() returned false")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to start segment recording"])
+            // Clean up the failed recorder
+            recorder.delegate = nil
+            currentSegmentRecorder = nil
+            throw SegmentRecordingError.recordingStartFailed
         }
 
         log("Started segment \(segmentCounter)")
@@ -436,17 +820,22 @@ class SegmentRollingManager: NSObject {
 
     /**
      * Rotate to next segment - called by timer (only in segment rolling mode)
+     * Uses throttled logging to prevent UI lag
      */
     private func rotateSegment() {
         queue.async {
             guard self.isActive && self.useSegmentRolling else { return }
 
             let totalElapsed = self.recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
-            self.log("Rotating segment \(self.segmentCounter) after 30s (total elapsed: \(totalElapsed)s)")
+            self.throttledLog("Rotating segment \(self.segmentCounter) after 30s (total elapsed: \(totalElapsed)s)",
+                            throttleKey: "segment_rotation", maxFrequency: 5.0)
 
-            // Stop current segment
+            // Stop current segment with aggressive cleanup
             if let recorder = self.currentSegmentRecorder {
-                recorder.stop()
+                if recorder.isRecording {
+                    recorder.stop()
+                }
+                recorder.delegate = nil
 
                 // Add completed segment to buffer
                 let segmentURL = self.getSegmentURL(for: self.segmentCounter)
@@ -456,9 +845,12 @@ class SegmentRollingManager: NSObject {
             // Move to next segment
             self.segmentCounter += 1
 
-            // Start new segment
+            // Start new segment with error handling
             do {
                 try self.startNewSegment()
+            } catch let error as SegmentRecordingError {
+                self.log("SegmentRecordingError during rotation: \(error.localizedDescription)")
+                // Could add delegate callback here for error reporting
             } catch {
                 self.log("Failed to start new segment: \(error.localizedDescription)")
             }
@@ -513,17 +905,25 @@ class SegmentRollingManager: NSObject {
             effectiveMaxSegments = AudioEngineConstants.maxSegments
         }
 
-        // Remove oldest segments if over limit
+        // Batch remove oldest segments if over limit to minimize filesystem overhead
+        var segmentsToRemove: [URL] = []
         while segmentBuffer.count > effectiveMaxSegments {
             let oldestSegment = segmentBuffer.removeFirst()
+            segmentsToRemove.append(oldestSegment)
+        }
 
-            // Delete old segment file
-            do {
-                try FileManager.default.removeItem(at: oldestSegment)
-                log("Removed old segment: \(oldestSegment.lastPathComponent) - maintaining rolling window of \(effectiveMaxSegments) segments")
-            } catch {
-                log("Failed to remove old segment: \(error.localizedDescription)")
+        // Batch delete old segment files
+        if !segmentsToRemove.isEmpty {
+            for segmentURL in segmentsToRemove {
+                do {
+                    try FileManager.default.removeItem(at: segmentURL)
+                    throttledLog("Removed old segment: \(segmentURL.lastPathComponent)",
+                               throttleKey: "segment_removal", maxFrequency: 2.0)
+                } catch {
+                    log("Failed to remove old segment: \(error.localizedDescription)")
+                }
             }
+            log("Batched removal of \(segmentsToRemove.count) old segments - maintaining rolling window of \(effectiveMaxSegments) segments")
         }
 
         if segmentBuffer.count % 5 == 0 || segmentBuffer.count >= effectiveMaxSegments {
@@ -540,8 +940,7 @@ class SegmentRollingManager: NSObject {
 
         guard !segmentBuffer.isEmpty else {
             log("Error: No segments to merge")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "No segments to merge"])
+            throw SegmentRecordingError.noValidSegments
         }
 
         // Create output file
@@ -554,8 +953,7 @@ class SegmentRollingManager: NSObject {
 
         guard let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
             log("Error: Failed to create audio track for composition")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to create audio track"])
+            throw SegmentRecordingError.audioTrackCreationFailed
         }
 
         var insertTime = CMTime.zero
@@ -586,8 +984,7 @@ class SegmentRollingManager: NSObject {
 
         guard successfulSegments > 0 else {
             log("Error: No segments could be added to composition")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "No valid segments to merge"])
+            throw SegmentRecordingError.noValidSegments
         }
 
         log("Added \(successfulSegments) segments to composition, starting export...")
@@ -595,8 +992,7 @@ class SegmentRollingManager: NSObject {
         // Export merged composition
         guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
             log("Error: Failed to create export session")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to create export session"])
+            throw SegmentRecordingError.exportSessionCreationFailed
         }
 
         exportSession.outputURL = outputURL
@@ -607,7 +1003,7 @@ class SegmentRollingManager: NSObject {
         var exportError: Error?
 
         log("Starting export session...")
-        exportSession.exportAsynchronously { @Sendable in
+        exportSession.exportAsynchronously {
             if exportSession.status == .failed {
                 exportError = exportSession.error
             }
@@ -624,8 +1020,7 @@ class SegmentRollingManager: NSObject {
 
         if exportSession.status != .completed {
             log("Export failed with status: \(exportSession.status)")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Export failed with status: \(exportSession.status)"])
+            throw SegmentRecordingError.exportFailed("\(exportSession.status)")
         }
 
         log("Successfully merged \(segmentBuffer.count) segments into: \(outputURL.lastPathComponent)")
@@ -635,6 +1030,12 @@ class SegmentRollingManager: NSObject {
 
     /**
      * Trim merged file to specified duration
+     *
+     * Assumptions in trimming logic:
+     * - The rolling buffer maintains enough segments to ensure we can extract exactly maxDuration seconds
+     * - We keep 1 extra segment beyond the required amount to guarantee sufficient audio for precise trimming
+     * - We always extract the LAST maxDuration seconds from the merged file (not the first)
+     * - This matches Android behavior for consistent cross-platform experience
      */
     private func trimMergedFile(_ sourceURL: URL, maxDuration: TimeInterval) throws -> URL {
         log("Starting trimMergedFile: source=\(sourceURL.lastPathComponent), maxDuration=\(maxDuration)")
@@ -673,8 +1074,7 @@ class SegmentRollingManager: NSObject {
         // Create export session
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
             log("Error: Failed to create export session for trimming")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "Failed to create export session for trimming"])
+            throw SegmentRecordingError.exportSessionCreationFailed
         }
 
         exportSession.outputURL = trimmedURL
@@ -686,7 +1086,7 @@ class SegmentRollingManager: NSObject {
         var exportError: Error?
 
         log("Starting trim export...")
-        exportSession.exportAsynchronously { @Sendable in
+        exportSession.exportAsynchronously {
             if exportSession.status == .failed {
                 exportError = exportSession.error
             }
@@ -703,8 +1103,7 @@ class SegmentRollingManager: NSObject {
 
         if exportSession.status != .completed {
             log("Trim export failed with status: \(exportSession.status)")
-            throw NSError(domain: "SegmentRollingManager", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "Audio trimming failed with status: \(exportSession.status)"])
+            throw SegmentRecordingError.trimExportFailed("\(exportSession.status)")
         }
 
         log("Successfully trimmed merged file from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds)")
@@ -752,17 +1151,26 @@ class SegmentRollingManager: NSObject {
     }
 
     /**
-     * Clean up all segment files
+     * Clean up all segment files with aggressive error handling
      */
     private func cleanupSegments() {
+        var cleanupErrors: [Error] = []
+
         for segmentURL in segmentBuffer {
             do {
                 try FileManager.default.removeItem(at: segmentURL)
+                throttledLog("Cleaned up segment: \(segmentURL.lastPathComponent)",
+                           throttleKey: "cleanup", maxFrequency: 1.0)
             } catch {
                 log("Failed to cleanup segment: \(error.localizedDescription)")
+                cleanupErrors.append(error)
             }
         }
         segmentBuffer.removeAll()
+        // Log summary of cleanup issues if any
+        if !cleanupErrors.isEmpty {
+            log("Cleanup completed with \(cleanupErrors.count) errors out of \(segmentBuffer.count) segments")
+        }
     }
 
     /**
@@ -814,35 +1222,54 @@ class SegmentRollingManager: NSObject {
         cleanup()
     }
 
-    /// Comprehensive cleanup of all segment rolling resources
+    /// Comprehensive cleanup of all segment rolling resources with improved error handling
     func cleanup() {
-        queue.sync {
+        performQueueSafeOperation {
             log("Starting SegmentRollingManager cleanup")
 
-            // Stop timer
-            segmentTimer?.invalidate()
-            segmentTimer = nil
+            // Stop timer with main queue safety
+            DispatchQueue.main.async {
+                self.segmentTimer?.invalidate()
+                self.segmentTimer = nil
+            }
 
-            // Stop current recorder
+            // Aggressive recorder cleanup - stop and deallocate immediately
             if let recorder = currentSegmentRecorder {
                 if recorder.isRecording {
                     recorder.stop()
                 }
                 recorder.delegate = nil
                 currentSegmentRecorder = nil
+                log("Audio recorder stopped and deallocated")
             }
+            // Remove audio interruption observers
+            removeAudioInterruptionHandling()
 
             // Clean up temporary segment files
             cleanupSegments()
 
-            // Deactivate audio session
+            // Harden audio session deactivation with retry logic
             if let session = recordingSession {
-                do {
-                    try session.setActive(false, options: .notifyOthersOnDeactivation)
-                    recordingSession = nil
-                    log("SegmentRollingManager audio session deactivated")
-                } catch {
-                    log("Warning: Failed to deactivate segment rolling audio session: \(error.localizedDescription)")
+                var deactivationSuccess = false
+                let maxRetries = 3
+
+                for attempt in 1...maxRetries {
+                    do {
+                        try session.setActive(false, options: .notifyOthersOnDeactivation)
+                        recordingSession = nil
+                        deactivationSuccess = true
+                        log("SegmentRollingManager audio session deactivated successfully on attempt \(attempt)")
+                        break
+                    } catch {
+                        log("Warning: Failed to deactivate segment rolling audio session (attempt \(attempt)/\(maxRetries)): \(error.localizedDescription)")
+                        if attempt == maxRetries {
+                            log("Audio session deactivation failed after \(maxRetries) attempts - forcing nil assignment")
+                            recordingSession = nil
+                        } else {
+                            // Brief delay before retry
+                            Thread.sleep(forTimeInterval: 0.1)
+                        }
+                    }
                 }
             }
 

@@ -79,6 +79,12 @@ class RecordingManager: NSObject {
     /// Dedicated queue for thread-safe state operations
     private let stateQueue = DispatchQueue(label: "audio-engine-state", qos: .userInteractive)
 
+    // MARK: - Initialization
+
+    override init() {
+        super.init()
+    }
+
     /// Current async processing task for cancellation support
     private var processingTask: Task<Void, Never>?
 
@@ -180,10 +186,7 @@ class RecordingManager: NSObject {
     }
 
     private func startLinearRecording(with settings: [String: Any]) {
-        let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
-        let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-        let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
-
+        // Variables extracted in startLinearRecordingInternal where they're actually used
         performStateOperation {
             startLinearRecordingInternal(with: settings)
         }
@@ -195,11 +198,16 @@ class RecordingManager: NSObject {
         let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
 
         do {
-            // Configure audio session
+            // Configure audio session for recording
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
+            try audioSession.setCategory(.playAndRecord,
+                                       mode: .measurement,
+                                       options: [.allowBluetooth, .defaultToSpeaker, .mixWithOthers, .duckOthers])
             try audioSession.setActive(true)
             self.recordingSession = audioSession
+
+            // Set up interruption handling for linear recording
+            setupAudioInterruptionHandling()
 
             // Create recording settings
             let recordingSettings: [String: Any] = [
@@ -224,6 +232,8 @@ class RecordingManager: NSObject {
             if self.audioRecorder?.record() == true {
                 self.isRecording = true
                 self.currentDuration = 0
+
+
 
                 // Start duration monitoring
                 self.startDurationMonitoring()
@@ -366,7 +376,7 @@ class RecordingManager: NSObject {
      *
      * Performance Characteristics:
      * - Returns immediately (non-blocking)
-     * - File processing happens asynchronously in background
+     * - File processing happens asynchronously
      * - Base64 generation uses streaming for memory efficiency
      * - Supports cancellation of in-progress operations
      *
@@ -454,13 +464,16 @@ class RecordingManager: NSObject {
                 // Stop recording
                 recorder.stop()
 
+                // Remove interruption handling for linear recording
+                self.removeAudioInterruptionHandling()
+
                 // Process recording file
                 if let recordingPath = self.recordingPath {
                     // If maxDuration is set for linear recording, trim the file first
                     if let maxDuration = self.maxDuration, !self.isSegmentRollingEnabled {
                         self.log("Linear recording with maxDuration: \(maxDuration)s, checking if trimming is needed")
 
-                        DispatchQueue.global(qos: .userInitiated).async {
+                        Task {
                             do {
                                 let asset = AVAsset(url: recordingPath)
                                 let actualDuration = asset.duration.seconds
@@ -469,7 +482,7 @@ class RecordingManager: NSObject {
 
                                 if actualDuration > maxDuration {
                                     self.log("Trimming linear recording from \(actualDuration)s to \(maxDuration)s")
-                                    let trimmedURL = try self.trimAudioFile(recordingPath, maxDuration: maxDuration)
+                                    let trimmedURL = try await self.trimAudioFile(recordingPath, maxDuration: maxDuration)
                                     self.processRecordingFile(trimmedURL)
                                 } else {
                                     self.log("Linear recording already within maxDuration, no trimming needed")
@@ -531,7 +544,8 @@ class RecordingManager: NSObject {
      *   - maxDuration: Maximum duration in seconds
      * - returns: URL of the trimmed audio file
      */
-    private func trimAudioFile(_ sourceURL: URL, maxDuration: TimeInterval) throws -> URL {
+    @available(iOS 13.0, *)
+    private func trimAudioFile(_ sourceURL: URL, maxDuration: TimeInterval) async throws -> URL {
         let asset = AVAsset(url: sourceURL)
         let duration = asset.duration.seconds
 
@@ -564,26 +578,24 @@ class RecordingManager: NSObject {
         exportSession.outputFileType = .m4a
         exportSession.timeRange = timeRange
 
-        // Use semaphore to wait for export completion
-        let semaphore = DispatchSemaphore(value: 0)
-        var exportError: Error?
-
-        exportSession.exportAsynchronously {
-            if exportSession.status == .failed {
-                exportError = exportSession.error
+        // Wait for export completion using continuation
+        let finalURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            nonisolated(unsafe) let session = exportSession
+            session.exportAsynchronously {
+                if session.status == .failed {
+                    if let error = session.error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(throwing: NSError(domain: "AudioEngine", code: -1,
+                                                           userInfo: [NSLocalizedDescriptionKey: "Export failed with unknown error"]))
+                    }
+                } else if session.status == .completed {
+                    continuation.resume(returning: trimmedURL)
+                } else {
+                    continuation.resume(throwing: NSError(domain: "AudioEngine", code: -1,
+                                                       userInfo: [NSLocalizedDescriptionKey: "Audio trimming failed with status: \(session.status)"]))
+                }
             }
-            semaphore.signal()
-        }
-
-        semaphore.wait()
-
-        if let error = exportError {
-            throw error
-        }
-
-        if exportSession.status != .completed {
-            throw NSError(domain: "AudioEngine", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "Audio trimming failed with status: \(exportSession.status)"])
         }
 
         log("Successfully trimmed audio from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds)")
@@ -591,7 +603,7 @@ class RecordingManager: NSObject {
         // Clean up original file
         try FileManager.default.removeItem(at: sourceURL)
 
-        return trimmedURL
+        return finalURL
     }
 
     func switchMicrophone(to id: Int) {
@@ -871,6 +883,8 @@ class RecordingManager: NSObject {
     private func cleanup() {
         log("Starting comprehensive cleanup")
 
+
+
         // Cancel any running processing tasks
         processingTask?.cancel()
         processingTask = nil
@@ -890,6 +904,9 @@ class RecordingManager: NSObject {
         // Clean up segment rolling manager
         segmentRollingManager?.cleanup()
         segmentRollingManager = nil
+
+        // Remove interruption handling observers
+        removeAudioInterruptionHandling()
 
         // Reset audio session
         if let session = recordingSession {
@@ -1006,6 +1023,179 @@ class RecordingManager: NSObject {
         }
 
         return (false, "Microphone appears available")
+    }
+
+    // MARK: - Audio Interruption Handling
+
+    /**
+     * Set up audio session interruption handling for linear recording
+     */
+    private func setupAudioInterruptionHandling() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioSessionInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioSessionRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
+        log("Audio interruption handling set up for linear recording")
+    }
+
+    /**
+     * Remove audio session interruption observers
+     */
+    private func removeAudioInterruptionHandling() {
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
+        log("Audio interruption handling removed for linear recording")
+    }
+
+    /**
+     * Handle AVAudioSession interruptions (phone calls, Siri, etc.)
+     */
+    @objc private func handleAudioSessionInterruption(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+        log("Audio session interruption: \(type == .began ? "began" : "ended")")
+
+        switch type {
+        case .began:
+            let interruptionReason = determineInterruptionReason(userInfo)
+            log("Interruption reason: \(interruptionReason)")
+
+            switch interruptionReason {
+            case .phoneCall, .siri:
+                log("Critical interruption (\(interruptionReason)) - pausing linear recording")
+                pauseRecording()
+
+            case .systemNotification, .audioFocusLoss, .unknown:
+                log("Non-critical interruption (\(interruptionReason)) - logging and continuing recording")
+                // Continue recording for non-critical interruptions
+
+                // Ensure audio session remains active for minor interruptions
+                do {
+                    let audioSession = AVAudioSession.sharedInstance()
+                    if !audioSession.isOtherAudioPlaying {
+                        try audioSession.setActive(true)
+                        log("Reactivated audio session during non-critical interruption")
+                    }
+                } catch {
+                    log("Warning: Could not reactivate audio session: \(error.localizedDescription)")
+                }
+            }
+
+        case .ended:
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    log("Resuming linear recording after interruption")
+                    do {
+                        // Reactivate audio session
+                        try AVAudioSession.sharedInstance().setActive(true)
+
+                        // Resume recording if it was paused
+                        if !isRecording {
+                            resumeRecording()
+                        }
+                    } catch {
+                        log("Failed to resume linear recording after interruption: \(error.localizedDescription)")
+                        delegate?.recordingDidEncounterError(error)
+                    }
+                }
+            }
+
+        @unknown default:
+            log("Unknown audio session interruption type: \(typeValue)")
+        }
+    }
+
+    /**
+     * Handle AVAudioSession route changes (headphone connect/disconnect, etc.)
+     */
+    @objc private func handleAudioSessionRouteChange(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+
+        log("Audio route changed: \(reason.rawValue)")
+
+        switch reason {
+        case .oldDeviceUnavailable:
+            log("Old audio device unavailable (e.g., headphones disconnected)")
+            // Continue recording on built-in microphone
+
+        case .newDeviceAvailable:
+            log("New audio device available (e.g., headphones connected)")
+
+        default:
+            log("Other audio route change: \(reason.rawValue)")
+        }
+    }
+
+    /**
+     * Determine interruption reason - enhanced phone call detection
+     */
+    private func determineInterruptionReason(_ userInfo: [AnyHashable: Any]) -> InterruptionReason {
+        log("Determining interruption reason from userInfo: \(userInfo)")
+
+        // Enhanced phone call detection
+        let audioSession = AVAudioSession.sharedInstance()
+
+        // Method 1: Check if other audio is playing (phone call audio)
+        if audioSession.isOtherAudioPlaying {
+            log("Other audio is playing during interruption - likely phone call")
+            return .phoneCall
+        }
+
+        // Method 2: Check current route for phone call indicators
+        let currentRoute = audioSession.currentRoute
+        log("Current audio route outputs: \(currentRoute.outputs.map { $0.portType.rawValue })")
+
+        for output in currentRoute.outputs {
+            if output.portType == .builtInReceiver {
+                log("Audio route using built-in receiver port - indicating phone call")
+                return .phoneCall
+            }
+        }
+
+        // For safety, default to phone call to prevent file corruption
+        // Better to pause unnecessarily than to corrupt the recording
+        log("Defaulting to phone call for safety (prevents file corruption)")
+        return .phoneCall
+    }
+
+    /**
+     * Interruption reason categories
+     */
+    private enum InterruptionReason {
+        case phoneCall
+        case siri
+        case systemNotification
+        case audioFocusLoss
+        case unknown
+
+        var description: String {
+            switch self {
+            case .phoneCall: return "Phone Call"
+            case .siri: return "Siri"
+            case .systemNotification: return "System Notification"
+            case .audioFocusLoss: return "Audio Focus Loss"
+            case .unknown: return "Unknown"
+            }
+        }
     }
 
     // MARK: - Utility Methods

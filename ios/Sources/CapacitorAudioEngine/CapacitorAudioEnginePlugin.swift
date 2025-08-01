@@ -58,6 +58,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         return try stateQueue.sync { try operation() }
     }
 
+    // MARK: - Playback Info Caching
+    private var cachedPlaybackInfo: [String: Any]?
+    private var lastPlaybackInfoUpdate: TimeInterval = 0
+    private let playbackInfoCacheInterval: TimeInterval = 0.5 // Cache for 500ms
+
+    private func invalidatePlaybackInfoCache() {
+        cachedPlaybackInfo = nil
+        lastPlaybackInfoUpdate = 0
+    }
+
     // MARK: - Logging Utility
 
     private func log(_ message: String) {
@@ -143,10 +153,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         playbackManager.delegate = self
 
         // Set up initial audio session that supports both recording and playback
-        // Note: Don't set .mixWithOthers for better audio quality during playback
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+            try audioSession.setCategory(.playAndRecord,
+                                       mode: .default,
+                                       options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers, .duckOthers])
             // Don't activate the session yet - let individual managers handle activation
             log("Initial audio session configured for recording and playback")
         } catch {
@@ -544,10 +555,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             return
         }
 
+        print("CapacitorAudioEnginePlugin: preloadTracks called with \(tracksArray.count) tracks")
+        for (index, url) in tracksArray.enumerated() {
+            print("CapacitorAudioEnginePlugin: Track \(index): \(url)")
+        }
+
         var tracks: [AudioTrack] = []
 
         for (index, url) in tracksArray.enumerated() {
             if url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                print("CapacitorAudioEnginePlugin: Empty URL at index \(index)")
                 call.reject("Invalid track URL at index \(index)")
                 return
             }
@@ -555,21 +572,33 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             // Create AudioTrack with URL, generating ID and no additional metadata
             let track = AudioTrack(id: "track_\(index)", url: url, title: nil, artist: nil, artworkUrl: nil)
             tracks.append(track)
+            print("CapacitorAudioEnginePlugin: Created track \(index) with URL: \(url)")
         }
 
         let preloadNext = call.getBool("preloadNext") ?? true
+        print("CapacitorAudioEnginePlugin: preloadNext = \(preloadNext)")
 
         do {
+            print("CapacitorAudioEnginePlugin: Calling playbackManager.preloadTracks")
             try playbackManager.preloadTracks(trackUrls: tracksArray, preloadNext: preloadNext)
+            print("CapacitorAudioEnginePlugin: preloadTracks completed successfully")
             call.resolve()
         } catch {
+            print("CapacitorAudioEnginePlugin: preloadTracks failed with error: \(error)")
+            print("CapacitorAudioEnginePlugin: Error details: \(error.localizedDescription)")
             call.reject("Failed to preload tracks: \(error.localizedDescription)")
         }
     }
 
     @objc func playAudio(_ call: CAPPluginCall) {
         do {
-            try playbackManager.play()
+            if let url = call.getString("url") {
+                // Play specific preloaded track by URL
+                try playbackManager.playByUrl(url)
+            } else {
+                // Play current track
+                try playbackManager.play()
+            }
             call.resolve()
         } catch {
             call.reject("Failed to play audio: \(error.localizedDescription)")
@@ -577,17 +606,35 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     @objc func pauseAudio(_ call: CAPPluginCall) {
-        playbackManager.pause()
+        if let url = call.getString("url") {
+            // Pause specific preloaded track by URL
+            playbackManager.pauseByUrl(url)
+        } else {
+            // Pause current track
+            playbackManager.pause()
+        }
         call.resolve()
     }
 
     @objc func resumeAudio(_ call: CAPPluginCall) {
-        playbackManager.resume()
+        if let url = call.getString("url") {
+            // Resume specific preloaded track by URL
+            playbackManager.resumeByUrl(url)
+        } else {
+            // Resume current track
+            playbackManager.resume()
+        }
         call.resolve()
     }
 
     @objc func stopAudio(_ call: CAPPluginCall) {
-        playbackManager.stop()
+        if let url = call.getString("url") {
+            // Stop specific preloaded track by URL
+            playbackManager.stopByUrl(url)
+        } else {
+            // Stop current track
+            playbackManager.stop()
+        }
         call.resolve()
     }
 
@@ -597,7 +644,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             return
         }
 
-        playbackManager.seek(to: seconds)
+        if let url = call.getString("url") {
+            // Seek in specific preloaded track by URL
+            playbackManager.seekByUrl(url, to: seconds)
+        } else {
+            // Seek in current track
+            playbackManager.seek(to: seconds)
+        }
         call.resolve()
     }
 
@@ -622,6 +675,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     @objc func getPlaybackInfo(_ call: CAPPluginCall) {
+        let now = CACurrentMediaTime()
+
+        // Return cached result if within cache interval
+        if let cached = cachedPlaybackInfo,
+           now - lastPlaybackInfoUpdate < playbackInfoCacheInterval {
+            call.resolve(cached)
+            return
+        }
+
+        // Generate fresh playback info
         var result: [String: Any] = [:]
 
         if let currentTrack = playbackManager.getCurrentTrack() {
@@ -633,7 +696,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
                 "artworkUrl": currentTrack.artworkUrl ?? ""
             ]
         } else {
-            result["currentTrack"] = nil
+            result["currentTrack"] = NSNull()
         }
 
         result["currentIndex"] = playbackManager.getCurrentIndex()
@@ -641,6 +704,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         result["duration"] = playbackManager.getDuration()
         result["isPlaying"] = playbackManager.isPlaying()
         result["status"] = statusToString(playbackManager.getStatus())
+
+        // Cache the result
+        cachedPlaybackInfo = result
+        lastPlaybackInfoUpdate = now
 
         call.resolve(result)
     }
@@ -658,6 +725,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     // MARK: - PlaybackManagerDelegate Implementation
 
     func playbackManager(_ manager: PlaybackManager, trackDidChange track: AudioTrack, at index: Int) {
+        invalidatePlaybackInfoCache()
+
         let data: [String: Any] = [
             "track": [
                 "id": track.id,
@@ -672,6 +741,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     func playbackManager(_ manager: PlaybackManager, trackDidEnd track: AudioTrack, at index: Int) {
+        invalidatePlaybackInfoCache()
+
         let data: [String: Any] = [
             "track": [
                 "id": track.id,
@@ -686,6 +757,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     func playbackManager(_ manager: PlaybackManager, playbackDidStart track: AudioTrack, at index: Int) {
+        invalidatePlaybackInfoCache()
+
         let data: [String: Any] = [
             "track": [
                 "id": track.id,
@@ -700,6 +773,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     func playbackManager(_ manager: PlaybackManager, playbackDidPause track: AudioTrack, at index: Int) {
+        invalidatePlaybackInfoCache()
+
         let data: [String: Any] = [
             "track": [
                 "id": track.id,
@@ -719,6 +794,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     func playbackManager(_ manager: PlaybackManager, playbackProgress track: AudioTrack, at index: Int, currentPosition: Double, duration: Double, isPlaying: Bool) {
+        // Only send progress events, don't invalidate cache as these are frequent updates
+        // Cache invalidation is handled by state change events
         let data: [String: Any] = [
             "track": [
                 "id": track.id,
@@ -736,6 +813,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     func playbackManager(_ manager: PlaybackManager, statusChanged track: AudioTrack?, at index: Int, status: PlaybackStatus, currentPosition: Double, duration: Double, isPlaying: Bool) {
+        invalidatePlaybackInfoCache()
+
         var data: [String: Any] = [
             "index": index,
             "status": statusToString(status),
@@ -745,7 +824,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         ]
 
         if let track = track {
-            data["track"] = [
+            data["currentTrack"] = [
                 "id": track.id,
                 "url": track.url,
                 "title": track.title ?? "",
@@ -753,7 +832,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
                 "artworkUrl": track.artworkUrl ?? ""
             ]
         } else {
-            data["track"] = NSNull()
+            data["currentTrack"] = NSNull()
         }
 
         notifyListeners("playbackStatusChanged", data: data)
