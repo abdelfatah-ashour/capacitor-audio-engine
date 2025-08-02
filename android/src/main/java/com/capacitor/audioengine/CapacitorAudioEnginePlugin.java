@@ -26,6 +26,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 @CapacitorPlugin(
     name = "CapacitorAudioEngine",
@@ -171,14 +172,31 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
     @PluginMethod
-    public void checkPermission(PluginCall call) {
+    public void checkPermissions(PluginCall call) {
         JSObject result = permissionManager.checkPermissions();
         call.resolve(result);
     }
 
     @PluginMethod
-    public void requestPermission(PluginCall call) {
+    public void requestPermissions(PluginCall call) {
         permissionManager.requestPermissions(call);
+    }
+
+    // Backward compatibility methods (deprecated)
+    @PluginMethod
+    public void checkPermission(PluginCall call) {
+        checkPermissions(call);
+    }
+
+    @PluginMethod
+    public void requestPermission(PluginCall call) {
+        requestPermissions(call);
+    }
+
+    @PermissionCallback
+    private void permissionCallback(PluginCall call) {
+        JSObject result = permissionManager.checkPermissions();
+        call.resolve(result);
     }
 
   // Implementation of PermissionRequestCallback interface
