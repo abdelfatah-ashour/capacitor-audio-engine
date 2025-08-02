@@ -433,7 +433,7 @@ export class FeaturesDemoComponent {
     } catch (error) {
       console.error('Failed to stop recording:', error);
       // Only show toast if it's not a "no active recording" error (which can happen with multiple clicks)
-      if (!error.toString().includes('No active recording to stop')) {
+      if (!error?.toString().includes('No active recording to stop')) {
         await this.showToast('Failed to stop recording', 'danger');
       }
     }

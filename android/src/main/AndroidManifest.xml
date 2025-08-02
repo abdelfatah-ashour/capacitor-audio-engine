@@ -26,6 +26,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application>
+        <!-- Declare support for 16KB page size -->
+        <property android:name="android.supports_page_size_16kb" android:value="true" />
 
 
         <!-- Foreground service for background audio recording -->
