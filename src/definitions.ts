@@ -193,6 +193,18 @@ export interface PreloadTracksOptions {
   preloadNext?: boolean;
 }
 
+export interface PreloadedTrackInfo {
+  url: string;
+  loaded: boolean;
+  mimeType?: string;
+  duration?: number;
+  size?: number;
+}
+
+export interface PreloadTracksResult {
+  tracks: PreloadedTrackInfo[];
+}
+
 export interface PlaybackInfo {
   currentTrack: AudioTrack | null;
   currentIndex: number;
@@ -427,12 +439,12 @@ export interface CapacitorAudioEnginePlugin {
   /**
    * Preload audio tracks from URLs and initialize playlist
    * @param options - Preload options containing track URLs and preload settings
-   * @returns Promise that resolves when tracks are preloaded
+   * @returns Promise that resolves with preload results for each track including load status, mimetype, duration, and file size
    * @platform web Uses HTML5 Audio API
    * @platform android Uses ExoPlayer with ConcatenatingMediaSource
    * @platform ios Uses AVQueuePlayer or AVPlayer with queue management
    */
-  preloadTracks(options: PreloadTracksOptions): Promise<void>;
+  preloadTracks(options: PreloadTracksOptions): Promise<PreloadTracksResult>;
 
   /**
    * Start or resume playback of current track or specific preloaded track by URL

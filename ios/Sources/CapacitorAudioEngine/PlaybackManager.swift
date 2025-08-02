@@ -84,7 +84,7 @@ class PlaybackManager: NSObject {
 
     // MARK: - Public Methods
 
-    func preloadTracks(trackUrls: [String], preloadNext: Bool = true) throws {
+    func preloadTracks(trackUrls: [String], preloadNext: Bool = true) throws -> [[String: Any]] {
         guard !trackUrls.isEmpty else {
             throw PlaybackError.emptyPlaylist
         }
@@ -96,13 +96,14 @@ class PlaybackManager: NSObject {
 
         // Check if we're already on the playback queue to avoid deadlock
         if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            try preloadTracksInternal(tracks, preloadNext: preloadNext)
+            return try preloadTracksInternal(tracks, preloadNext: preloadNext)
         } else {
             var thrownError: Error?
+            var result: [[String: Any]] = []
 
             playbackQueue.sync {
                 do {
-                    try self.preloadTracksInternal(tracks, preloadNext: preloadNext)
+                    result = try self.preloadTracksInternal(tracks, preloadNext: preloadNext)
                 } catch {
                     thrownError = error
                 }
@@ -111,10 +112,12 @@ class PlaybackManager: NSObject {
             if let error = thrownError {
                 throw error
             }
+
+            return result
         }
     }
 
-    private func preloadTracksInternal(_ tracks: [AudioTrack], preloadNext: Bool) throws {
+    private func preloadTracksInternal(_ tracks: [AudioTrack], preloadNext: Bool) throws -> [[String: Any]] {
         cleanup()
 
         self.playlist = tracks
@@ -122,54 +125,93 @@ class PlaybackManager: NSObject {
         self.currentIndex = 0
         self.status = .loading
 
-        // Validate URLs and create player items
+        // Track results for each URL
+        var trackResults: [[String: Any]] = []
         var validPlayerItems: [AVPlayerItem] = []
+
         for track in tracks {
-            let url: URL
+            var trackInfo: [String: Any] = ["url": track.url]
+
+            let url: URL?
 
             // Handle different URL formats (remote URLs, file URIs, and local paths)
             if track.url.hasPrefix("http://") || track.url.hasPrefix("https://") {
                 // Remote URL
-                guard let remoteUrl = URL(string: track.url) else {
+                if let remoteUrl = URL(string: track.url) {
+                    url = remoteUrl
+                } else {
                     print("Invalid remote URL for track: \(track.title ?? track.id)")
-                    continue
+                    url = nil
                 }
-                url = remoteUrl
             } else if track.url.hasPrefix("file://") {
                 // File URI
-                guard let fileUrl = URL(string: track.url) else {
+                if let fileUrl = URL(string: track.url) {
+                    url = fileUrl
+                } else {
                     print("Invalid file URI for track: \(track.title ?? track.id)")
-                    continue
+                    url = nil
                 }
-                url = fileUrl
             } else {
                 // Assume it's a local file path
-                url = URL(fileURLWithPath: track.url)
+                let fileUrl = URL(fileURLWithPath: track.url)
 
                 // Verify that the file exists for local paths
-                guard FileManager.default.fileExists(atPath: url.path) else {
+                if FileManager.default.fileExists(atPath: fileUrl.path) {
+                    url = fileUrl
+                } else {
                     print("File does not exist for track: \(track.title ?? track.id) at path: \(track.url)")
-                    continue
+                    url = nil
                 }
             }
 
-            // Create player item and check if it's valid
-            print("PlaybackManager: Creating AVPlayerItem for URL: \(url)")
-            print("PlaybackManager: URL absolute string: \(url.absoluteString)")
-            print("PlaybackManager: URL path: \(url.path)")
+            if let validUrl = url {
+                // Create player item and extract metadata
+                let playerItem = AVPlayerItem(url: validUrl)
+                let asset = playerItem.asset
 
-            let playerItem = AVPlayerItem(url: url)
-            print("PlaybackManager: AVPlayerItem created successfully")
-            validPlayerItems.append(playerItem)
-        }
+                // For preloading, we'll do minimal synchronous checks and defer heavy loading
+                // This avoids priority inversion while still providing useful information
 
-        guard !validPlayerItems.isEmpty else {
-            throw PlaybackError.invalidTrackUrl("No valid tracks found")
+                // Get basic file information synchronously (fast operations)
+                // Get MIME type from file extension or asset
+                if let mimeType = getMimeType(for: validUrl) {
+                    trackInfo["mimeType"] = mimeType
+                }
+
+                // Get file size for local files (fast for local files)
+                if validUrl.isFileURL {
+                    do {
+                        let attributes = try FileManager.default.attributesOfItem(atPath: validUrl.path)
+                        if let fileSize = attributes[.size] as? NSNumber {
+                            trackInfo["size"] = fileSize.intValue
+                        }
+                    } catch {
+                        print("Failed to get file size for: \(track.url)")
+                    }
+                }
+
+                // For duration, we'll try synchronous access first (works for many formats)
+                let duration = CMTimeGetSeconds(asset.duration)
+                if !duration.isNaN && duration.isFinite && duration > 0 {
+                    trackInfo["duration"] = duration
+                } else {
+                    // Duration not immediately available - will be loaded asynchronously later
+                    // Mark as unknown for now
+                    trackInfo["duration"] = 0.0
+                }
+
+                validPlayerItems.append(playerItem)
+                trackInfo["loaded"] = true
+            } else {
+                trackInfo["loaded"] = false
+            }
+
+            trackResults.append(trackInfo)
         }
 
         self.playerItems = validPlayerItems
 
-        // Initialize player with first item
+        // Initialize player with first valid item if any exist
         if let firstItem = self.playerItems.first {
             self.player = AVPlayer(playerItem: firstItem)
             self.setupPlayerObservers()
@@ -178,6 +220,60 @@ class PlaybackManager: NSObject {
             // Preload next track if enabled
             if self.preloadNext && self.playerItems.count > 1 {
                 self.preloadTrack(at: 1)
+            }
+        } else {
+            self.status = .idle
+        }
+
+        // Load complete metadata asynchronously in the background
+        // This avoids blocking the initial preload response
+        self.loadCompleteMetadata()
+
+        return trackResults
+    }
+
+    private func getMimeType(for url: URL) -> String? {
+        let pathExtension = url.pathExtension.lowercased()
+
+        switch pathExtension {
+        case "mp3":
+            return "audio/mpeg"
+        case "m4a":
+            return "audio/mp4"
+        case "aac":
+            return "audio/aac"
+        case "wav":
+            return "audio/wav"
+        case "flac":
+            return "audio/flac"
+        case "ogg":
+            return "audio/ogg"
+        default:
+            return "audio/mp4" // Default for iOS
+        }
+    }
+
+    /// Asynchronously load complete metadata for tracks that need it
+    /// This is called after the initial fast preload to fill in missing information
+    private func loadCompleteMetadata() {
+        // Load metadata for tracks asynchronously in the background
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+
+            for (index, playerItem) in self.playerItems.enumerated() {
+                let asset = playerItem.asset
+
+                // Only load if duration is not already available
+                let currentDuration = CMTimeGetSeconds(asset.duration)
+                if currentDuration.isNaN || currentDuration <= 0 {
+                    // Load duration asynchronously
+                    asset.loadValuesAsynchronously(forKeys: ["duration"]) {
+                        let duration = CMTimeGetSeconds(asset.duration)
+                        if !duration.isNaN && duration.isFinite && duration > 0 {
+                            print("Loaded duration for track \(index): \(duration) seconds")
+                        }
+                    }
+                }
             }
         }
     }
@@ -891,7 +987,7 @@ class PlaybackManager: NSObject {
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
             } else if let url = URL(string: artworkUrl) {
                 // Load and cache artwork
-                loadArtwork(from: url, trackId: track.id) { [weak self] image in
+                loadArtwork(from: url, trackId: track.id) { image in
                     if let image = image {
                         nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
                     }

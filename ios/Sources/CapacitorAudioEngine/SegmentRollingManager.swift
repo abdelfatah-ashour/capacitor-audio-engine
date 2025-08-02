@@ -512,9 +512,85 @@ class SegmentRollingManager: NSObject {
      * - parameter completion: Completion handler with result containing the merged audio file URL
      */
     func stopSegmentRollingAsync(completion: @escaping (Result<URL, Error>) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
+        // Perform the stop operation on a background queue to avoid QoS priority inversion
+        DispatchQueue.global(qos: .utility).async {
             do {
-                let finalFileURL = try self.stopSegmentRolling()
+                let finalFileURL = try self.performQueueSafeOperation {
+                    guard self.isActive else {
+                        throw SegmentRecordingError.noRecordingToStop
+                    }
+
+                    // Stop timer if using segment rolling
+                    if self.useSegmentRolling {
+                        DispatchQueue.main.sync {
+                            self.segmentTimer?.invalidate()
+                            self.segmentTimer = nil
+                        }
+                    }
+
+                    // Stop current segment recording with aggressive cleanup
+                    if let recorder = self.currentSegmentRecorder {
+                        if recorder.isRecording {
+                            recorder.stop()
+                        }
+                        recorder.delegate = nil
+                        self.currentSegmentRecorder = nil
+                    }
+
+                    let finalFileURL: URL
+
+                    if self.useSegmentRolling {
+                        // Segment rolling mode - add current segment to buffer and merge
+                        self.log("Stopping segment rolling mode")
+
+                        // Add current segment to buffer if it exists and has content
+                        if let lastSegmentURL = self.getLastSegmentURL() {
+                            self.log("Found last segment, adding to buffer")
+                            self.addSegmentToBuffer(lastSegmentURL)
+                        } else {
+                            self.log("No last segment found")
+                        }
+
+                        // Check if we have any segments to merge
+                        if self.segmentBuffer.isEmpty {
+                            self.log("Warning: No segments in buffer, this might be a very short recording")
+                            throw SegmentRecordingError.noValidSegments
+                        }
+
+                        // Merge all segments
+                        let mergedFileURL = try self.mergeSegments()
+
+                        // Apply trimming if maxDuration is set (matching Android behavior)
+                        if let maxDuration = self.maxDuration {
+                            self.log("Applying trimming to merged file with maxDuration: \(maxDuration) seconds")
+                            finalFileURL = try self.trimMergedFile(mergedFileURL, maxDuration: maxDuration)
+                            self.log("Successfully trimmed recording to exact maxDuration")
+                        } else {
+                            finalFileURL = mergedFileURL
+                        }
+
+                        self.log("Stopped segment rolling and merged \(self.segmentBuffer.count) segments")
+                    } else {
+                        // Linear recording mode - return the single recorded file
+                        self.log("Stopping linear recording mode")
+
+                        guard let lastSegmentURL = self.getLastSegmentURL(),
+                              FileManager.default.fileExists(atPath: lastSegmentURL.path) else {
+                            throw SegmentRecordingError.noRecordingFile
+                        }
+
+                        finalFileURL = lastSegmentURL
+                        self.log("Linear recording file ready: \(finalFileURL.path)")
+                    }
+
+                    // Cleanup state
+                    self.isActive = false
+                    self.segmentCounter = 0
+                    self.totalRecordingDuration = 0
+
+                    return finalFileURL
+                }
+
                 DispatchQueue.main.async {
                     completion(.success(finalFileURL))
                 }
@@ -644,10 +720,26 @@ class SegmentRollingManager: NSObject {
         case .newDeviceAvailable:
             log("New audio device available")
 
-        case .categoryChange, .override:
-            log("Audio session category or override changed")
+        case .categoryChange:
+            log("Audio session category changed")
 
-        default:
+        case .override:
+            log("Audio session override changed")
+
+        case .unknown:
+            log("Unknown audio route change reason")
+            break
+        case .wakeFromSleep:
+            log("Wake from sleep")
+            break
+        case .noSuitableRouteForCategory:
+            log("No suitable route for category")
+            break
+        case .routeConfigurationChange:
+            log("Route configuration change")
+            break
+        @unknown default:
+            log("Unknown audio route change reason: \(reason.rawValue)")
             break
         }
     }
@@ -673,13 +765,21 @@ class SegmentRollingManager: NSObject {
                 let reason = AVAudioSession.InterruptionReason(rawValue: reasonValue)
                 log("iOS 14.5+ interruption reason value: \(reasonValue)")
                 switch reason {
-                case .default:
-                    // Default interruptions are often phone calls - check other indicators
-                    log("Default interruption reason - checking for phone call indicators")
-                    break
                 case .builtInMicMuted:
                     log("Built-in mic muted interruption")
                     return .systemNotification
+                case .default:
+                    log("Default interruption reason")
+                    break
+                case .none:
+                    log("No interruption reason")
+                    break
+                case .appWasSuspended:
+                    log("App was suspended")
+                    break
+                case .routeDisconnected:
+                    log("Route disconnected")
+                    break
                 @unknown default:
                     log("Unknown iOS 14.5+ interruption reason: \(reasonValue)")
                     break
@@ -1000,20 +1100,18 @@ class SegmentRollingManager: NSObject {
 
         // Use semaphore to wait for export completion
         let semaphore = DispatchSemaphore(value: 0)
-        var exportError: Error?
 
         log("Starting export session...")
         exportSession.exportAsynchronously {
-            if exportSession.status == .failed {
-                exportError = exportSession.error
-            }
             semaphore.signal()
         }
 
         semaphore.wait()
         log("Export session completed with status: \(exportSession.status)")
 
-        if let error = exportError {
+        // Check for export errors after completion
+        if exportSession.status == .failed {
+            let error = exportSession.error ?? SegmentRecordingError.exportFailed("Unknown export failure")
             log("Export error: \(error.localizedDescription)")
             throw error
         }
@@ -1083,20 +1181,18 @@ class SegmentRollingManager: NSObject {
 
         // Use semaphore to wait for export completion
         let semaphore = DispatchSemaphore(value: 0)
-        var exportError: Error?
 
         log("Starting trim export...")
         exportSession.exportAsynchronously {
-            if exportSession.status == .failed {
-                exportError = exportSession.error
-            }
             semaphore.signal()
         }
 
         semaphore.wait()
         log("Trim export completed with status: \(exportSession.status)")
 
-        if let error = exportError {
+        // Check for export errors after completion
+        if exportSession.status == .failed {
+            let error = exportSession.error ?? SegmentRecordingError.trimExportFailed("Unknown trim export failure")
             log("Trim export error: \(error.localizedDescription)")
             throw error
         }
@@ -1250,14 +1346,12 @@ class SegmentRollingManager: NSObject {
 
             // Harden audio session deactivation with retry logic
             if let session = recordingSession {
-                var deactivationSuccess = false
                 let maxRetries = 3
 
                 for attempt in 1...maxRetries {
                     do {
                         try session.setActive(false, options: .notifyOthersOnDeactivation)
                         recordingSession = nil
-                        deactivationSuccess = true
                         log("SegmentRollingManager audio session deactivated successfully on attempt \(attempt)")
                         break
                     } catch {

@@ -46,6 +46,7 @@ import {
   musicalNotes,
   download,
   checkmarkCircle,
+  closeCircle,
 } from 'ionicons/icons';
 import { addIcons } from 'ionicons';
 import { CapacitorAudioEngine } from '../../../../src';
@@ -62,6 +63,8 @@ import type {
   PlaybackStartedData,
   PlaybackPausedData,
   ErrorEventData,
+  PreloadTracksResult,
+  PreloadedTrackInfo,
 } from '../../../../src';
 
 // Extended interface for demo to track segment rolling metadata
@@ -128,6 +131,7 @@ export class FeaturesDemoComponent {
       musicalNotes,
       download,
       checkmarkCircle,
+      closeCircle,
     });
   }
 
@@ -162,6 +166,7 @@ export class FeaturesDemoComponent {
   // Per-URL Playback signals
   protected readonly trackPlaybackStates = signal<Map<string, PlaybackInfo>>(new Map());
   protected readonly preloadedTracks = signal<Set<string>>(new Set());
+  protected readonly preloadedTrackInfo = signal<PreloadedTrackInfo[]>([]);
   protected readonly realtimeUpdatesActive = signal(false);
 
   // Recorded audio playback signals
@@ -293,6 +298,14 @@ export class FeaturesDemoComponent {
     return this.preloadedTracks().has(url);
   }
 
+  getPreloadedTrackInfo(url: string): PreloadedTrackInfo | null {
+    return this.preloadedTrackInfo().find(info => info.url === url) || null;
+  }
+
+  getTrackTitleByUrl(url: string): string {
+    return this.demoPlaylist.find(t => t.url === url)?.title || 'Unknown Track';
+  }
+
   // Helper methods for template complex operations
   hasAnyTrackPlaying(): boolean {
     return this.demoPlaylist.some(track => this.isTrackPlaying(track.url));
@@ -400,11 +413,13 @@ export class FeaturesDemoComponent {
   }
 
   async stopRecording(): Promise<void> {
+    // Stop UI timer immediately to prevent continuous getDuration calls
+    this.stopDurationTimer();
+    this.recordingStatus.set('idle');
+    this.recordingDuration.set(0);
+
     try {
       const result = await CapacitorAudioEngine.stopRecording();
-      this.recordingStatus.set('idle');
-      this.recordingDuration.set(0);
-      this.stopDurationTimer();
 
       // Add metadata for segment rolling demo
       const fileWithMetadata: AudioFileInfoWithMetadata = {
@@ -417,7 +432,10 @@ export class FeaturesDemoComponent {
       await this.showToast('Recording stopped and saved', 'success');
     } catch (error) {
       console.error('Failed to stop recording:', error);
-      await this.showToast('Failed to stop recording', 'danger');
+      // Only show toast if it's not a "no active recording" error (which can happen with multiple clicks)
+      if (!error.toString().includes('No active recording to stop')) {
+        await this.showToast('Failed to stop recording', 'danger');
+      }
     }
   }
 
@@ -460,14 +478,31 @@ export class FeaturesDemoComponent {
   // Per-URL Playback methods
   async preloadTrack(url: string): Promise<void> {
     try {
-      await CapacitorAudioEngine.preloadTracks({
+      const result = await CapacitorAudioEngine.preloadTracks({
         tracks: [url],
         preloadNext: false,
       });
 
+      // Update preloaded tracks set
       this.preloadedTracks.update(tracks => new Set([...Array.from(tracks), url]));
+
+      // Store detailed track information
+      this.preloadedTrackInfo.update(info => {
+        const existingInfo = info.filter(item => item.url !== url);
+        return [...existingInfo, ...result.tracks];
+      });
+
       const track = this.demoPlaylist.find(t => t.url === url);
-      await this.showToast(`Preloaded: ${track?.title || 'Track'}`, 'success');
+      const trackInfo = result.tracks.find(t => t.url === url);
+
+      if (trackInfo?.loaded) {
+        await this.showToast(
+          `Preloaded: ${track?.title || 'Track'} (${trackInfo.mimeType || 'Unknown format'})`,
+          'success'
+        );
+      } else {
+        await this.showToast(`Failed to preload: ${track?.title || 'Track'}`, 'warning');
+      }
 
       // Initialize event listeners if this is the first preloaded track
       if (this.preloadedTracks().size === 1) {
@@ -482,13 +517,29 @@ export class FeaturesDemoComponent {
   async preloadAllTracks(): Promise<void> {
     try {
       const trackUrls = this.demoPlaylist.map(track => track.url);
-      await CapacitorAudioEngine.preloadTracks({
+      const result = await CapacitorAudioEngine.preloadTracks({
         tracks: trackUrls,
         preloadNext: true,
       });
 
-      this.preloadedTracks.set(new Set(trackUrls));
-      await this.showToast('All demo tracks preloaded', 'success');
+      // Update preloaded tracks set with successfully loaded tracks
+      const successfulUrls = result.tracks.filter(track => track.loaded).map(track => track.url);
+      this.preloadedTracks.set(new Set(successfulUrls));
+
+      // Store detailed track information
+      this.preloadedTrackInfo.set(result.tracks);
+
+      const successCount = result.tracks.filter(track => track.loaded).length;
+      const totalCount = result.tracks.length;
+
+      if (successCount === totalCount) {
+        await this.showToast('All demo tracks preloaded successfully', 'success');
+      } else {
+        await this.showToast(
+          `${successCount}/${totalCount} tracks preloaded successfully`,
+          'warning'
+        );
+      }
 
       // Set up event listeners
       this.setupPlaybackEventListeners();
@@ -667,27 +718,37 @@ export class FeaturesDemoComponent {
 
   // Recorded audio playback methods
   async preloadRecordedAudio(file: AudioFileInfoWithMetadata): Promise<void> {
+    try {
       // Use the file URI directly with the new preloadTracks interface
-      await CapacitorAudioEngine.preloadTracks({
+      const result = await CapacitorAudioEngine.preloadTracks({
         tracks: [file.uri],
         preloadNext: false,
-      })
-        .then(async () => {
-          this.recordedPlaylistInitialized.set(true);
-          this.currentRecordedFile.set(file);
+      });
 
-          // Small delay to ensure Android player is fully initialized
-          await new Promise(resolve => setTimeout(resolve, 100));
+      const trackInfo = result.tracks.find(t => t.url === file.uri);
 
-          await this.updateRecordedPlaybackInfo();
-          await this.showToast(`Preloaded: ${file.filename}`, 'success');
-          // Mark as preloaded
-          this.preloadedFiles.update(files => new Set([...Array.from(files), file.uri]));
-        })
-        .catch((error: any) => {
-          console.error('Failed to preload recorded audio:', error);
-          this.showToast('Failed to preload audio', 'danger');
-        });
+      if (trackInfo?.loaded) {
+        this.recordedPlaylistInitialized.set(true);
+        this.currentRecordedFile.set(file);
+
+        // Small delay to ensure Android player is fully initialized
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        await this.updateRecordedPlaybackInfo();
+        await this.showToast(
+          `Preloaded: ${file.filename} (${trackInfo.mimeType || 'Unknown format'})`,
+          'success'
+        );
+
+        // Mark as preloaded
+        this.preloadedFiles.update(files => new Set([...Array.from(files), file.uri]));
+      } else {
+        await this.showToast(`Failed to preload: ${file.filename}`, 'warning');
+      }
+    } catch (error: any) {
+      console.error('Failed to preload recorded audio:', error);
+      await this.showToast('Failed to preload audio', 'danger');
+    }
   }
 
   async playRecordedAudio(file?: AudioFileInfoWithMetadata): Promise<void> {

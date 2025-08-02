@@ -18,16 +18,12 @@ import androidx.core.app.NotificationCompat;
  * Foreground service for continuous audio recording even when screen is locked
  * Handles screen lock/unlock events to maintain proper recording state
  */
-public class AudioRecordingService extends Service {
+public class AudioRecordingService extends Service implements RecordingService {
     private static final String TAG = "AudioRecordingService";
     private static final String CHANNEL_ID = "AudioRecordingChannel";
     private static final int NOTIFICATION_ID = 1001;
 
-    public interface RecordingServiceListener {
-        void onScreenLocked();
-        void onScreenUnlocked();
-        void onRecordingStateChanged(boolean isRecording);
-    }
+    // Interface moved to separate file to avoid circular dependencies
 
     private final IBinder binder = new LocalBinder();
     private RecordingServiceListener listener;
@@ -35,8 +31,9 @@ public class AudioRecordingService extends Service {
     private boolean isScreenLocked = false;
     private boolean isRecordingActive = false;
 
-    public class LocalBinder extends Binder {
-        public AudioRecordingService getService() {
+    public class LocalBinder extends Binder implements ServiceBinder {
+        @Override
+        public RecordingService getService() {
             return AudioRecordingService.this;
         }
     }

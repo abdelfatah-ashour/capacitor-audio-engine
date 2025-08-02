@@ -402,16 +402,12 @@ class RecordingManager: NSObject {
     func stopRecording() {
         performStateOperation {
             guard self.isRecording else {
-                self.log("No active recording to stop")
-                // Notify delegate that there was no recording to stop
-                DispatchQueue.main.async {
-                    let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "No active recording to stop"])
-                    self.delegate?.recordingDidEncounterError(error)
-                }
+                self.log("No active recording to stop - already stopped or stopping")
+                // Don't treat this as an error - just ignore duplicate stops gracefully
                 return
             }
 
-            // Stop monitoring
+            // Stop monitoring immediately and set stopping state
             self.stopDurationMonitoring()
             self.isRecording = false
 
@@ -419,34 +415,39 @@ class RecordingManager: NSObject {
 
             if self.isSegmentRollingEnabled {
                 self.log("Stopping segment rolling recording...")
-                // Stop segment rolling and merge segments
-                do {
-                    guard let segmentManager = self.segmentRollingManager else {
-                        self.log("Error: segmentRollingManager is nil")
-                        DispatchQueue.main.async {
-                            let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Segment rolling manager not initialized"])
-                            self.delegate?.recordingDidEncounterError(error)
-                        }
-                        return
+                // Stop segment rolling and merge segments asynchronously to avoid blocking UI
+                guard let segmentManager = self.segmentRollingManager else {
+                    self.log("Error: segmentRollingManager is nil")
+                    DispatchQueue.main.async {
+                        let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Segment rolling manager not initialized"])
+                        self.delegate?.recordingDidEncounterError(error)
                     }
+                    return
+                }
 
-                    self.log("Calling stopSegmentRolling on manager...")
-                    let mergedFileURL = try segmentManager.stopSegmentRolling()
-                    self.log("Segment rolling stopped successfully, processing file: \(mergedFileURL.path)")
-                    self.processRecordingFile(mergedFileURL)
-                } catch {
-                    self.log("Error stopping segment rolling: \(error.localizedDescription)")
+                self.log("Calling stopSegmentRollingAsync on manager...")
+                segmentManager.stopSegmentRollingAsync { [weak self] result in
+                    guard let self = self else { return }
 
-                    // Check if this is a "no valid segments" error (very short recording)
-                    if error.localizedDescription.contains("No valid recording segments found") {
-                        self.log("Segment rolling failed due to short recording, this should be handled by fallback linear recording")
-                        DispatchQueue.main.async {
-                            let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Recording was too short for segment rolling"])
-                            self.delegate?.recordingDidEncounterError(error)
-                        }
-                    } else {
-                        DispatchQueue.main.async {
-                            self.delegate?.recordingDidEncounterError(error)
+                    switch result {
+                    case .success(let mergedFileURL):
+                        self.log("Segment rolling stopped successfully, processing file: \(mergedFileURL.path)")
+                        self.processRecordingFile(mergedFileURL)
+
+                    case .failure(let error):
+                        self.log("Error stopping segment rolling: \(error.localizedDescription)")
+
+                        // Check if this is a "no valid segments" error (very short recording)
+                        if error.localizedDescription.contains("No valid recording segments found") {
+                            self.log("Segment rolling failed due to short recording, this should be handled by fallback linear recording")
+                            DispatchQueue.main.async {
+                                let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Recording was too short for segment rolling"])
+                                self.delegate?.recordingDidEncounterError(error)
+                            }
+                        } else {
+                            DispatchQueue.main.async {
+                                self.delegate?.recordingDidEncounterError(error)
+                            }
                         }
                     }
                 }

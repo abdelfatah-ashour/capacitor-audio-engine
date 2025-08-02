@@ -40,7 +40,7 @@ import com.getcapacitor.annotation.Permission;
         )
     }
 )
-public class CapacitorAudioEnginePlugin extends Plugin implements PermissionManager.PermissionRequestCallback, EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, AudioRecordingService.RecordingServiceListener {
+public class CapacitorAudioEnginePlugin extends Plugin implements PermissionManager.PermissionRequestCallback, EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, RecordingServiceListener {
     private static final String TAG = "CapacitorAudioEngine";
 
     // Core managers
@@ -53,7 +53,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     private PlaybackManager playbackManager;
 
     // Background recording service
-    private AudioRecordingService recordingService;
+    private RecordingService recordingService;
     private boolean isServiceBound = false;
 
     // Segment rolling support
@@ -101,10 +101,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             Log.d(TAG, "AudioRecordingService connected");
-            AudioRecordingService.LocalBinder binder = (AudioRecordingService.LocalBinder) service;
-            recordingService = binder.getService();
-            recordingService.setRecordingServiceListener(CapacitorAudioEnginePlugin.this);
-            isServiceBound = true;
+            // Use interface to decouple from concrete service implementation
+            if (service instanceof ServiceBinder binder) {
+              recordingService = binder.getService();
+                recordingService.setRecordingServiceListener(CapacitorAudioEnginePlugin.this);
+                isServiceBound = true;
+            }
         }
 
         @Override
@@ -940,9 +942,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         try {
             JSArray tracksArray = call.getArray("tracks");
             if (tracksArray == null) {
-                call.reject("Invalid tracks array");
+                call.reject("Invalid tracks array - expected array of URLs");
                 return;
             }
+
+            // Get preloadNext option (default to true for backwards compatibility)
+            boolean preloadNext = call.getBoolean("preloadNext", true);
 
             List<String> trackUrls = new ArrayList<>();
 
@@ -955,10 +960,18 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 trackUrls.add(url);
             }
 
-            Boolean preloadNext = call.getBoolean("preloadNext", true);
+            // Pass preloadNext parameter to PlaybackManager
+            List<JSObject> trackResults = playbackManager.preloadTracks(trackUrls);
 
-            playbackManager.preloadTracks(trackUrls);
-            call.resolve();
+            // Convert List<JSObject> to JSArray to ensure proper JSON serialization
+            JSArray resultTracksArray = new JSArray();
+            for (JSObject trackResult : trackResults) {
+                resultTracksArray.put(trackResult);
+            }
+
+            JSObject result = new JSObject();
+            result.put("tracks", resultTracksArray);
+            call.resolve(result);
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to preload tracks", e);
@@ -1262,10 +1275,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         } catch (Exception e) {
             Log.e(TAG, "Error during plugin destruction", e);
         }
-    }
-
-    private void log(String message) {
-        Log.d(TAG, message);
     }
 
     // MARK: - Background Recording Service Integration

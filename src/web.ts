@@ -13,6 +13,7 @@ import type {
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
   PreloadTracksOptions,
+  PreloadTracksResult,
   PlaybackInfo,
   SeekOptions,
   SkipToIndexOptions,
@@ -221,15 +222,21 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   /**
    * Preload audio tracks from URLs and initialize playlist
    * @param options - Preload options containing track URLs and preload settings
-   * @returns Promise that resolves when tracks are preloaded
+   * @returns Promise that resolves with preload results for each track including load status, mimetype, duration, and file size
    * @platform web Not supported
    */
-  async preloadTracks(_options: PreloadTracksOptions): Promise<void> {
-    void _options; // Parameter for API compatibility
+  async preloadTracks(options: PreloadTracksOptions): Promise<PreloadTracksResult> {
     console.warn(
       'preloadTracks is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
-    throw new Error('preloadTracks is not supported on web platform');
+
+    // Return empty results for each track URL with loaded=false
+    const tracks = options.tracks.map(url => ({
+      url,
+      loaded: false
+    }));
+
+    return { tracks };
   }
 
   /**

@@ -432,6 +432,36 @@
                       }
                     </ion-card-title>
                     <ion-note>{{ track.artist }}</ion-note>
+
+                    <!-- Show detailed track info if preloaded -->
+                    @if (getPreloadedTrackInfo(track.url); as trackInfo) {
+                      <div class="track-metadata" style="margin-top: 8px;">
+                        @if (trackInfo.loaded) {
+                          <ion-chip color="success" size="small">
+                            <ion-label>✓ Loaded</ion-label>
+                          </ion-chip>
+                          @if (trackInfo.mimeType) {
+                            <ion-chip color="primary" size="small">
+                              <ion-label>{{ trackInfo.mimeType }}</ion-label>
+                            </ion-chip>
+                          }
+                          @if (trackInfo.duration && trackInfo.duration > 0) {
+                            <ion-chip color="medium" size="small">
+                              <ion-label>{{ formatTime(trackInfo.duration) }}</ion-label>
+                            </ion-chip>
+                          }
+                          @if (trackInfo.size && trackInfo.size > 0) {
+                            <ion-chip color="medium" size="small">
+                              <ion-label>{{ formatFileSize(trackInfo.size) }}</ion-label>
+                            </ion-chip>
+                          }
+                        } @else {
+                          <ion-chip color="danger" size="small">
+                            <ion-label>✗ Failed to Load</ion-label>
+                          </ion-chip>
+                        }
+                      </div>
+                    }
                   </ion-card-header>
 
                   <ion-card-content>
@@ -550,6 +580,66 @@
               </ion-item>
             </ion-card-content>
           </ion-card>
+
+          <!-- Detailed Track Information -->
+          @if (preloadedTrackInfo().length > 0) {
+            <ion-card>
+              <ion-card-header>
+                <ion-card-title>
+                  <ion-icon name="information-circle"></ion-icon>
+                  Preloaded Track Details
+                </ion-card-title>
+              </ion-card-header>
+              <ion-card-content>
+                <ion-list>
+                  @for (trackInfo of preloadedTrackInfo(); track trackInfo.url) {
+                    <ion-item>
+                      <ion-label>
+                        <h3>{{ getTrackTitleByUrl(trackInfo.url) }}</h3>
+
+                        <!-- Load Status -->
+                        @if (trackInfo.loaded) {
+                          <ion-chip color="success" size="small">
+                            <ion-icon name="checkmark-circle"></ion-icon>
+                            <ion-label>Loaded Successfully</ion-label>
+                          </ion-chip>
+                        } @else {
+                          <ion-chip color="danger" size="small">
+                            <ion-icon name="close-circle"></ion-icon>
+                            <ion-label>Failed to Load</ion-label>
+                          </ion-chip>
+                        }
+
+                        <!-- Track Details (only show if loaded) -->
+                        @if (trackInfo.loaded) {
+                          <div style="margin-top: 8px;">
+                            @if (trackInfo.mimeType) {
+                              <p><strong>Format:</strong> {{ trackInfo.mimeType }}</p>
+                            }
+                            @if (trackInfo.duration && trackInfo.duration > 0) {
+                              <p><strong>Duration:</strong> {{ formatTime(trackInfo.duration) }}</p>
+                            }
+                            @if (trackInfo.size && trackInfo.size > 0) {
+                              <p><strong>File Size:</strong> {{ formatFileSize(trackInfo.size) }}</p>
+                            }
+                          </div>
+                        }
+                      </ion-label>
+
+                      <!-- Status Indicator -->
+                      <div slot="end">
+                        @if (trackInfo.loaded) {
+                          <ion-icon name="checkmark-circle" color="success"></ion-icon>
+                        } @else {
+                          <ion-icon name="close-circle" color="danger"></ion-icon>
+                        }
+                      </div>
+                    </ion-item>
+                  }
+                </ion-list>
+              </ion-card-content>
+            </ion-card>
+          }
         </ion-card-content>
       </ion-card>
     }

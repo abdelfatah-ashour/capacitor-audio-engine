@@ -4,6 +4,7 @@ import android.content.Context;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.media.MediaMetadataRetriever;
 import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.MediaMetadataCompat;
@@ -13,8 +14,10 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 
+import com.getcapacitor.JSObject;
 import com.google.android.exoplayer2.ExoPlayer;
 import com.google.android.exoplayer2.MediaItem;
+import com.google.android.exoplayer2.MediaMetadata;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.source.ConcatenatingMediaSource;
 import com.google.android.exoplayer2.source.MediaSource;
@@ -22,8 +25,13 @@ import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
 import com.google.android.exoplayer2.util.Util;
 
+import java.io.File;
+import java.net.URL;
+import java.net.URLConnection;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 
 public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFocusChangeListener {
     private static final String TAG = "PlaybackManager";
@@ -142,29 +150,46 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         });
     }
 
-    public void preloadTracks(List<String> trackUrls) throws Exception {
+    public List<JSObject> preloadTracks(List<String> trackUrls) throws Exception {
+        return preloadTracks(trackUrls, true); // Default preloadNext to true
+    }
+
+    public List<JSObject> preloadTracks(List<String> trackUrls, boolean preloadNext) throws Exception {
         if (trackUrls == null || trackUrls.isEmpty()) {
             throw new Exception("Track URLs list cannot be empty");
         }
 
-        // Convert URLs to AudioTrack objects
-      List<AudioTrack> tracks = getAudioTracks(trackUrls);
+        // Convert URLs to AudioTrack objects and get track information
+        List<AudioTrack> tracks = getAudioTracks(trackUrls);
+        List<JSObject> trackResults = new ArrayList<>();
 
-      // Ensure we're on the main thread
+        // Ensure we're on the main thread for player operations
         if (Looper.myLooper() != Looper.getMainLooper()) {
+            CountDownLatch latch = new CountDownLatch(1);
             mainHandler.post(() -> {
                 try {
-                    initPlaylistOnMainThread(tracks);
+                    List<JSObject> results = initPlaylistOnMainThreadWithResults(tracks, preloadNext);
+                    trackResults.addAll(results);
                 } catch (Exception e) {
                     if (listener != null) {
                         listener.onPlaybackError("Failed to preload tracks: " + e.getMessage());
                     }
+                } finally {
+                    latch.countDown();
                 }
             });
-            return;
+
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new Exception("Preload operation was interrupted");
+            }
+
+            return trackResults;
         }
 
-        initPlaylistOnMainThread(tracks);
+        return initPlaylistOnMainThreadWithResults(tracks, preloadNext);
     }
 
   @NonNull
@@ -208,6 +233,177 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
 
         // Update media session metadata
         updateMediaSessionMetadata();
+    }
+
+    private List<JSObject> initPlaylistOnMainThreadWithResults(List<AudioTrack> tracks, boolean preloadNext) throws Exception {
+        List<JSObject> trackResults = new ArrayList<>();
+        List<AudioTrack> validTracks = new ArrayList<>();
+        List<MediaSource> validMediaSources = new ArrayList<>();
+
+        this.currentIndex = 0;
+        this.status = PlaybackStatus.LOADING;
+
+        // Store preloadNext setting (Android ExoPlayer handles this automatically when using ConcatenatingMediaSource)
+        // but we can use this for future optimizations
+
+        // Process each track and collect information
+        for (AudioTrack track : tracks) {
+            JSObject trackInfo = new JSObject();
+            trackInfo.put("url", track.getUrl());
+
+            try {
+                // Validate URL and create MediaItem
+                MediaItem mediaItem = MediaItem.fromUri(track.getUrl());
+                MediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(mediaItem);
+
+                // Try to extract basic metadata
+                String mimeType = getMimeTypeFromUrl(track.getUrl());
+                if (mimeType != null) {
+                    trackInfo.put("mimeType", mimeType);
+                }
+
+                // Get duration using MediaMetadataRetriever for better accuracy
+                double duration = extractTrackDuration(track.getUrl());
+                if (duration > 0) {
+                    trackInfo.put("duration", duration);
+                } else {
+                    trackInfo.put("duration", 0);
+                }
+
+                // Get file size for local files
+                if (track.getUrl().startsWith("file://")) {
+                    try {
+                        File file = new File(track.getUrl().replace("file://", ""));
+                        if (file.exists()) {
+                            trackInfo.put("size", file.length());
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Could not get file size for: " + track.getUrl());
+                    }
+                }
+
+                // Add to valid collections
+                validTracks.add(track);
+                validMediaSources.add(mediaSource);
+                trackInfo.put("loaded", true);
+
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to load track: " + track.getUrl(), e);
+                trackInfo.put("loaded", false);
+                trackInfo.put("duration", 0);
+            }
+
+            trackResults.add(trackInfo);
+        }
+
+        // Update playlist with valid tracks
+        this.playlist = validTracks;
+
+        // Create concatenating media source with valid media sources
+        if (!validMediaSources.isEmpty()) {
+            concatenatingMediaSource = new ConcatenatingMediaSource();
+            for (MediaSource mediaSource : validMediaSources) {
+                concatenatingMediaSource.addMediaSource(mediaSource);
+            }
+
+            // Prepare player
+            player.setMediaSource(concatenatingMediaSource);
+            player.prepare();
+
+            this.status = PlaybackStatus.IDLE;
+            updateMediaSessionMetadata();
+        } else {
+            this.status = PlaybackStatus.IDLE;
+        }
+
+        return trackResults;
+    }
+
+    private String getMimeTypeFromUrl(String url) {
+        try {
+            if (url.startsWith("http://") || url.startsWith("https://")) {
+                // For remote URLs, try to determine from extension or use URLConnection
+                String extension = getFileExtension(url);
+                return getMimeTypeFromExtension(extension);
+            } else if (url.startsWith("file://")) {
+                // For local files, use file extension
+                String extension = getFileExtension(url);
+                return getMimeTypeFromExtension(extension);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not determine MIME type for: " + url);
+        }
+        return "audio/mp4"; // Default for Android
+    }
+
+    private String getFileExtension(String url) {
+        try {
+            int lastDotIndex = url.lastIndexOf('.');
+            int lastSlashIndex = url.lastIndexOf('/');
+            if (lastDotIndex > lastSlashIndex && lastDotIndex > 0) {
+                return url.substring(lastDotIndex + 1).toLowerCase();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not extract file extension from: " + url);
+        }
+        return "";
+    }
+
+    private String getMimeTypeFromExtension(String extension) {
+        switch (extension.toLowerCase()) {
+            case "mp3":
+                return "audio/mpeg";
+            case "m4a":
+            case "mp4":
+                return "audio/mp4";
+            case "aac":
+                return "audio/aac";
+            case "wav":
+                return "audio/wav";
+            case "flac":
+                return "audio/flac";
+            case "ogg":
+                return "audio/ogg";
+            default:
+                return "audio/mp4"; // Default for Android
+        }
+    }
+
+    private double extractTrackDuration(String url) {
+        MediaMetadataRetriever retriever = null;
+        try {
+            retriever = new MediaMetadataRetriever();
+
+            if (url.startsWith("http://") || url.startsWith("https://")) {
+                // For remote URLs
+                retriever.setDataSource(url, new HashMap<>());
+            } else if (url.startsWith("file://")) {
+                // For file URIs, remove file:// prefix
+                String filePath = url.replace("file://", "");
+                retriever.setDataSource(filePath);
+            } else {
+                // Assume it's a local file path
+                retriever.setDataSource(url);
+            }
+
+            String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (durationStr != null) {
+                long durationMs = Long.parseLong(durationStr);
+                return durationMs / 1000.0; // Convert to seconds
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not extract duration for: " + url, e);
+        } finally {
+            if (retriever != null) {
+                try {
+                    retriever.release();
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to release MediaMetadataRetriever", e);
+                }
+            }
+        }
+        return 0;
     }
 
     public void play() {

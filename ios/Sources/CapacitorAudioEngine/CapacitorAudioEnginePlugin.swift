@@ -560,19 +560,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             print("CapacitorAudioEnginePlugin: Track \(index): \(url)")
         }
 
-        var tracks: [AudioTrack] = []
-
+        // Validate track URLs
         for (index, url) in tracksArray.enumerated() {
             if url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 print("CapacitorAudioEnginePlugin: Empty URL at index \(index)")
                 call.reject("Invalid track URL at index \(index)")
                 return
             }
-
-            // Create AudioTrack with URL, generating ID and no additional metadata
-            let track = AudioTrack(id: "track_\(index)", url: url, title: nil, artist: nil, artworkUrl: nil)
-            tracks.append(track)
-            print("CapacitorAudioEnginePlugin: Created track \(index) with URL: \(url)")
         }
 
         let preloadNext = call.getBool("preloadNext") ?? true
@@ -580,9 +574,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
         do {
             print("CapacitorAudioEnginePlugin: Calling playbackManager.preloadTracks")
-            try playbackManager.preloadTracks(trackUrls: tracksArray, preloadNext: preloadNext)
+            let trackResults = try playbackManager.preloadTracks(trackUrls: tracksArray, preloadNext: preloadNext)
             print("CapacitorAudioEnginePlugin: preloadTracks completed successfully")
-            call.resolve()
+
+            // Return the track results in the same format as Android
+            call.resolve([
+                "tracks": trackResults
+            ])
         } catch {
             print("CapacitorAudioEnginePlugin: preloadTracks failed with error: \(error)")
             print("CapacitorAudioEnginePlugin: Error details: \(error.localizedDescription)")
