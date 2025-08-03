@@ -40,6 +40,11 @@ class SegmentRollingManager: NSObject {
     private var totalRecordingDuration: TimeInterval = 0
     private var recordingStartTime: Date?
 
+    // Pause/Resume tracking
+    private var pausedTime: Date?
+    private var totalPausedDuration: TimeInterval = 0
+    private var isPaused: Bool = false
+
     // Thread safety
     private let queue = DispatchQueue(label: "segment-rolling-queue", qos: .userInteractive)
     private let queueKey = DispatchSpecificKey<String>()
@@ -247,6 +252,9 @@ class SegmentRollingManager: NSObject {
         isActive = true
         totalRecordingDuration = 0
         recordingStartTime = Date()
+        totalPausedDuration = 0
+        pausedTime = nil
+        isPaused = false
 
         // Determine recording mode based on maxDuration
         useSegmentRolling = maxDuration != nil
@@ -277,8 +285,15 @@ class SegmentRollingManager: NSObject {
     func pauseSegmentRolling() {
         performQueueSafeOperation {
             guard isActive else { return }
+            guard !isPaused else { return } // Already paused
 
             currentSegmentRecorder?.pause()
+
+            // Record pause time
+            pausedTime = Date()
+            isPaused = true
+
+            log("Pause - pausedTime set to: \(pausedTime!), totalPausedDuration before: \(totalPausedDuration)")
 
             // Only stop timer if using segment rolling
             if useSegmentRolling {
@@ -298,6 +313,16 @@ class SegmentRollingManager: NSObject {
             guard isActive else {
                 throw SegmentRecordingError.noRecordingToResume
             }
+            guard isPaused else { return } // Not paused
+
+            // Calculate and accumulate paused duration
+            if let pauseStart = pausedTime {
+                let pauseDuration = Date().timeIntervalSince(pauseStart)
+                totalPausedDuration += pauseDuration
+                log("Resume - pauseDuration: \(pauseDuration), totalPausedDuration after: \(totalPausedDuration)")
+            }
+            pausedTime = nil
+            isPaused = false
 
             // Resume current segment or start new one if needed
             if let recorder = currentSegmentRecorder {
@@ -415,6 +440,9 @@ class SegmentRollingManager: NSObject {
             useSegmentRolling = false
             totalRecordingDuration = 0
             recordingStartTime = nil
+            totalPausedDuration = 0
+            pausedTime = nil
+            isPaused = false
             if wasUsingSegmentRolling {
                 cleanupSegments()
             }
@@ -425,7 +453,7 @@ class SegmentRollingManager: NSObject {
 
     /**
      * Get elapsed recording time across all segments
-     * For segment rolling: Returns total elapsed time since recording started (never resets)
+     * For segment rolling: Returns total elapsed time since recording started (excluding paused time)
      * For linear recording: Returns current recorder time
      */
     func getElapsedRecordingTime() -> TimeInterval {
@@ -433,9 +461,22 @@ class SegmentRollingManager: NSObject {
             guard isActive else { return 0 }
 
             if useSegmentRolling {
-                // For segment rolling, return total elapsed time since recording started
+                // For segment rolling, return total elapsed time since recording started minus paused time
                 if let startTime = recordingStartTime {
-                    return Date().timeIntervalSince(startTime)
+                    let totalElapsed = Date().timeIntervalSince(startTime)
+                    var currentPausedDuration = totalPausedDuration
+
+                    // If currently paused, add the current pause duration
+                    if isPaused, let pauseStart = pausedTime {
+                        currentPausedDuration += Date().timeIntervalSince(pauseStart)
+                    }
+
+                    let actualRecordingTime = max(0, totalElapsed - currentPausedDuration)
+
+                    // Debug logging
+                    log("Duration calculation - totalElapsed: \(totalElapsed), totalPausedDuration: \(totalPausedDuration), currentPausedDuration: \(currentPausedDuration), actualRecordingTime: \(actualRecordingTime), isPaused: \(isPaused)")
+
+                    return actualRecordingTime
                 } else {
                     // Fallback to old calculation if startTime is somehow nil
                     let segmentsDuration = Double(segmentBuffer.count) * AudioEngineConstants.segmentDuration
@@ -587,6 +628,9 @@ class SegmentRollingManager: NSObject {
                     self.isActive = false
                     self.segmentCounter = 0
                     self.totalRecordingDuration = 0
+                    self.totalPausedDuration = 0
+                    self.pausedTime = nil
+                    self.isPaused = false
 
                     return finalFileURL
                 }
@@ -1372,6 +1416,9 @@ class SegmentRollingManager: NSObject {
             segmentCounter = 0
             totalRecordingDuration = 0
             recordingStartTime = nil
+            totalPausedDuration = 0
+            pausedTime = nil
+            isPaused = false
             segmentBuffer.removeAll()
             recordingSettings.removeAll()
 
