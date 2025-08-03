@@ -46,6 +46,9 @@ class RecordingManager: NSObject {
     /// Current recording state
     private var isRecording = false
 
+    /// Whether recording is currently paused
+    private var isPaused = false
+
     /// URL of the current recording file
     private var recordingPath: URL?
 
@@ -231,6 +234,7 @@ class RecordingManager: NSObject {
             // Start recording
             if self.audioRecorder?.record() == true {
                 self.isRecording = true
+                self.isPaused = false
                 self.currentDuration = 0
 
 
@@ -292,6 +296,7 @@ class RecordingManager: NSObject {
             try segmentManager.startSegmentRolling(with: recordingSettings)
 
             self.isRecording = true
+            self.isPaused = false
             self.currentDuration = 0
 
             // Start duration monitoring for segment rolling
@@ -329,6 +334,8 @@ class RecordingManager: NSObject {
                 recorder.pause()
             }
 
+            self.isRecording = false
+            self.isPaused = true
             self.stopDurationMonitoring()
             self.log("Recording paused")
         }
@@ -338,6 +345,11 @@ class RecordingManager: NSObject {
         performStateOperation {
             guard !self.isRecording else {
                 self.log("Recording is already active")
+                return
+            }
+
+            guard self.isPaused else {
+                self.log("No paused recording to resume")
                 return
             }
 
@@ -352,6 +364,11 @@ class RecordingManager: NSObject {
                         return
                     }
 
+                    // Ensure audio session is active before resuming
+                    if let session = self.recordingSession {
+                        try session.setActive(true)
+                    }
+
                     if !recorder.record() {
                         let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to resume recording"])
                         self.delegate?.recordingDidEncounterError(error)
@@ -360,6 +377,7 @@ class RecordingManager: NSObject {
                 }
 
                 self.isRecording = true
+                self.isPaused = false
                 self.startDurationMonitoring()
                 self.log("Recording resumed")
 
@@ -410,6 +428,7 @@ class RecordingManager: NSObject {
             // Stop monitoring immediately and set stopping state
             self.stopDurationMonitoring()
             self.isRecording = false
+            self.isPaused = false
 
             self.log("stopRecording - isSegmentRollingEnabled: \(self.isSegmentRollingEnabled)")
 
@@ -527,7 +546,13 @@ class RecordingManager: NSObject {
     }
 
     func getStatus() -> String {
-        return isRecording ? "recording" : "idle"
+        if isRecording {
+            return "recording"
+        } else if isPaused {
+            return "paused"
+        } else {
+            return "idle"
+        }
     }
 
     // MARK: - Audio Processing Methods
