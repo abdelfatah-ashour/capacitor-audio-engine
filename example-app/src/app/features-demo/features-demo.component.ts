@@ -862,6 +862,7 @@ export class FeaturesDemoComponent {
                 start,
                 end,
               });
+              console.log('🚀 ~ FeaturesDemoComponent ~ trimAudio ~ result:', result);
 
               const trimmedFile: AudioFileInfoWithMetadata = {
                 ...result,

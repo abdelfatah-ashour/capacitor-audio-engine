@@ -10,6 +10,7 @@ import android.util.Log;
 import com.getcapacitor.JSObject;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.List;
 
@@ -211,16 +212,24 @@ public class AudioFileProcessor {
      * Get audio file information
      */
     public static JSObject getAudioFileInfo(String filePath) {
+        return getAudioFileInfo(filePath, false);
+    }
+
+    /**
+     * Get audio file information with optional base64 generation
+     */
+    public static JSObject getAudioFileInfo(String filePath, boolean includeBase64) {
         File file = new File(filePath);
         JSObject info = new JSObject();
 
         try {
-            // Basic file info
-            info.put("uri", "file://" + filePath);
+            // Basic file info - matching iOS format
             info.put("path", filePath);
-            info.put("name", file.getName());
+            info.put("uri", "file://" + filePath);
+            info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
+            info.put("filename", file.getName());
             info.put("size", file.length());
-            info.put("exists", file.exists());
+            info.put("createdAt", file.lastModified());
 
             if (file.exists()) {
                 // Audio-specific info
@@ -239,6 +248,14 @@ public class AudioFileProcessor {
                     info.put("mimeType", mimeType != null ? mimeType : "audio/mp4");
                     info.put("bitrate", bitrate != null ? Integer.parseInt(bitrate) : 0);
 
+                    // Get number of channels
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        String channelCount = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_AUDIO_CHANNEL_COUNT);
+                        info.put("channels", channelCount != null ? Integer.parseInt(channelCount) : 1);
+                    } else {
+                        info.put("channels", getAudioChannelsCompat(filePath));
+                    }
+
                     // METADATA_KEY_SAMPLER requires API level 31
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         String sampleRate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE);
@@ -256,6 +273,19 @@ public class AudioFileProcessor {
                         }
                     }
                 }
+
+                // Generate base64 if requested
+                if (includeBase64) {
+                    try {
+                        String base64 = generateBase64FromFile(file);
+                        info.put("base64", base64);
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to generate base64 for file: " + filePath, e);
+                        info.put("base64", ""); // Fallback to empty string
+                    }
+                } else {
+                    info.put("base64", ""); // Empty for performance
+                }
             }
         } catch (Exception e) {
             Log.e(TAG, "Error getting audio file info", e);
@@ -263,6 +293,56 @@ public class AudioFileProcessor {
         }
 
         return info;
+    }
+
+    /**
+     * Generate base64 data URI from audio file
+     */
+    private static String generateBase64FromFile(File file) throws Exception {
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] audioBytes = new byte[(int) file.length()];
+            int bytesRead = fis.read(audioBytes);
+
+            if (bytesRead != file.length()) {
+                throw new IOException("Failed to read complete file");
+            }
+
+            String base64Data = android.util.Base64.encodeToString(audioBytes, android.util.Base64.NO_WRAP);
+            return "data:audio/mp4;base64," + base64Data;
+        }
+    }
+
+    /**
+     * Get audio channels for API levels below 29 using MediaExtractor
+     */
+    private static int getAudioChannelsCompat(String filePath) {
+        MediaExtractor extractor = null;
+        try {
+            extractor = new MediaExtractor();
+            extractor.setDataSource(filePath);
+
+            for (int i = 0; i < extractor.getTrackCount(); i++) {
+                MediaFormat format = extractor.getTrackFormat(i);
+                String mime = format.getString(MediaFormat.KEY_MIME);
+
+                if (mime != null && mime.startsWith("audio/")) {
+                    if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        return format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to get channel count using MediaExtractor", e);
+        } finally {
+            if (extractor != null) {
+                try {
+                    extractor.release();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error releasing MediaExtractor", e);
+                }
+            }
+        }
+        return 1; // Default to mono
     }
 
     /**

@@ -557,10 +557,87 @@ class RecordingManager: NSObject {
 
     // MARK: - Audio Processing Methods
 
-    func trimAudio(uri: String, start: Double, end: Double) {
-        // Implementation for audio trimming
-        // This would involve AVAsset operations to trim the audio file
-        log("Audio trimming not yet implemented")
+    func trimAudio(uri: String, start: Double, end: Double) async throws -> URL {
+        // Convert the URI to a URL
+        let sourceURL: URL
+        if uri.hasPrefix("file://") {
+            guard let url = URL(string: uri) else {
+                throw NSError(domain: "AudioEngine", code: -1,
+                             userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
+            }
+            sourceURL = url
+        } else {
+            sourceURL = URL(fileURLWithPath: uri)
+        }
+
+        // Check if file exists
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw NSError(domain: "AudioEngine", code: -1,
+                         userInfo: [NSLocalizedDescriptionKey: "Source audio file does not exist"])
+        }
+
+        // Validate time range
+        guard start >= 0 && end > start else {
+            throw NSError(domain: "AudioEngine", code: -1,
+                         userInfo: [NSLocalizedDescriptionKey: "Invalid time range: start must be >= 0 and end must be > start"])
+        }
+
+        let asset = AVAsset(url: sourceURL)
+        let assetDuration = asset.duration.seconds
+
+        // Validate that the end time doesn't exceed the asset duration
+        guard end <= assetDuration else {
+            throw NSError(domain: "AudioEngine", code: -1,
+                         userInfo: [NSLocalizedDescriptionKey: "End time cannot exceed audio duration (\(assetDuration) seconds)"])
+        }
+
+        // Create output URL for trimmed file
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let trimmedURL = documentsPath.appendingPathComponent("trimmed_\(timestamp).m4a")
+
+        // Remove existing file if it exists
+        if FileManager.default.fileExists(atPath: trimmedURL.path) {
+            try FileManager.default.removeItem(at: trimmedURL)
+        }
+
+        // Create time range for trimming
+        let startTime = CMTime(seconds: start, preferredTimescale: 600)
+        let endTime = CMTime(seconds: end, preferredTimescale: 600)
+        let timeRange = CMTimeRange(start: startTime, end: endTime)
+
+        // Create export session
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            throw NSError(domain: "AudioEngine", code: -1,
+                         userInfo: [NSLocalizedDescriptionKey: "Failed to create export session for trimming"])
+        }
+
+        exportSession.outputURL = trimmedURL
+        exportSession.outputFileType = .m4a
+        exportSession.timeRange = timeRange
+
+        // Wait for export completion using continuation
+        let finalURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            nonisolated(unsafe) let session = exportSession
+            session.exportAsynchronously {
+                if session.status == .failed {
+                    if let error = session.error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(throwing: NSError(domain: "AudioEngine", code: -1,
+                                                           userInfo: [NSLocalizedDescriptionKey: "Export failed with unknown error"]))
+                    }
+                } else if session.status == .completed {
+                    continuation.resume(returning: trimmedURL)
+                } else {
+                    continuation.resume(throwing: NSError(domain: "AudioEngine", code: -1,
+                                                       userInfo: [NSLocalizedDescriptionKey: "Audio trimming failed with status: \(session.status)"]))
+                }
+            }
+        }
+
+        log("Successfully trimmed audio from \(start)s to \(end)s, duration: \(end - start)s")
+        return finalURL
     }
 
     /**

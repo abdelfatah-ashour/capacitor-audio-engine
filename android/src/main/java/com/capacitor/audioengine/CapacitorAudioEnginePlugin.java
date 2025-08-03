@@ -551,8 +551,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             // Perform trimming using AudioFileProcessor
             AudioFileProcessor.trimAudioFile(new File(actualPath), outputFile, startTime, endTime);
 
-            // Return file info
-            JSObject response = AudioFileProcessor.getAudioFileInfo(outputFile.getAbsolutePath());
+            // Return file info with base64 data (matching iOS behavior)
+            JSObject response = AudioFileProcessor.getAudioFileInfo(outputFile.getAbsolutePath(), true);
             call.resolve(response);
 
         } catch (SecurityException e) {
@@ -910,13 +910,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         JSObject info = new JSObject();
 
         try {
-            // Basic file info
-            info.put("uri", "file://" + filePath);
+            // Basic file info - matching iOS format
             info.put("path", filePath);
-            info.put("name", file.getName());
+            info.put("uri", "file://" + filePath);
+            info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
+            info.put("filename", file.getName());
             info.put("size", file.length());
-            info.put("exists", file.exists());
             info.put("mimeType", "audio/mp4"); // Default for M4A files
+            info.put("createdAt", file.lastModified());
 
             // Calculate actual duration using AudioFileProcessor
             double actualDuration = AudioFileProcessor.getAudioDuration(filePath);
@@ -936,9 +937,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 info.put("bitrate", 64000);
             }
 
-            // Add standard fields for compatibility
-            info.put("createdAt", System.currentTimeMillis());
-            info.put("filename", file.getName());
             info.put("base64", ""); // Android doesn't include base64 by default for performance
 
             Log.d(TAG, "Created file info with duration: " + actualDuration + "s for: " + file.getName() +

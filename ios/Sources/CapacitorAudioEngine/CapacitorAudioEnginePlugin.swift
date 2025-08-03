@@ -288,8 +288,27 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             call.reject("URI, start, and end are required")
             return
         }
-        recordingManager.trimAudio(uri: uri, start: start, end: end)
-        call.resolve()
+
+        Task {
+            do {
+                let trimmedURL = try await recordingManager.trimAudio(uri: uri, start: start, end: end)
+                var audioInfo = try await extractAudioInfo(from: trimmedURL.absoluteString)
+
+                // Update path fields to use the trimmed file's actual paths
+                audioInfo["path"] = trimmedURL.path
+                audioInfo["uri"] = trimmedURL.absoluteString
+                audioInfo["webPath"] = "capacitor://localhost/_capacitor_file_" + trimmedURL.path
+
+                // Generate base64 data for the trimmed file
+                let audioData = try Data(contentsOf: trimmedURL)
+                let base64String = try await audioData.base64StringWithOptionalCompression(useCompression: true)
+                audioInfo["base64"] = base64String
+
+                call.resolve(audioInfo)
+            } catch {
+                call.reject("Failed to trim audio: \(error.localizedDescription)")
+            }
+        }
     }
 
     @objc func isMicrophoneBusy(_ call: CAPPluginCall) {
