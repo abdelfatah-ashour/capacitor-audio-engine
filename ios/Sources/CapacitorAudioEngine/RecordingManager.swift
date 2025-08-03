@@ -585,10 +585,13 @@ class RecordingManager: NSObject {
         let asset = AVAsset(url: sourceURL)
         let assetDuration = asset.duration.seconds
 
-        // Validate that the end time doesn't exceed the asset duration
-        guard end <= assetDuration else {
+        // Clamp end time to actual duration if it exceeds
+        let actualEnd = min(end, assetDuration)
+
+        // Validate that start time doesn't exceed the asset duration
+        guard start < assetDuration else {
             throw NSError(domain: "AudioEngine", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "End time cannot exceed audio duration (\(assetDuration) seconds)"])
+                         userInfo: [NSLocalizedDescriptionKey: "Start time cannot exceed audio duration (\(assetDuration) seconds)"])
         }
 
         // Create output URL for trimmed file
@@ -601,9 +604,9 @@ class RecordingManager: NSObject {
             try FileManager.default.removeItem(at: trimmedURL)
         }
 
-        // Create time range for trimming
+        // Create time range for trimming using clamped end time
         let startTime = CMTime(seconds: start, preferredTimescale: 600)
-        let endTime = CMTime(seconds: end, preferredTimescale: 600)
+        let endTime = CMTime(seconds: actualEnd, preferredTimescale: 600)
         let timeRange = CMTimeRange(start: startTime, end: endTime)
 
         // Create export session
@@ -636,7 +639,7 @@ class RecordingManager: NSObject {
             }
         }
 
-        log("Successfully trimmed audio from \(start)s to \(end)s, duration: \(end - start)s")
+        log("Successfully trimmed audio from \(start)s to \(actualEnd)s, duration: \(actualEnd - start)s")
         return finalURL
     }
 

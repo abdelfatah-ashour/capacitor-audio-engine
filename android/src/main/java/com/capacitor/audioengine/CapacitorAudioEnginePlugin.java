@@ -531,9 +531,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             Double startTime = call.getDouble("start", 0.0);
             Double endTime = call.getDouble("end", 0.0);
 
-            // Validate time range
-            ValidationUtils.validateTimeRange(startTime, endTime);
-
             // Handle Capacitor file URI format
             String actualPath = sourcePath;
             if (sourcePath.contains("capacitor://localhost/_capacitor_file_")) {
@@ -545,11 +542,33 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             // Validate file exists and is accessible
             ValidationUtils.validateFileExists(actualPath);
 
+            // Get actual audio duration and clamp end time if needed
+            double audioDuration = AudioFileProcessor.getAudioDuration(actualPath);
+            double actualEndTime = Math.min(endTime, audioDuration);
+
+            // Validate time range with basic checks
+            if (startTime < 0) {
+                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "Start time cannot be negative");
+                return;
+            }
+
+            if (actualEndTime <= startTime) {
+                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "End time must be greater than start time");
+                return;
+            }
+
+            if (startTime >= audioDuration) {
+                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "Start time cannot exceed audio duration (" + audioDuration + " seconds)");
+                return;
+            }
+
+            Log.d(TAG, "Trimming audio from " + startTime + "s to " + actualEndTime + "s (original end: " + endTime + "s, duration: " + audioDuration + "s)");
+
             // Create output file
             File outputFile = fileManager.createProcessedFile("trimmed");
 
-            // Perform trimming using AudioFileProcessor
-            AudioFileProcessor.trimAudioFile(new File(actualPath), outputFile, startTime, endTime);
+            // Perform trimming using AudioFileProcessor with clamped end time
+            AudioFileProcessor.trimAudioFile(new File(actualPath), outputFile, startTime, actualEndTime);
 
             // Return file info with base64 data (matching iOS behavior)
             JSObject response = AudioFileProcessor.getAudioFileInfo(outputFile.getAbsolutePath(), true);
