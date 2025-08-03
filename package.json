@@ -5,15 +5,14 @@
   "type": "module",
   "sideEffects": false,
   "main": "dist/plugin.cjs.js",
-  "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
   "unpkg": "dist/plugin.js",
+  "module": "dist/plugin.esm.js",
   "exports": {
     ".": {
-      "types": "./dist/esm/index.d.ts",
-      "import": "./dist/esm/index.js",
+      "import": "./dist/plugin.esm.js",
       "require": "./dist/plugin.cjs.js",
-      "default": "./dist/esm/index.js"
+      "types": "./dist/esm/index.d.ts"
     }
   },
   "publishConfig": {
@@ -106,7 +105,9 @@
     "@ionic/eslint-config": "^0.4.0",
     "@ionic/prettier-config": "^4.0.0",
     "@ionic/swiftlint-config": "^2.0.0",
+    "@rollup/plugin-terser": "^0.4.4",
     "eslint": "^8.57.0",
+    "gzip-size": "^7.0.0",
     "prettier": "^3.4.2",
     "prettier-plugin-java": "^2.6.6",
     "rimraf": "^6.0.1",
