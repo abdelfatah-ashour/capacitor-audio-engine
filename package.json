@@ -24,8 +24,8 @@
     "android/build.gradle",
     "dist/",
     "!dist/docs.json",
+    "!dist/**/*.map",
     "ios/Sources",
-    "ios/Tests",
     "Package.swift",
     "CapacitorAudioEngine.podspec"
   ],
