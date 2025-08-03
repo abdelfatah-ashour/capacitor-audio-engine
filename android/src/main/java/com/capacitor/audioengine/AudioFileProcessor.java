@@ -12,7 +12,6 @@ import com.getcapacitor.JSObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.List;
 
 /**
  * Handles audio file processing operations including trimming and merging
@@ -26,98 +25,15 @@ public class AudioFileProcessor {
      * Get duration of an audio file
      */
     public static double getAudioDuration(String filePath) {
-        MediaMetadataRetriever retriever = null;
-        try {
-            retriever = new MediaMetadataRetriever();
+        try (MediaMetadataRetriever retriever = new MediaMetadataRetriever()) {
             retriever.setDataSource(filePath);
             String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
             return durationStr != null ? Double.parseDouble(durationStr) / 1000.0 : 0.0;
         } catch (Exception e) {
             Log.e(TAG, "Failed to get audio duration for: " + filePath, e);
             return 0.0;
-        } finally {
-            if (retriever != null) {
-                try {
-                    retriever.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing MediaMetadataRetriever", e);
-                }
-            }
         }
     }
-
-
-
-
-
-    private static String concatenateAudioFiles(List<String> inputFiles, File outputDir, String outputFileName) throws Exception {
-        Log.d(TAG, "Concatenating " + inputFiles.size() + " audio files");
-
-        File outputFile = new File(outputDir, outputFileName);
-
-        try (ResourceManager.SafeMediaMuxer safeMuxer = new ResourceManager.SafeMediaMuxer(
-                outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)) {
-
-            MediaMuxer muxer = safeMuxer.getMuxer();
-            int audioTrackIndex = -1;
-            long totalPresentationTimeUs = 0;
-
-            for (int fileIndex = 0; fileIndex < inputFiles.size(); fileIndex++) {
-                String inputFile = inputFiles.get(fileIndex);
-                Log.d(TAG, "Processing file " + (fileIndex + 1) + "/" + inputFiles.size() + ": " + new File(inputFile).getName());
-
-                try (ResourceManager.SafeMediaExtractor safeExtractor = new ResourceManager.SafeMediaExtractor()) {
-                    MediaExtractor extractor = safeExtractor.getExtractor();
-                    extractor.setDataSource(inputFile);
-
-                    int audioTrack = findAudioTrack(extractor);
-                    if (audioTrack == -1) {
-                        Log.w(TAG, "No audio track found in file: " + inputFile);
-                        continue;
-                    }
-
-                    MediaFormat audioFormat = extractor.getTrackFormat(audioTrack);
-                    extractor.selectTrack(audioTrack);
-
-                    // Add track to muxer (only for first file)
-                    if (audioTrackIndex == -1) {
-                        audioTrackIndex = muxer.addTrack(audioFormat);
-                        muxer.start();
-                    }
-
-                    // Copy audio data
-                    java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(64 * 1024);
-                    android.media.MediaCodec.BufferInfo bufferInfo = new android.media.MediaCodec.BufferInfo();
-
-                    while (true) {
-                        int sampleSize = extractor.readSampleData(buffer, 0);
-                        if (sampleSize < 0) break;
-
-                        bufferInfo.offset = 0;
-                        bufferInfo.size = sampleSize;
-                        bufferInfo.presentationTimeUs = totalPresentationTimeUs + extractor.getSampleTime();
-                        bufferInfo.flags = convertExtractorFlags(extractor.getSampleFlags());
-
-                        muxer.writeSampleData(audioTrackIndex, buffer, bufferInfo);
-                        extractor.advance();
-                    }
-
-                    // Update total presentation time for next file
-                    double fileDuration = getAudioDuration(inputFile);
-                    totalPresentationTimeUs += (long)(fileDuration * 1000000);
-                }
-            }
-
-            Log.d(TAG, "Audio concatenation completed to: " + outputFile.getName());
-            return outputFile.getAbsolutePath();
-        }
-    }
-
-    private static void concatenateAudioFiles(List<String> inputFiles, File outputFile) throws Exception {
-        concatenateAudioFiles(inputFiles, outputFile.getParentFile(), outputFile.getName());
-    }
-
-
 
     /**
      * Trim audio file from startTime to endTime
@@ -177,7 +93,10 @@ public class AudioFileProcessor {
         } catch (Exception e) {
             // Clean up output file if trimming failed
             if (outputFile.exists()) {
-                outputFile.delete();
+                boolean deleted = outputFile.delete();
+                if (!deleted) {
+                    Log.w(TAG, "Failed to delete output file after trim failure: " + outputFile.getAbsolutePath());
+                }
             }
             throw new IOException("Failed to trim audio file: " + e.getMessage(), e);
         }
@@ -237,9 +156,7 @@ public class AudioFileProcessor {
                 info.put("duration", duration);
 
                 // Format info using MediaMetadataRetriever
-                MediaMetadataRetriever retriever = null;
-                try {
-                    retriever = new MediaMetadataRetriever();
+                try (MediaMetadataRetriever retriever = new MediaMetadataRetriever()) {
                     retriever.setDataSource(filePath);
 
                     String mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
@@ -248,13 +165,8 @@ public class AudioFileProcessor {
                     info.put("mimeType", mimeType != null ? mimeType : "audio/mp4");
                     info.put("bitrate", bitrate != null ? Integer.parseInt(bitrate) : 0);
 
-                    // Get number of channels
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        String channelCount = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_AUDIO_CHANNEL_COUNT);
-                        info.put("channels", channelCount != null ? Integer.parseInt(channelCount) : 1);
-                    } else {
-                        info.put("channels", getAudioChannelsCompat(filePath));
-                    }
+                    // Get number of channels using compatibility method
+                    info.put("channels", getAudioChannelsCompat(filePath));
 
                     // METADATA_KEY_SAMPLER requires API level 31
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -264,14 +176,8 @@ public class AudioFileProcessor {
                         // For older API levels, try to get sample rate using MediaExtractor
                         info.put("sampleRate", getAudioSampleRateCompat(filePath));
                     }
-                } finally {
-                    if (retriever != null) {
-                        try {
-                            retriever.release();
-                        } catch (Exception e) {
-                            Log.w(TAG, "Error releasing MediaMetadataRetriever", e);
-                        }
-                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Error with MediaMetadataRetriever", e);
                 }
 
                 // Generate base64 if requested
