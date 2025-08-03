@@ -18,7 +18,7 @@ export default {
       plugins: [!isDev && terser()].filter(Boolean),
     },
     {
-      file: 'dist/plugin.cjs.js',
+      file: 'dist/plugin.cjs',
       format: 'cjs',
       sourcemap: isDev,
       inlineDynamicImports: true,

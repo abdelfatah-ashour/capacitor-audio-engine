@@ -4,7 +4,7 @@
   "description": "High-quality audio recording Capacitor plugin with native iOS & Android support. Features pause/resume, microphone management, real-time monitoring, audio trimming, and comprehensive mobile audio recording capabilities.",
   "type": "module",
   "sideEffects": false,
-  "main": "dist/plugin.cjs.js",
+  "main": "dist/plugin.cjs",
   "types": "dist/index.d.ts",
   "typesVersions": {
     "*": {
@@ -18,15 +18,12 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/plugin.esm.js"
-      },
-      "require": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/plugin.cjs.js"
-      }
-    }
+      "import": "./dist/plugin.esm.js",
+      "require": "./dist/plugin.cjs",
+      "node": "./dist/plugin.cjs",
+      "default": "./dist/plugin.esm.js"
+    },
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public"
