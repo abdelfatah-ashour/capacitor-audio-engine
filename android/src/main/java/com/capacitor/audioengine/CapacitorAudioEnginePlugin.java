@@ -332,7 +332,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 // Pause linear recording
                 if (recorderManager.isPauseResumeSupported()) {
                     recorderManager.pauseRecording();
-                    durationMonitor.stopMonitoring();
+                    durationMonitor.pauseDuration();
 
                     Log.d(TAG, "Linear recording paused");
                     call.resolve();
@@ -369,7 +369,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 // Resume linear recording
                 if (recorderManager.isPauseResumeSupported()) {
                     recorderManager.resumeRecording();
-                    durationMonitor.startMonitoring();
+                    durationMonitor.resumeDuration();
 
                     Log.d(TAG, "Linear recording resumed");
                     call.resolve();
