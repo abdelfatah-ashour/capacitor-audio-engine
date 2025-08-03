@@ -49,7 +49,7 @@ import {
   closeCircle,
 } from 'ionicons/icons';
 import { addIcons } from 'ionicons';
-import { CapacitorAudioEngine } from '../../../../src';
+import { CapacitorAudioEngine } from 'capacitor-audio-engine';
 import type {
   AudioFileInfo,
   RecordingOptions,
@@ -63,9 +63,8 @@ import type {
   PlaybackStartedData,
   PlaybackPausedData,
   ErrorEventData,
-  PreloadTracksResult,
   PreloadedTrackInfo,
-} from '../../../../src';
+} from 'capacitor-audio-engine';
 
 // Extended interface for demo to track segment rolling metadata
 interface AudioFileInfoWithMetadata extends AudioFileInfo {
