@@ -55,6 +55,11 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private final AtomicLong totalDuration = new AtomicLong(0);
     private long recordingStartTime = 0; // Track actual recording start time
 
+    // Duration tracking state for interruptions
+    private final AtomicBoolean isDurationPaused = new AtomicBoolean(false);
+    private long pausedDurationOffset = 0; // Track time spent paused
+    private long pauseStartTime = 0; // Track when current pause began
+
     // Segment management
     private final ConcurrentLinkedQueue<File> segmentBuffer = new ConcurrentLinkedQueue<>();
     private File segmentsDirectory;
@@ -290,7 +295,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     }    /**
      * Get current recording duration across all segments in the rolling window
      * For rolling recording, this returns the actual elapsed time since recording started,
-     * not capped at maxDuration (the maxDuration only affects what gets saved)
+     * accounting for interruption pauses to provide accurate usable recording time
      */
     public long getCurrentDuration() {
         if (!isActive.get()) {
@@ -300,9 +305,11 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         // Calculate actual elapsed time since recording started
         long elapsedTime = System.currentTimeMillis() - recordingStartTime;
 
-        // Return the actual elapsed time for rolling recording
-        // The maxDuration only affects the rolling window size, not the reported duration
-        return elapsedTime;
+        // Subtract time spent paused due to interruptions for accurate duration
+        long adjustedElapsedTime = elapsedTime - pausedDurationOffset;
+
+        // Return the actual recording time (excluding interruption pauses)
+        return Math.max(0, adjustedElapsedTime);
     }
 
     /**
@@ -1537,9 +1544,9 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
     // MARK: - Audio Interruption Callback Implementation
 
-        /**
+    /**
      * Handle audio interruption began (phone calls, audio focus loss, etc.)
-     * Strategy: Pause only for critical interruptions (calls), log and continue for others
+     * Strategy: Pause duration tracking for ALL interruptions to provide accurate recording time
      */
     @Override
     public void onInterruptionBegan(AudioInterruptionManager.InterruptionType type) {
@@ -1552,37 +1559,40 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
             lastInterruptionType = type;
 
+            // Pause duration tracking for ALL interruptions to ensure accurate timing
+            pauseDurationTracking();
+
             switch (type) {
                 case PHONE_CALL:
-                    Log.d(TAG, "Critical interruption (Phone call) - pausing recording");
+                    Log.d(TAG, "Critical interruption (Phone call) - pausing recording and duration");
                     wasInterruptedByCall = true;
                     pauseSegmentRolling();
                     break;
 
                 case AUDIO_FOCUS_LOSS:
-                    Log.d(TAG, "Audio focus loss interruption - logging and continuing recording");
-                    // Don't pause for permanent audio focus loss - just log and continue
+                    Log.d(TAG, "Audio focus loss interruption - continuing recording but pausing duration");
+                    // Don't pause recording for permanent audio focus loss, but pause duration tracking
                     break;
 
                 case AUDIO_FOCUS_LOSS_TRANSIENT:
                 case AUDIO_FOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                    Log.d(TAG, "Temporary audio focus loss - logging and continuing recording");
-                    // Don't pause for temporary focus loss - just log and continue
+                    Log.d(TAG, "Temporary audio focus loss - continuing recording but pausing duration");
+                    // Don't pause recording for temporary focus loss, but pause duration tracking
                     break;
 
                 case SYSTEM_NOTIFICATION:
-                    Log.d(TAG, "System notification interruption - logging and continuing recording");
-                    // Don't pause for system notifications - just log and continue
+                    Log.d(TAG, "System notification interruption - continuing recording but pausing duration");
+                    // Don't pause recording for system notifications, but pause duration tracking
                     break;
 
                 case HEADPHONE_DISCONNECT:
-                    Log.d(TAG, "Headphone disconnected - continuing recording on built-in microphone");
-                    // Continue recording on built-in microphone
+                    Log.d(TAG, "Headphone disconnected - continuing recording on built-in microphone but pausing duration");
+                    // Continue recording on built-in microphone, but pause duration tracking
                     break;
 
                 default:
-                    Log.d(TAG, "Unknown interruption type - logging and continuing recording");
-                    // For unknown types, log and continue rather than pause as precaution
+                    Log.d(TAG, "Unknown interruption type - continuing recording but pausing duration");
+                    // For unknown types, log and continue recording but pause duration tracking
                     break;
             }
         }
@@ -1590,7 +1600,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
         /**
      * Handle audio interruption ended
-     * Only resume if recording was actually paused (mainly for phone calls)
+     * Resume duration tracking for all interruptions and recording for critical ones
      */
     @Override
     public void onInterruptionEnded(AudioInterruptionManager.InterruptionType type, boolean shouldResume) {
@@ -1611,10 +1621,13 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 return;
             }
 
+            // Resume duration tracking for ALL interruption types
+            resumeDurationTracking();
+
             switch (type) {
                 case PHONE_CALL:
                     if (wasInterruptedByCall) {
-                        Log.d(TAG, "Phone call ended - resuming recording");
+                        Log.d(TAG, "Phone call ended - resuming recording and duration");
                         try {
                             resumeSegmentRolling();
                             wasInterruptedByCall = false;
@@ -1626,23 +1639,23 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
                 case AUDIO_FOCUS_LOSS_TRANSIENT:
                 case AUDIO_FOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                    Log.d(TAG, "Temporary audio focus restored - recording was continuing (no resume needed)");
-                    // Recording was not paused for these, so no resume needed
+                    Log.d(TAG, "Temporary audio focus restored - resuming duration tracking (recording was continuing)");
+                    // Recording was not paused for these, but duration tracking was paused
                     break;
 
                 case AUDIO_FOCUS_LOSS:
-                    Log.d(TAG, "Audio focus restored - recording was continuing (no resume needed)");
-                    // Recording was not paused for permanent focus loss, so no resume needed
+                    Log.d(TAG, "Audio focus restored - resuming duration tracking (recording was continuing)");
+                    // Recording was not paused for permanent focus loss, but duration tracking was paused
                     break;
 
                 case SYSTEM_NOTIFICATION:
-                    Log.d(TAG, "System notification ended - recording was continuing (no resume needed)");
-                    // Recording was not paused for system notifications, so no resume needed
+                    Log.d(TAG, "System notification ended - resuming duration tracking (recording was continuing)");
+                    // Recording was not paused for system notifications, but duration tracking was paused
                     break;
 
                 default:
-                    Log.d(TAG, "Unknown interruption ended - recording was continuing (no resume needed)");
-                    // Recording was not paused for unknown interruptions, so no resume needed
+                    Log.d(TAG, "Unknown interruption ended - resuming duration tracking (recording was continuing)");
+                    // Recording was not paused for unknown interruptions, but duration tracking was paused
                     break;
             }
 
@@ -1680,6 +1693,32 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
      */
     public AudioInterruptionManager.InterruptionType getCurrentInterruption() {
         return interruptionManager != null ? interruptionManager.getCurrentInterruption() : null;
+    }
+
+    /**
+     * Pause duration tracking during interruptions
+     */
+    private void pauseDurationTracking() {
+        if (!isDurationPaused.get()) {
+            isDurationPaused.set(true);
+            pauseStartTime = System.currentTimeMillis();
+            Log.d(TAG, "Duration tracking paused at " + pauseStartTime);
+        }
+    }
+
+    /**
+     * Resume duration tracking after interruptions
+     */
+    private void resumeDurationTracking() {
+        if (isDurationPaused.get()) {
+            long pauseEndTime = System.currentTimeMillis();
+            // Calculate how long we were paused and add to offset
+            long currentPauseDuration = pauseEndTime - pauseStartTime;
+            pausedDurationOffset += currentPauseDuration;
+            isDurationPaused.set(false);
+            pauseStartTime = 0;
+            Log.d(TAG, "Duration tracking resumed, current pause duration: " + currentPauseDuration + "ms, total paused time: " + pausedDurationOffset + "ms");
+        }
     }
 
     /**

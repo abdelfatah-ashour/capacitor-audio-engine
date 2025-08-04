@@ -1180,14 +1180,17 @@ class RecordingManager: NSObject {
             let interruptionReason = determineInterruptionReason(userInfo)
             log("Interruption reason: \(interruptionReason)")
 
+            // Pause duration monitoring for ALL interruptions to ensure accurate timing
+            stopDurationMonitoring()
+
             switch interruptionReason {
             case .phoneCall, .siri:
-                log("Critical interruption (\(interruptionReason)) - pausing linear recording")
+                log("Critical interruption (\(interruptionReason)) - pausing linear recording and duration")
                 pauseRecording()
 
             case .systemNotification, .audioFocusLoss, .unknown:
-                log("Non-critical interruption (\(interruptionReason)) - logging and continuing recording")
-                // Continue recording for non-critical interruptions
+                log("Non-critical interruption (\(interruptionReason)) - continuing recording but pausing duration")
+                // Continue recording for non-critical interruptions, but duration is already paused above
 
                 // Ensure audio session remains active for minor interruptions
                 do {
@@ -1210,13 +1213,23 @@ class RecordingManager: NSObject {
                         // Reactivate audio session
                         try AVAudioSession.sharedInstance().setActive(true)
 
-                        // Resume recording if it was paused
-                        if !isRecording {
+                        // Resume recording if it was paused (critical interruptions)
+                        if !isRecording && isPaused {
                             resumeRecording()
+                        } else if isRecording {
+                            // For non-critical interruptions, just restart duration monitoring
+                            log("Restarting duration monitoring after non-critical interruption")
+                            startDurationMonitoring()
                         }
                     } catch {
                         log("Failed to resume linear recording after interruption: \(error.localizedDescription)")
                         delegate?.recordingDidEncounterError(error)
+                    }
+                } else {
+                    // Even if we shouldn't resume recording, restart duration monitoring if recording is active
+                    if isRecording {
+                        log("Restarting duration monitoring after interruption (no resume)")
+                        startDurationMonitoring()
                     }
                 }
             }

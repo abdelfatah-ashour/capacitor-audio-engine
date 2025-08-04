@@ -41,7 +41,7 @@ import com.getcapacitor.annotation.PermissionCallback;
         )
     }
 )
-public class CapacitorAudioEnginePlugin extends Plugin implements PermissionManager.PermissionRequestCallback, EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, RecordingServiceListener {
+public class CapacitorAudioEnginePlugin extends Plugin implements PermissionManager.PermissionRequestCallback, EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, RecordingServiceListener, AudioInterruptionManager.InterruptionCallback {
     private static final String TAG = "CapacitorAudioEngine";
 
     // Core managers
@@ -60,6 +60,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     // Segment rolling support
     private SegmentRollingManager segmentRollingManager;
     private boolean isSegmentRollingEnabled = false;
+
+    // Linear recording interruption support
+    private AudioInterruptionManager linearRecordingInterruptionManager;
 
     // Recording state
     private boolean isRecording = false;
@@ -310,77 +313,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
     @PluginMethod
     public void pauseRecording(PluginCall call) {
-        if (!isRecording && (recorderManager == null || !recorderManager.isRecording()) &&
-            (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
-            call.reject("No active recording session to pause");
-            return;
-        }
-
-        try {
-            if (isSegmentRollingEnabled) {
-                // Pause segment rolling
-                if (segmentRollingManager != null) {
-                    segmentRollingManager.pauseSegmentRolling();
-                    // Do not stop duration monitor for segment rolling since we're not using it
-
-                    Log.d(TAG, "Segment rolling recording paused");
-                    call.resolve();
-                } else {
-                    call.reject("Segment rolling manager not initialized");
-                }
-            } else {
-                // Pause linear recording
-                if (recorderManager.isPauseResumeSupported()) {
-                    recorderManager.pauseRecording();
-                    durationMonitor.pauseDuration();
-
-                    Log.d(TAG, "Linear recording paused");
-                    call.resolve();
-                } else {
-                    call.reject("Pause/Resume is not supported on Android versions below API 24");
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to pause recording", e);
-            call.reject("Failed to pause recording: " + e.getMessage());
-        }
+        pauseRecordingInternal(call);
     }
 
     @PluginMethod
     public void resumeRecording(PluginCall call) {
-        if (!isRecording) {
-            call.reject("No recording session active");
-            return;
-        }
-
-        try {
-            if (isSegmentRollingEnabled) {
-                // Resume segment rolling
-                if (segmentRollingManager != null) {
-                    segmentRollingManager.resumeSegmentRolling();
-                    // Do not start duration monitor for segment rolling since we're not using it
-
-                    Log.d(TAG, "Segment rolling recording resumed");
-                    call.resolve();
-                } else {
-                    call.reject("Segment rolling manager not initialized");
-                }
-            } else {
-                // Resume linear recording
-                if (recorderManager.isPauseResumeSupported()) {
-                    recorderManager.resumeRecording();
-                    durationMonitor.resumeDuration();
-
-                    Log.d(TAG, "Linear recording resumed");
-                    call.resolve();
-                } else {
-                    call.reject("Pause/Resume is not supported on Android versions below API 24");
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to resume recording", e);
-            call.reject("Failed to resume recording: " + e.getMessage());
-        }
+        resumeRecordingInternal(call);
     }
 
     @PluginMethod
@@ -743,7 +681,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     // Helper methods for the refactored implementation
 
     private void startLinearRecording() throws IOException {
+        // Initialize linear recording interruption manager
+        if (linearRecordingInterruptionManager == null) {
+            linearRecordingInterruptionManager = new AudioInterruptionManager(getContext());
+            linearRecordingInterruptionManager.setInterruptionCallback(this);
+        }
 
+        // Start interruption monitoring for linear recording
+        linearRecordingInterruptionManager.startMonitoring();
 
         // Set maximum duration if provided
         if (maxDurationSeconds != null && maxDurationSeconds > 0) {
@@ -762,7 +707,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         isRecording = true;
         durationMonitor.startMonitoring();
 
-        Log.d(TAG, "Started linear recording: " + audioFile.getName() + " with maxDuration: " + maxDurationSeconds + " seconds");
+        Log.d(TAG, "Started linear recording: " + audioFile.getName() + " with maxDuration: " + maxDurationSeconds + " seconds and interruption handling");
 
         // Emit recording state change event to match iOS behavior
         JSObject stateData = new JSObject();
@@ -862,6 +807,16 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                     durationMonitor.resetDuration();
                 } catch (Exception e) {
                     Log.w(TAG, "Error stopping duration monitor during cleanup", e);
+                }
+            }
+
+            // Stop linear recording interruption monitoring
+            if (linearRecordingInterruptionManager != null) {
+                try {
+                    linearRecordingInterruptionManager.stopMonitoring();
+                    Log.d(TAG, "Linear recording interruption monitoring stopped");
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping linear recording interruption monitoring during cleanup", e);
                 }
             }
 
@@ -1400,6 +1355,174 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             JSObject eventData = new JSObject();
             eventData.put("serviceState", isRecording ? "started" : "stopped");
             eventManager.emitRecordingStateChange("service", eventData);
+        }
+    }
+
+    // MARK: - AudioInterruptionManager.InterruptionCallback Implementation
+
+    @Override
+    public void onInterruptionBegan(AudioInterruptionManager.InterruptionType type) {
+        Log.d(TAG, "Linear recording interruption began: " + type);
+
+        // Only handle interruptions for linear recording mode
+        if (isSegmentRollingEnabled || !isRecording) {
+            return; // Segment rolling handles its own interruptions
+        }
+
+        // Pause duration tracking for ALL interruptions to ensure accurate timing
+        if (durationMonitor != null) {
+            durationMonitor.pauseDuration();
+        }
+
+        switch (type) {
+            case PHONE_CALL:
+                Log.d(TAG, "Critical interruption (Phone call) - pausing linear recording");
+                try {
+                    pauseRecordingInternal(null); // Internal pause without PluginCall
+                } catch (Exception e) {
+                    Log.e(TAG, "Error pausing linear recording for phone call", e);
+                }
+                break;
+
+            case AUDIO_FOCUS_LOSS:
+            case AUDIO_FOCUS_LOSS_TRANSIENT:
+            case AUDIO_FOCUS_LOSS_TRANSIENT_CAN_DUCK:
+            case SYSTEM_NOTIFICATION:
+            case HEADPHONE_DISCONNECT:
+                Log.d(TAG, "Non-critical interruption (" + type + ") - continuing recording but pausing duration");
+                // Continue recording but duration tracking is already paused above
+                break;
+
+            default:
+                Log.d(TAG, "Unknown interruption type - continuing recording but pausing duration");
+                break;
+        }
+    }
+
+    @Override
+    public void onInterruptionEnded(AudioInterruptionManager.InterruptionType type, boolean shouldResume) {
+        Log.d(TAG, "Linear recording interruption ended: " + type + ", should resume: " + shouldResume);
+
+        // Only handle interruptions for linear recording mode
+        if (isSegmentRollingEnabled || !isRecording) {
+            return; // Segment rolling handles its own interruptions
+        }
+
+        // Resume duration tracking for ALL interruption types
+        if (durationMonitor != null) {
+            durationMonitor.resumeDuration();
+        }
+
+        if (!shouldResume) {
+            Log.d(TAG, "Should not resume recording after interruption");
+            return;
+        }
+
+        switch (type) {
+            case PHONE_CALL:
+                Log.d(TAG, "Phone call ended - resuming linear recording");
+                try {
+                    resumeRecordingInternal(null); // Internal resume without PluginCall
+                } catch (Exception e) {
+                    Log.e(TAG, "Error resuming linear recording after phone call", e);
+                }
+                break;
+
+            case AUDIO_FOCUS_LOSS:
+            case AUDIO_FOCUS_LOSS_TRANSIENT:
+            case AUDIO_FOCUS_LOSS_TRANSIENT_CAN_DUCK:
+            case SYSTEM_NOTIFICATION:
+            case HEADPHONE_DISCONNECT:
+                Log.d(TAG, "Non-critical interruption ended (" + type + ") - duration tracking resumed (recording was continuing)");
+                // Recording was not paused for these, but duration tracking was paused
+                break;
+
+            default:
+                Log.d(TAG, "Unknown interruption ended - duration tracking resumed (recording was continuing)");
+                break;
+        }
+    }
+
+    @Override
+    public void onAudioRouteChanged(String reason) {
+        Log.d(TAG, "Linear recording audio route changed: " + reason);
+        // Handle audio route changes if needed
+    }
+
+    /**
+     * Internal pause recording method that can be called without PluginCall
+     */
+    private void pauseRecordingInternal(PluginCall call) {
+        if (!isRecording && (recorderManager == null || !recorderManager.isRecording()) &&
+            (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
+            if (call != null) call.reject("No active recording session to pause");
+            return;
+        }
+
+        try {
+            if (isSegmentRollingEnabled) {
+                // Pause segment rolling
+                if (segmentRollingManager != null) {
+                    segmentRollingManager.pauseSegmentRolling();
+                    Log.d(TAG, "Segment rolling recording paused");
+                    if (call != null) call.resolve();
+                } else {
+                    if (call != null) call.reject("Segment rolling manager not initialized");
+                }
+            } else {
+                // Pause linear recording
+                if (recorderManager.isPauseResumeSupported()) {
+                    recorderManager.pauseRecording();
+                    if (durationMonitor != null) {
+                        durationMonitor.pauseDuration();
+                    }
+                    Log.d(TAG, "Linear recording paused");
+                    if (call != null) call.resolve();
+                } else {
+                    if (call != null) call.reject("Pause/Resume is not supported on Android versions below API 24");
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to pause recording", e);
+            if (call != null) call.reject("Failed to pause recording: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Internal resume recording method that can be called without PluginCall
+     */
+    private void resumeRecordingInternal(PluginCall call) {
+        if (!isRecording) {
+            if (call != null) call.reject("No recording session active");
+            return;
+        }
+
+        try {
+            if (isSegmentRollingEnabled) {
+                // Resume segment rolling
+                if (segmentRollingManager != null) {
+                    segmentRollingManager.resumeSegmentRolling();
+                    Log.d(TAG, "Segment rolling recording resumed");
+                    if (call != null) call.resolve();
+                } else {
+                    if (call != null) call.reject("Segment rolling manager not initialized");
+                }
+            } else {
+                // Resume linear recording
+                if (recorderManager.isPauseResumeSupported()) {
+                    recorderManager.resumeRecording();
+                    if (durationMonitor != null) {
+                        durationMonitor.resumeDuration();
+                    }
+                    Log.d(TAG, "Linear recording resumed");
+                    if (call != null) call.resolve();
+                } else {
+                    if (call != null) call.reject("Pause/Resume is not supported on Android versions below API 24");
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to resume recording", e);
+            if (call != null) call.reject("Failed to resume recording: " + e.getMessage());
         }
     }
 
