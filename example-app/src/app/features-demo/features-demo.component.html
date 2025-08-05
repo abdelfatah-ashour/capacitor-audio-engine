@@ -64,6 +64,7 @@
           </ion-card-title>
         </ion-card-header>
         <ion-card-content>
+          {{ recordingStatus() }}
           <!-- Recording Status -->
           <div class="recording-status">
             <ion-chip
@@ -114,7 +115,7 @@
               </ion-col>
             </ion-row>
             <ion-row>
-              <ion-col size="6">
+              <ion-col size="4">
                 <ion-button
                   expand="block"
                   color="success"
@@ -125,7 +126,18 @@
                   Resume
                 </ion-button>
               </ion-col>
-              <ion-col size="6">
+              <ion-col size="4">
+                <ion-button
+                  expand="block"
+                  color="medium"
+                  [disabled]="!canReset()"
+                  (click)="resetRecording()"
+                >
+                  <ion-icon name="refresh" slot="start"></ion-icon>
+                  Reset
+                </ion-button>
+              </ion-col>
+              <ion-col size="4">
                 <ion-button
                   expand="block"
                   color="danger"

@@ -266,6 +266,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
     @PluginMethod
+    public void resetRecording(PluginCall call) {
+        try {
+            resetRecordingInternal();
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to reset recording", e);
+            call.reject("Failed to reset recording: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void stopRecording(PluginCall call) {
         try {
             JSObject result = stopRecordingInternal();
@@ -334,8 +345,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 result.put("duration", segmentDuration / 1000.0); // Convert to seconds
                 Log.d(TAG, "Segment rolling current duration: " + (segmentDuration / 1000.0) + " seconds");
             } else {
+                // If recording session is active but segment manager is null (reset state), return 0
                 result.put("duration", 0.0);
-                Log.d(TAG, "No segment rolling manager available");
+                Log.d(TAG, "Recording session active but in reset state - duration: 0");
             }
 
             call.resolve(result);
@@ -351,7 +363,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
 
         if (sessionActive) {
-            status = "recording";
+            // If recording is active but segment manager is null or not active, it's in paused/reset state
+            if (isRecording && (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
+                status = "paused"; // Reset state is effectively paused
+            } else {
+                status = "recording";
+            }
         } else {
             status = "idle";
         }
@@ -1281,11 +1298,70 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 Log.d(TAG, "Segment rolling recording resumed");
                 if (call != null) call.resolve();
             } else {
-                if (call != null) call.reject("Segment rolling manager not initialized");
+                // If segment rolling manager is null (e.g., after reset), recreate it
+                Log.d(TAG, "Segment rolling manager not initialized, recreating for resume");
+                try {
+                    startSegmentRollingRecording();
+                    Log.d(TAG, "Segment rolling recording resumed with fresh session");
+                    if (call != null) call.resolve();
+                } catch (Exception ex) {
+                    Log.e(TAG, "Failed to start fresh segment rolling session", ex);
+                    if (call != null) call.reject("Failed to resume recording: " + ex.getMessage());
+                }
             }
         } catch (Exception e) {
             Log.e(TAG, "Failed to resume recording", e);
             if (call != null) call.reject("Failed to resume recording: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Internal reset recording method that pauses, deletes segments, and resets counters
+     */
+    private void resetRecordingInternal() throws Exception {
+        if (!isRecording) {
+            throw new Exception("No recording session active");
+        }
+
+        Log.d(TAG, "Resetting recording session...");
+
+        try {
+            // First pause the recording to ensure clean state
+            if (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive()) {
+                segmentRollingManager.pauseSegmentRolling();
+                Log.d(TAG, "Segment rolling paused for reset");
+            }
+
+            // For segment rolling, we need to stop and restart to clear segments
+            if (segmentRollingManager != null) {
+                // Stop the current segment rolling to clear all segments
+                segmentRollingManager.release();
+                segmentRollingManager = null;
+                Log.d(TAG, "Segment rolling manager released to clear segments");
+
+                // The manager will be recreated when resumeRecording is called
+                // This ensures a fresh start with no previous segments
+            }
+
+            // Keep isRecording true but in a paused state - don't stop the recording session
+            // This allows resumeRecording to work as expected after reset
+            Log.d(TAG, "Recording session remains active but reset - ready for resumption");
+
+            // Reset duration monitoring
+            if (eventManager != null) {
+                JSObject resetData = new JSObject();
+                resetData.put("duration", 0);
+                eventManager.emitRecordingStateChange("reset", resetData);
+
+                // Emit duration change event to reset UI counters
+                eventManager.emitDurationChange(0.0);
+            }
+
+            Log.d(TAG, "Recording session reset successfully - ready for fresh recording");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error during recording reset", e);
+            throw new Exception("Failed to reset recording: " + e.getMessage());
         }
     }
 

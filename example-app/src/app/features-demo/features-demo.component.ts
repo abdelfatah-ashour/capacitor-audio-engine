@@ -249,6 +249,9 @@ export class FeaturesDemoComponent {
   );
   protected readonly canPause = computed(() => this.recordingStatus() === 'recording');
   protected readonly canResume = computed(() => this.recordingStatus() === 'paused');
+  protected readonly canReset = computed(() =>
+    ['recording', 'paused'].includes(this.recordingStatus())
+  );
   protected readonly canStop = computed(() =>
     ['recording', 'paused'].includes(this.recordingStatus())
   );
@@ -418,6 +421,26 @@ export class FeaturesDemoComponent {
     } catch (error) {
       console.error('Failed to resume recording:', error);
       await this.showToast('Failed to resume recording', 'danger');
+    }
+  }
+
+  async resetRecording(): Promise<void> {
+    try {
+      await CapacitorAudioEngine.resetRecording();
+      this.recordingDuration.set(0);
+      this.recordingStatus.set('paused');
+      CapacitorAudioEngine.getStatus()
+        .then(s => {
+          console.log(s);
+        })
+        .catch(e => {
+          console.log(e);
+        });
+      // Keep status as paused since the session is ready to be resumed
+      await this.showToast('Recording reset - ready for fresh recording', 'warning');
+    } catch (error) {
+      console.error('Failed to reset recording:', error);
+      await this.showToast('Failed to reset recording', 'danger');
     }
   }
 
