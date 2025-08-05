@@ -390,6 +390,7 @@ export class FeaturesDemoComponent {
 
       this.recordingStatus.set('recording');
       await this.showToast('Recording started', 'success');
+      this.setupRecordingEventListeners();
       this.startDurationTimer();
     } catch (error) {
       console.error('Failed to start recording:', error);
@@ -402,7 +403,6 @@ export class FeaturesDemoComponent {
       await CapacitorAudioEngine.pauseRecording();
       this.recordingStatus.set('paused');
       await this.showToast('Recording paused', 'warning');
-      this.stopDurationTimer();
     } catch (error) {
       console.error('Failed to pause recording:', error);
       await this.showToast('Failed to pause recording', 'danger');
@@ -422,8 +422,6 @@ export class FeaturesDemoComponent {
   }
 
   async stopRecording(): Promise<void> {
-    // Stop UI timer immediately to prevent continuous getDuration calls
-    this.stopDurationTimer();
     this.recordingStatus.set('idle');
     this.recordingDuration.set(0);
 
@@ -894,23 +892,37 @@ export class FeaturesDemoComponent {
 
   // Utility methods
   private durationTimer: any;
+  private durationChangeListener: any;
 
-  private startDurationTimer(): void {
-    this.stopDurationTimer();
-    this.durationTimer = setInterval(async () => {
-      try {
-        const result = await CapacitorAudioEngine.getDuration();
-        this.recordingDuration.set(result.duration);
-      } catch (error) {
-        console.error('Failed to get duration:', error);
+  private setupRecordingEventListeners(): void {
+    // Remove any existing listener first
+    if (this.durationChangeListener) {
+      this.durationChangeListener.remove();
+    }
+
+    // Set up duration change listener for real-time recording duration updates
+    this.durationChangeListener = CapacitorAudioEngine.addListener(
+      'durationChange',
+      (event: { duration: number }) => {
+        console.log('Duration updated:', event.duration);
+        this.recordingDuration.set(event.duration);
       }
-    }, 1000);
+    );
   }
 
-  private stopDurationTimer(): void {
-    if (this.durationTimer) {
-      clearInterval(this.durationTimer);
-      this.durationTimer = null;
+  private async startDurationTimer(): Promise<void> {
+    // Primary method: Use event listener for real-time duration updates
+    // This is set up in setupRecordingEventListeners() when recording starts
+
+    // Fallback timer with longer interval since we have real-time events
+    try {
+      await CapacitorAudioEngine.addListener('durationChange', event => {
+        console.log('🚀 ~ FeaturesDemoComponent ~ startDurationTimer ~ event:', event);
+        console.log('Duration updated:', event.duration);
+        this.recordingDuration.set(event.duration);
+      });
+    } catch (error) {
+      console.error('Failed to get duration:', error);
     }
   }
 
@@ -991,6 +1003,10 @@ export class FeaturesDemoComponent {
   }
 
   ngOnDestroy(): void {
-    this.stopDurationTimer();
+    // Clean up any remaining listeners
+    if (this.durationChangeListener) {
+      this.durationChangeListener.remove();
+      this.durationChangeListener = null;
+    }
   }
 }

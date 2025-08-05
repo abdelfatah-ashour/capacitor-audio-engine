@@ -50,6 +50,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     // Recording components
     private MediaRecorder currentSegmentRecorder;
     private Timer segmentTimer;
+    private Timer durationUpdateTimer;
     private final AtomicBoolean isActive = new AtomicBoolean(false);
     private final AtomicInteger segmentCounter = new AtomicInteger(0);
     private final AtomicLong totalDuration = new AtomicLong(0);
@@ -179,6 +180,23 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 }
             }, SEGMENT_DURATION_MS, SEGMENT_DURATION_MS);
 
+            // Schedule duration update timer for client-side duration updates
+            durationUpdateTimer = new Timer("DurationUpdateTimer", true);
+            durationUpdateTimer.scheduleAtFixedRate(new TimerTask() {
+                @Override
+                public void run() {
+                    // Emit duration change event every second for real-time updates
+                    if (durationChangeCallback != null && isActive.get()) {
+                        long currentDuration = getCurrentDuration();
+                        try {
+                            durationChangeCallback.onDurationChanged(currentDuration);
+                        } catch (Exception e) {
+                            Log.w(TAG, "Error emitting periodic duration change event", e);
+                        }
+                    }
+                }
+            }, 1000, 1000); // Start after 1 second, then every 1 second
+
             Log.d(TAG, "Started segment rolling recording");
         }
     }
@@ -212,6 +230,12 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             if (segmentTimer != null) {
                 segmentTimer.cancel();
                 segmentTimer = null;
+            }
+
+            // Cancel duration update timer
+            if (durationUpdateTimer != null) {
+                durationUpdateTimer.cancel();
+                durationUpdateTimer = null;
             }
 
             Log.d(TAG, "Paused segment rolling recording");
@@ -260,6 +284,23 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 }
             }, timeToNextRotation, SEGMENT_DURATION_MS);
 
+            // Restart duration update timer
+            durationUpdateTimer = new Timer("DurationUpdateTimer", true);
+            durationUpdateTimer.scheduleAtFixedRate(new TimerTask() {
+                @Override
+                public void run() {
+                    // Emit duration change event every second for real-time updates
+                    if (durationChangeCallback != null && isActive.get()) {
+                        long currentDuration = getCurrentDuration();
+                        try {
+                            durationChangeCallback.onDurationChanged(currentDuration);
+                        } catch (Exception e) {
+                            Log.w(TAG, "Error emitting periodic duration change event", e);
+                        }
+                    }
+                }
+            }, 1000, 1000); // Start after 1 second, then every 1 second
+
             Log.d(TAG, "Resumed segment rolling recording");
         }
     }
@@ -280,6 +321,12 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             if (segmentTimer != null) {
                 segmentTimer.cancel();
                 segmentTimer = null;
+            }
+
+            // Cancel duration update timer
+            if (durationUpdateTimer != null) {
+                durationUpdateTimer.cancel();
+                durationUpdateTimer = null;
             }
 
             // Stop current segment recording
@@ -1192,6 +1239,11 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             if (segmentTimer != null) {
                 segmentTimer.cancel();
                 segmentTimer = null;
+            }
+
+            if (durationUpdateTimer != null) {
+                durationUpdateTimer.cancel();
+                durationUpdateTimer = null;
             }
 
             if (currentSegmentRecorder != null) {
