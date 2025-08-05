@@ -47,8 +47,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     // Core managers
     private PermissionManager permissionManager;
     private EventManager eventManager;
-    private MediaRecorderManager recorderManager;
-    private DurationMonitor durationMonitor;
 
     private FileDirectoryManager fileManager;
     private PlaybackManager playbackManager;
@@ -61,12 +59,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     private SegmentRollingManager segmentRollingManager;
     private boolean isSegmentRollingEnabled = false;
 
-    // Linear recording interruption support
-    private AudioInterruptionManager linearRecordingInterruptionManager;
-
     // Recording state
     private boolean isRecording = false;
-    private String currentRecordingPath;
     private AudioRecordingConfig recordingConfig;
     private Integer maxDurationSeconds; // Maximum recording duration in seconds
 
@@ -122,42 +116,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     };
 
     private void initializeCallbackManagers() {
-        // Initialize duration monitor with callback
-        durationMonitor = new DurationMonitor(mainHandler, new DurationMonitor.DurationCallback() {
-            @Override
-            public void onDurationChanged(double duration) {
-                eventManager.emitDurationChange(duration);
-            }
-
-            @Override
-            public void onMaxDurationReached() {
-                // Only automatically stop for linear recording, not segment rolling
-                if (!isSegmentRollingEnabled) {
-                    try {
-                        Log.d(TAG, "Max duration reached for linear recording, automatically stopping");
-                        JSObject result = stopRecordingInternal();
-
-                        // Emit event to notify frontend that recording was stopped due to max duration
-                        JSObject eventData = new JSObject();
-                        eventData.put("reason", "maxDurationReached");
-                        eventData.put("fileInfo", result);
-                        eventManager.emitRecordingStateChange("stopped", eventData);
-
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error stopping recording at max duration", e);
-                        JSObject errorData = new JSObject();
-                        errorData.put("message", "Error stopping recording at max duration: " + e.getMessage());
-                        eventManager.emitError(errorData);
-                    }
-                } else {
-                    // For segment rolling, just emit duration change but don't stop
-                    Log.d(TAG, "Max duration reached for segment rolling, continuing to record in rolling segments");
-                }
-            }
-        });
-
-        // Initialize recorder manager
-        recorderManager = new MediaRecorderManager();
+        // Callback managers removed since segment rolling handles its own timing and duration
+        Log.d(TAG, "Segment rolling manager will handle all timing and duration callbacks");
     }
 
     /**
@@ -240,11 +200,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
      * Internal method to handle recording start logic
      */
     private void startRecordingInternal(PluginCall call) throws Exception {
-        Log.d(TAG, "startRecording called - current state: isRecording=" + isRecording +
-              ", recorderManager.isRecording()=" + recorderManager.isRecording());
+        Log.d(TAG, "startRecording called - current state: isRecording=" + isRecording);
 
-        // Validate state
-        if (recorderManager.isRecording()) {
+        // Validate state - check if segment rolling is already active
+        if (isRecording || (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive())) {
             call.reject(AudioEngineError.RECORDING_IN_PROGRESS.getCode(),
                        AudioEngineError.RECORDING_IN_PROGRESS.getMessage());
             return;
@@ -255,9 +214,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
         // Clean up any leftover state from previous recordings or interruptions
         cleanupRecordingState();
-
-        // Reset states
-        durationMonitor.resetDuration();
 
         // Get and validate recording options
         String quality = call.getString("quality");
@@ -285,27 +241,15 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
         Log.d(TAG, "Starting recording with maxDuration: " + maxDuration + " seconds");
 
-        // Check if maxDuration is provided to enable segment rolling
-        if (maxDuration != null && maxDuration > 0) {
-            isSegmentRollingEnabled = true;
-            Log.d(TAG, "Enabling segment rolling mode for maxDuration: " + maxDuration + " seconds");
-            try {
-                startSegmentRollingRecording();
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to start segment rolling recording", e);
-                cleanupRecordingState();
-                throw e;
-            }
-        } else {
-            isSegmentRollingEnabled = false;
-            Log.d(TAG, "Enabling linear recording mode (no maxDuration specified)");
-            try {
-                startLinearRecording();
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to start linear recording", e);
-                cleanupRecordingState();
-                throw e;
-            }
+        // Always use segment rolling for recording
+        isSegmentRollingEnabled = true;
+        Log.d(TAG, "Using segment rolling mode for recording");
+        try {
+            startSegmentRollingRecording();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start segment rolling recording", e);
+            cleanupRecordingState();
+            throw e;
         }
 
         call.resolve();
@@ -339,48 +283,27 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     private JSObject stopRecordingInternal() throws Exception {
         // Check if any recording is active
         boolean hasActiveRecording = isRecording ||
-            (recorderManager != null && recorderManager.isRecording()) ||
             (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
 
         if (!hasActiveRecording) {
             throw new IllegalStateException("No active recording to stop");
         }
 
-        // Stop duration monitoring only for linear recording
-        if (!isSegmentRollingEnabled) {
-            durationMonitor.stopMonitoring();
-        }
-
         String fileToReturn;
 
-        if (isSegmentRollingEnabled) {
-            Log.d(TAG, "Stopping segment rolling recording...");
-            // Stop segment rolling and merge segments
-            if (segmentRollingManager != null) {
-                File mergedFile = segmentRollingManager.stopSegmentRolling();
-                fileToReturn = mergedFile.getAbsolutePath();
-
-                // Stop recording service as recording is complete
-                stopRecordingService();
-
-                Log.d(TAG, "Segment rolling stopped and merged to: " + mergedFile.getName());
-            } else {
-                Log.e(TAG, "Segment rolling manager is null!");
-                throw new IllegalStateException("Segment rolling manager not initialized");
-            }
-        } else {
-            Log.d(TAG, "Stopping linear recording...");
-            // Stop linear recording
-            if (recorderManager != null && recorderManager.isRecording()) {
-                recorderManager.stopRecording();
-            }
-            if (recorderManager != null) {
-                recorderManager.release();
-            }
-            fileToReturn = currentRecordingPath;
+        Log.d(TAG, "Stopping segment rolling recording...");
+        // Stop segment rolling and merge segments
+        if (segmentRollingManager != null) {
+            File mergedFile = segmentRollingManager.stopSegmentRolling();
+            fileToReturn = mergedFile.getAbsolutePath();
 
             // Stop recording service as recording is complete
             stopRecordingService();
+
+            Log.d(TAG, "Segment rolling stopped and merged to: " + mergedFile.getName());
+        } else {
+            Log.e(TAG, "Segment rolling manager is null!");
+            throw new IllegalStateException("Segment rolling manager not initialized");
         }
 
         isRecording = false;
@@ -391,9 +314,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             JSObject response = createFileInfoWithDuration(fileToReturn);
             Log.d(TAG, "Recording stopped - File: " + new File(fileToReturn).getName());
 
-            // Cleanup
-            currentRecordingPath = null;
-
             return response;
         } else {
             throw new IllegalStateException("No recording file to return");
@@ -403,21 +323,19 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     @PluginMethod
     public void getDuration(PluginCall call) {
         boolean hasActiveRecording = isRecording ||
-            (recorderManager != null && recorderManager.isRecording()) ||
             (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
 
         if (hasActiveRecording) {
             JSObject result = new JSObject();
 
-            if (isSegmentRollingEnabled && segmentRollingManager != null) {
-                // For segment rolling, use the segment manager's duration which respects the rolling window
+            if (segmentRollingManager != null) {
+                // Use the segment manager's duration which respects the rolling window
                 long segmentDuration = segmentRollingManager.getCurrentDuration();
                 result.put("duration", segmentDuration / 1000.0); // Convert to seconds
                 Log.d(TAG, "Segment rolling current duration: " + (segmentDuration / 1000.0) + " seconds");
             } else {
-                // For linear recording, use duration monitor
-                result.put("duration", durationMonitor.getCurrentDuration());
-                Log.d(TAG, "Linear recording current duration: " + durationMonitor.getCurrentDuration() + " seconds");
+                result.put("duration", 0.0);
+                Log.d(TAG, "No segment rolling manager available");
             }
 
             call.resolve(result);
@@ -430,7 +348,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     public void getStatus(PluginCall call) {
         String status;
         boolean sessionActive = isRecording ||
-            (recorderManager != null && recorderManager.isRecording()) ||
             (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
 
         if (sessionActive) {
@@ -443,13 +360,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         result.put("status", status);
         result.put("isRecording", sessionActive);
 
-        if (isSegmentRollingEnabled && segmentRollingManager != null) {
-            // For segment rolling, use the segment manager's duration which respects the rolling window
+        if (segmentRollingManager != null) {
+            // Use the segment manager's duration which respects the rolling window
             long segmentDuration = segmentRollingManager.getCurrentDuration();
             result.put("duration", segmentDuration / 1000.0); // Convert to seconds
         } else {
-            // For linear recording, use duration monitor
-            result.put("duration", durationMonitor.getCurrentDuration());
+            result.put("duration", 0.0);
         }
 
         call.resolve(result);
@@ -576,8 +492,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             }
 
             // Check if our own app is currently recording
-            boolean appRecording = isRecording || recorderManager.isRecording();
-            Log.d(TAG, "App currently recording: " + appRecording + " (isRecording: " + isRecording + ", recorderManager.isRecording(): " + recorderManager.isRecording() + ")");
+            boolean appRecording = isRecording || (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
+            Log.d(TAG, "App currently recording: " + appRecording + " (isRecording: " + isRecording + ", segmentRollingActive: " +
+                  (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive()) + ")");
 
             if (appRecording) {
                 Log.d(TAG, "App is recording, returning busy=true");
@@ -680,40 +597,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
     // Helper methods for the refactored implementation
 
-    private void startLinearRecording() throws IOException {
-        // Initialize linear recording interruption manager
-        if (linearRecordingInterruptionManager == null) {
-            linearRecordingInterruptionManager = new AudioInterruptionManager(getContext());
-            linearRecordingInterruptionManager.setInterruptionCallback(this);
-        }
-
-        // Start interruption monitoring for linear recording
-        linearRecordingInterruptionManager.startMonitoring();
-
-        // Set maximum duration if provided
-        if (maxDurationSeconds != null && maxDurationSeconds > 0) {
-            durationMonitor.setMaxDuration(maxDurationSeconds);
-        }
-
-        File audioFile = fileManager.createRecordingFile("recording");
-        currentRecordingPath = audioFile.getAbsolutePath();
-
-        // Start foreground service for background recording
-        startRecordingService();
-
-        recorderManager.setupMediaRecorder(currentRecordingPath, recordingConfig);
-        recorderManager.startRecording();
-
-        isRecording = true;
-        durationMonitor.startMonitoring();
-
-        Log.d(TAG, "Started linear recording: " + audioFile.getName() + " with maxDuration: " + maxDurationSeconds + " seconds and interruption handling");
-
-        // Emit recording state change event to match iOS behavior
-        JSObject stateData = new JSObject();
-        eventManager.emitRecordingStateChange("recording", stateData);
-    }
-
     private void startSegmentRollingRecording() throws IOException {
         // Initialize segment rolling manager if needed
         if (segmentRollingManager == null) {
@@ -746,9 +629,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         segmentRollingManager.setSegmentCompressionEnabled(false); // Disable compression by default
         segmentRollingManager.setPersistentIndexingEnabled(true); // Enable crash recovery
 
-        // Clear max duration from duration monitor since we're not using it for segment rolling
-        durationMonitor.setMaxDuration(null);
-
         // Start foreground service for background recording
         startRecordingService();
 
@@ -756,9 +636,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         segmentRollingManager.startSegmentRolling(recordingConfig);
 
         isRecording = true;
-
-        // Do NOT start duration monitoring for segment rolling - the SegmentRollingManager handles its own duration tracking
-        // durationMonitor.startMonitoring(); // Commented out to avoid conflicts
 
         Log.d(TAG, "Started segment rolling recording with rolling window: " + maxDurationSeconds + " seconds");
 
@@ -770,22 +647,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     private void cleanupRecordingState() {
         try {
             Log.d(TAG, "Cleaning up recording state...");
-
-            // Stop and release recorder
-            if (recorderManager != null) {
-                try {
-                    if (recorderManager.isRecording()) {
-                        recorderManager.stopRecording();
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "Error stopping recorder during cleanup", e);
-                }
-                try {
-                    recorderManager.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing recorder during cleanup", e);
-                }
-            }
 
             // Stop and release segment rolling manager
             if (segmentRollingManager != null) {
@@ -800,32 +661,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             // Stop recording service
             stopRecordingService();
 
-            // Stop duration monitoring
-            if (durationMonitor != null) {
-                try {
-                    durationMonitor.stopMonitoring();
-                    durationMonitor.resetDuration();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error stopping duration monitor during cleanup", e);
-                }
-            }
-
-            // Stop linear recording interruption monitoring
-            if (linearRecordingInterruptionManager != null) {
-                try {
-                    linearRecordingInterruptionManager.stopMonitoring();
-                    Log.d(TAG, "Linear recording interruption monitoring stopped");
-                } catch (Exception e) {
-                    Log.w(TAG, "Error stopping linear recording interruption monitoring during cleanup", e);
-                }
-            }
-
-
-
             // Reset all recording state flags
             isRecording = false;
             isSegmentRollingEnabled = false;
-            currentRecordingPath = null;
 
             Log.d(TAG, "Recording state cleaned up successfully");
         } catch (Exception e) {
@@ -833,7 +671,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             // Force reset state even if cleanup partially failed
             isRecording = false;
             isSegmentRollingEnabled = false;
-            currentRecordingPath = null;
         }
     }
 
@@ -1242,11 +1079,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 eventManager = null;
             }
 
-            if (durationMonitor != null) {
-                durationMonitor.stopMonitoring();
-                durationMonitor = null;
-            }
-
             if (fileManager != null) {
                 fileManager = null;
             }
@@ -1322,28 +1154,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
     @Override
     public void onScreenLocked() {
-        Log.d(TAG, "Screen locked - pausing duration counter but maintaining recording");
-
-        // Pause duration monitoring (timer continues but duration doesn't increment)
-        if (durationMonitor != null) {
-            durationMonitor.pauseDuration();
-        }
-
-        // Log for debugging
-        Log.d(TAG, "Duration monitoring paused during screen lock");
+        Log.d(TAG, "Screen locked - segment rolling manager handles its own state");
+        // Segment rolling manager handles screen lock internally
     }
 
     @Override
     public void onScreenUnlocked() {
-        Log.d(TAG, "Screen unlocked - resuming duration counter");
-
-        // Resume duration monitoring
-        if (durationMonitor != null) {
-            durationMonitor.resumeDuration();
-        }
-
-        // Log for debugging
-        Log.d(TAG, "Duration monitoring resumed after screen unlock");
+        Log.d(TAG, "Screen unlocked - segment rolling manager handles its own state");
+        // Segment rolling manager handles screen unlock internally
     }
 
     @Override
@@ -1362,90 +1180,19 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
     @Override
     public void onInterruptionBegan(AudioInterruptionManager.InterruptionType type) {
-        Log.d(TAG, "Linear recording interruption began: " + type);
-
-        // Only handle interruptions for linear recording mode
-        if (isSegmentRollingEnabled || !isRecording) {
-            return; // Segment rolling handles its own interruptions
-        }
-
-        // Pause duration tracking for ALL interruptions to ensure accurate timing
-        if (durationMonitor != null) {
-            durationMonitor.pauseDuration();
-        }
-
-        switch (type) {
-            case PHONE_CALL:
-                Log.d(TAG, "Critical interruption (Phone call) - pausing linear recording");
-                try {
-                    pauseRecordingInternal(null); // Internal pause without PluginCall
-                } catch (Exception e) {
-                    Log.e(TAG, "Error pausing linear recording for phone call", e);
-                }
-                break;
-
-            case AUDIO_FOCUS_LOSS:
-            case AUDIO_FOCUS_LOSS_TRANSIENT:
-            case AUDIO_FOCUS_LOSS_TRANSIENT_CAN_DUCK:
-            case SYSTEM_NOTIFICATION:
-            case HEADPHONE_DISCONNECT:
-                Log.d(TAG, "Non-critical interruption (" + type + ") - continuing recording but pausing duration");
-                // Continue recording but duration tracking is already paused above
-                break;
-
-            default:
-                Log.d(TAG, "Unknown interruption type - continuing recording but pausing duration");
-                break;
-        }
+        Log.d(TAG, "Audio interruption began: " + type);
+        // Segment rolling handles its own interruptions, so no action needed here
     }
 
     @Override
     public void onInterruptionEnded(AudioInterruptionManager.InterruptionType type, boolean shouldResume) {
-        Log.d(TAG, "Linear recording interruption ended: " + type + ", should resume: " + shouldResume);
-
-        // Only handle interruptions for linear recording mode
-        if (isSegmentRollingEnabled || !isRecording) {
-            return; // Segment rolling handles its own interruptions
-        }
-
-        // Resume duration tracking for ALL interruption types
-        if (durationMonitor != null) {
-            durationMonitor.resumeDuration();
-        }
-
-        if (!shouldResume) {
-            Log.d(TAG, "Should not resume recording after interruption");
-            return;
-        }
-
-        switch (type) {
-            case PHONE_CALL:
-                Log.d(TAG, "Phone call ended - resuming linear recording");
-                try {
-                    resumeRecordingInternal(null); // Internal resume without PluginCall
-                } catch (Exception e) {
-                    Log.e(TAG, "Error resuming linear recording after phone call", e);
-                }
-                break;
-
-            case AUDIO_FOCUS_LOSS:
-            case AUDIO_FOCUS_LOSS_TRANSIENT:
-            case AUDIO_FOCUS_LOSS_TRANSIENT_CAN_DUCK:
-            case SYSTEM_NOTIFICATION:
-            case HEADPHONE_DISCONNECT:
-                Log.d(TAG, "Non-critical interruption ended (" + type + ") - duration tracking resumed (recording was continuing)");
-                // Recording was not paused for these, but duration tracking was paused
-                break;
-
-            default:
-                Log.d(TAG, "Unknown interruption ended - duration tracking resumed (recording was continuing)");
-                break;
-        }
+        Log.d(TAG, "Audio interruption ended: " + type + ", should resume: " + shouldResume);
+        // Segment rolling handles its own interruptions, so no action needed here
     }
 
     @Override
     public void onAudioRouteChanged(String reason) {
-        Log.d(TAG, "Linear recording audio route changed: " + reason);
+        Log.d(TAG, "Audio route changed: " + reason);
         // Handle audio route changes if needed
     }
 
@@ -1453,34 +1200,19 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
      * Internal pause recording method that can be called without PluginCall
      */
     private void pauseRecordingInternal(PluginCall call) {
-        if (!isRecording && (recorderManager == null || !recorderManager.isRecording()) &&
-            (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
+        if (!isRecording && (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
             if (call != null) call.reject("No active recording session to pause");
             return;
         }
 
         try {
-            if (isSegmentRollingEnabled) {
-                // Pause segment rolling
-                if (segmentRollingManager != null) {
-                    segmentRollingManager.pauseSegmentRolling();
-                    Log.d(TAG, "Segment rolling recording paused");
-                    if (call != null) call.resolve();
-                } else {
-                    if (call != null) call.reject("Segment rolling manager not initialized");
-                }
+            // Pause segment rolling
+            if (segmentRollingManager != null) {
+                segmentRollingManager.pauseSegmentRolling();
+                Log.d(TAG, "Segment rolling recording paused");
+                if (call != null) call.resolve();
             } else {
-                // Pause linear recording
-                if (recorderManager.isPauseResumeSupported()) {
-                    recorderManager.pauseRecording();
-                    if (durationMonitor != null) {
-                        durationMonitor.pauseDuration();
-                    }
-                    Log.d(TAG, "Linear recording paused");
-                    if (call != null) call.resolve();
-                } else {
-                    if (call != null) call.reject("Pause/Resume is not supported on Android versions below API 24");
-                }
+                if (call != null) call.reject("Segment rolling manager not initialized");
             }
         } catch (Exception e) {
             Log.e(TAG, "Failed to pause recording", e);
@@ -1498,27 +1230,13 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         }
 
         try {
-            if (isSegmentRollingEnabled) {
-                // Resume segment rolling
-                if (segmentRollingManager != null) {
-                    segmentRollingManager.resumeSegmentRolling();
-                    Log.d(TAG, "Segment rolling recording resumed");
-                    if (call != null) call.resolve();
-                } else {
-                    if (call != null) call.reject("Segment rolling manager not initialized");
-                }
+            // Resume segment rolling
+            if (segmentRollingManager != null) {
+                segmentRollingManager.resumeSegmentRolling();
+                Log.d(TAG, "Segment rolling recording resumed");
+                if (call != null) call.resolve();
             } else {
-                // Resume linear recording
-                if (recorderManager.isPauseResumeSupported()) {
-                    recorderManager.resumeRecording();
-                    if (durationMonitor != null) {
-                        durationMonitor.resumeDuration();
-                    }
-                    Log.d(TAG, "Linear recording resumed");
-                    if (call != null) call.resolve();
-                } else {
-                    if (call != null) call.reject("Pause/Resume is not supported on Android versions below API 24");
-                }
+                if (call != null) call.reject("Segment rolling manager not initialized");
             }
         } catch (Exception e) {
             Log.e(TAG, "Failed to resume recording", e);
