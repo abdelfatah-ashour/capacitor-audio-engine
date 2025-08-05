@@ -6,6 +6,10 @@
 
 <ion-content>
   <!-- Permission Check Section -->
+  <ion-button expand="block" fill="outline" color="medium" (click)="openAppSettings()">
+    <ion-icon name="settings" slot="start"></ion-icon>
+    Open App Permissions
+  </ion-button>
   @if (!hasPermission()) {
     <ion-card color="warning">
       <ion-card-header>
@@ -19,6 +23,14 @@
         <ion-button expand="block" fill="solid" (click)="requestPermission()">
           Request Permission
         </ion-button>
+        <ion-note>
+          <p>
+            <small
+              >If permission was denied, you can open app permissions to manually enable microphone
+              access.</small
+            >
+          </p>
+        </ion-note>
       </ion-card-content>
     </ion-card>
   } @else {
@@ -420,7 +432,10 @@
             </ion-card-header>
             <ion-card-content>
               @for (track of demoPlaylist; track track.id) {
-                <ion-card class="per-url-track-card" [color]="isTrackPlaying(track.url) ? 'primary' : undefined">
+                <ion-card
+                  class="per-url-track-card"
+                  [color]="isTrackPlaying(track.url) ? 'primary' : undefined"
+                >
                   <ion-card-header>
                     <ion-card-title>
                       {{ track.title }}
@@ -435,7 +450,7 @@
 
                     <!-- Show detailed track info if preloaded -->
                     @if (getPreloadedTrackInfo(track.url); as trackInfo) {
-                      <div class="track-metadata" style="margin-top: 8px;">
+                      <div class="track-metadata" style="margin-top: 8px">
                         @if (trackInfo.loaded) {
                           <ion-chip color="success" size="small">
                             <ion-label>✓ Loaded</ion-label>
@@ -468,9 +483,14 @@
                     <!-- Track Status & Progress -->
                     @if (getTrackPlaybackInfo(track.url)) {
                       <div class="track-info">
-                        <ion-progress-bar [value]="getTrackProgress(track.url) / 100"></ion-progress-bar>
+                        <ion-progress-bar
+                          [value]="getTrackProgress(track.url) / 100"
+                        ></ion-progress-bar>
                         <ion-note>{{ getFormattedTrackTime(track.url) }}</ion-note>
-                        <ion-chip [color]="isTrackPlaying(track.url) ? 'success' : 'medium'" size="small">
+                        <ion-chip
+                          [color]="isTrackPlaying(track.url) ? 'success' : 'medium'"
+                          size="small"
+                        >
                           {{ getTrackPlaybackInfo(track.url)?.status | titlecase }}
                         </ion-chip>
                       </div>
@@ -481,16 +501,30 @@
                       <ion-row>
                         <ion-col size="3">
                           @if (!isTrackPreloaded(track.url)) {
-                            <ion-button size="small" fill="outline" (click)="preloadTrack(track.url)">
+                            <ion-button
+                              size="small"
+                              fill="outline"
+                              (click)="preloadTrack(track.url)"
+                            >
                               <ion-icon name="download"></ion-icon>
                             </ion-button>
                           } @else {
                             @if (isTrackPlaying(track.url)) {
-                              <ion-button size="small" fill="solid" color="warning" (click)="pauseTrack(track.url)">
+                              <ion-button
+                                size="small"
+                                fill="solid"
+                                color="warning"
+                                (click)="pauseTrack(track.url)"
+                              >
                                 <ion-icon name="pause"></ion-icon>
                               </ion-button>
                             } @else {
-                              <ion-button size="small" fill="solid" color="success" (click)="playTrack(track.url)">
+                              <ion-button
+                                size="small"
+                                fill="solid"
+                                color="success"
+                                (click)="playTrack(track.url)"
+                              >
                                 <ion-icon name="play"></ion-icon>
                               </ion-button>
                             }
@@ -510,7 +544,9 @@
                           <ion-button
                             size="small"
                             fill="outline"
-                            [disabled]="!isTrackPreloaded(track.url) || !getTrackPlaybackInfo(track.url)"
+                            [disabled]="
+                              !isTrackPreloaded(track.url) || !getTrackPlaybackInfo(track.url)
+                            "
                             (click)="seekTrack(track.url, 0)"
                           >
                             <ion-icon name="refresh"></ion-icon>
@@ -520,7 +556,9 @@
                           <ion-button
                             size="small"
                             fill="outline"
-                            [disabled]="!isTrackPreloaded(track.url) || !getTrackPlaybackInfo(track.url)"
+                            [disabled]="
+                              !isTrackPreloaded(track.url) || !getTrackPlaybackInfo(track.url)
+                            "
                             (click)="seekTrack(track.url, getTrackDuration(track.url) / 2)"
                           >
                             50%
@@ -539,17 +577,29 @@
                             </ion-button>
                           </ion-col>
                           <ion-col size="3">
-                            <ion-button size="small" fill="clear" (click)="seekTrack(track.url, 15)">
+                            <ion-button
+                              size="small"
+                              fill="clear"
+                              (click)="seekTrack(track.url, 15)"
+                            >
                               15s
                             </ion-button>
                           </ion-col>
                           <ion-col size="3">
-                            <ion-button size="small" fill="clear" (click)="seekTrack(track.url, 30)">
+                            <ion-button
+                              size="small"
+                              fill="clear"
+                              (click)="seekTrack(track.url, 30)"
+                            >
                               30s
                             </ion-button>
                           </ion-col>
                           <ion-col size="3">
-                            <ion-button size="small" fill="clear" (click)="seekTrack(track.url, 60)">
+                            <ion-button
+                              size="small"
+                              fill="clear"
+                              (click)="seekTrack(track.url, 60)"
+                            >
                               60s
                             </ion-button>
                           </ion-col>
@@ -612,7 +662,7 @@
 
                         <!-- Track Details (only show if loaded) -->
                         @if (trackInfo.loaded) {
-                          <div style="margin-top: 8px;">
+                          <div style="margin-top: 8px">
                             @if (trackInfo.mimeType) {
                               <p><strong>Format:</strong> {{ trackInfo.mimeType }}</p>
                             }
@@ -620,7 +670,9 @@
                               <p><strong>Duration:</strong> {{ formatTime(trackInfo.duration) }}</p>
                             }
                             @if (trackInfo.size && trackInfo.size > 0) {
-                              <p><strong>File Size:</strong> {{ formatFileSize(trackInfo.size) }}</p>
+                              <p>
+                                <strong>File Size:</strong> {{ formatFileSize(trackInfo.size) }}
+                              </p>
                             }
                           </div>
                         }
@@ -817,6 +869,32 @@
               </ion-card-content>
             </ion-card>
           }
+        </ion-card-content>
+      </ion-card>
+
+      <!-- App Permissions Section -->
+      <ion-card>
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="settings"></ion-icon>
+            App Permissions
+          </ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          <p>Manage app permissions directly from your device's system settings.</p>
+          <ion-button expand="block" fill="outline" (click)="openAppSettings()">
+            <ion-icon name="settings" slot="start"></ion-icon>
+            Open App Permissions
+          </ion-button>
+          <ion-note>
+            <p>
+              <small>
+                Use this to modify microphone permissions, notification settings, and other
+                app-specific configurations. This is especially useful if you initially denied
+                permissions and want to enable them later.
+              </small>
+            </p>
+          </ion-note>
         </ion-card-content>
       </ion-card>
     }

@@ -39,6 +39,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "skipToPrevious", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "skipToIndex", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPlaybackInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openAppSettings", returnType: CAPPluginReturnPromise),
     ]
 
     // Add a property for RecordingManager
@@ -727,6 +728,26 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         lastPlaybackInfoUpdate = now
 
         call.resolve(result)
+    }
+
+    @objc func openAppSettings(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+                if UIApplication.shared.canOpenURL(settingsUrl) {
+                    UIApplication.shared.open(settingsUrl) { success in
+                        if success {
+                            call.resolve()
+                        } else {
+                            call.reject("Failed to open settings")
+                        }
+                    }
+                } else {
+                    call.reject("Cannot open settings URL")
+                }
+            } else {
+                call.reject("Invalid settings URL")
+            }
+        }
     }
 
     private func statusToString(_ status: PlaybackStatus) -> String {

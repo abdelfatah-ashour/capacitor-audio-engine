@@ -951,6 +951,51 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         }
     }
 
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        try {
+            // For Android 6.0+ (API 23+), try different approaches to get to permissions
+            // First try: Direct app permissions page (works on some manufacturers)
+            try {
+                Intent permissionsIntent = new Intent("android.settings.APPLICATION_DETAILS_SETTINGS");
+                permissionsIntent.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
+                permissionsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(permissionsIntent);
+                call.resolve();
+                return;
+            } catch (Exception e) {
+                Log.d(TAG, "Direct permissions intent failed, trying alternative approaches");
+            }
+
+            // Second try: App permissions screen (Android 11+)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                try {
+                    Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    intent.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    // Add extra to focus on permissions tab
+                    intent.putExtra(":settings:fragment_args_key", "permission");
+                    getContext().startActivity(intent);
+                    call.resolve();
+                    return;
+                } catch (Exception e) {
+                    Log.d(TAG, "Android 11+ permissions intent failed");
+                }
+            }
+
+            // Fallback: Standard app details page (will show permissions section)
+            Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            call.resolve();
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to open app settings", e);
+            call.reject("Failed to open app settings: " + e.getMessage());
+        }
+    }
+
 
 
     private String statusToString(PlaybackStatus status) {

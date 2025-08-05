@@ -231,9 +231,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     );
 
     // Return empty results for each track URL with loaded=false
-    const tracks = options.tracks.map(url => ({
+    const tracks = options.tracks.map((url) => ({
       url,
-      loaded: false
+      loaded: false,
     }));
 
     return { tracks };
@@ -349,5 +349,23 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
       'getPlaybackInfo is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
     throw new Error('getPlaybackInfo is not supported on web platform');
+  }
+
+  /**
+   * Navigate to the app's permission settings screen.
+   * @returns Promise that resolves when navigation is initiated
+   * @platform web Shows alert with instructions to manually open browser settings
+   */
+  async openAppSettings(): Promise<void> {
+    console.warn('openAppSettings is not fully supported on web platform. Showing alert with instructions.');
+
+    const message =
+      'To manage permissions:\n\n' +
+      "1. Click the lock icon in your browser's address bar\n" +
+      '2. Select "Site settings" or "Permissions"\n' +
+      '3. Adjust microphone and other permissions as needed\n\n' +
+      'Or access browser settings directly through the browser menu.';
+
+    alert(message);
   }
 }

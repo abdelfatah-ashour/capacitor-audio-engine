@@ -361,6 +361,16 @@ export class FeaturesDemoComponent {
     }
   }
 
+  async openAppSettings(): Promise<void> {
+    try {
+      await CapacitorAudioEngine.openAppSettings();
+      await this.showToast('Opening app permissions...', 'success');
+    } catch (error) {
+      console.error('Failed to open app settings:', error);
+      await this.showToast('Failed to open app permissions', 'danger');
+    }
+  }
+
   async startRecording(): Promise<void> {
     if (!this.hasPermission()) {
       await this.requestPermission();

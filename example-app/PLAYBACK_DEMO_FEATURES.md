@@ -194,4 +194,41 @@ const demoPlaylist = [
 ✅ **Professional UX** - Intuitive controls and feedback
 ✅ **Error Handling** - Graceful failure management
 
+### 🔧 New Feature: App Permissions Navigation
+
+#### **Quick Access to System Permissions**
+
+A new feature has been added to help users manage app permissions more easily:
+
+- **Location**: Available in the "Audio Info" tab under "App Permissions" section
+- **Also Available**: In the permission request dialog when permissions are denied
+- **Purpose**: Direct navigation to the device's system permissions for the app
+
+#### **Implementation Details:**
+
+```typescript
+async openAppSettings(): Promise<void> {
+  try {
+    await CapacitorAudioEngine.openAppSettings();
+    await this.showToast('Opening app permissions...', 'success');
+  } catch (error) {
+    console.error('Failed to open app settings:', error);
+    await this.showToast('Failed to open app permissions', 'danger');
+  }
+}
+```
+
+#### **Platform Support:**
+
+- **iOS**: Opens `Settings > [App Name]` using `UIApplication.openSettingsURLString`
+- **Android**: Attempts to open app permissions page directly, falls back to app details in Settings using multiple intent strategies for better permissions access
+- **Web**: Shows alert with instructions for managing browser permissions
+
+#### **User Benefits:**
+
+✅ **Easy Permission Management** - Direct access to permission settings
+✅ **Recovery from Denied Permissions** - Clear path to re-enable permissions
+✅ **Cross-Platform Consistency** - Works the same way on all platforms
+✅ **Permissions-Focused** - Specifically targets permission management rather than general settings
+
 The demo now provides a **complete showcase** of your Audio Playback Manager capabilities, making it easy for users to understand and test all the playlist features! 🎧✨
