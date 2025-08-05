@@ -60,6 +60,11 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private long pausedDurationOffset = 0; // Track time spent paused
     private long pauseStartTime = 0; // Track when current pause began
 
+    // Duration tracking state for manual pause/resume operations
+    private final AtomicBoolean isManuallyPaused = new AtomicBoolean(false);
+    private long manualPausedDurationOffset = 0; // Track time spent manually paused
+    private long manualPauseStartTime = 0; // Track when current manual pause began
+
     // Segment management
     private final ConcurrentLinkedQueue<File> segmentBuffer = new ConcurrentLinkedQueue<>();
     private File segmentsDirectory;
@@ -154,6 +159,14 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             isActive.set(true);
             recordingStartTime = System.currentTimeMillis(); // Track start time
 
+            // Reset pause tracking variables
+            isDurationPaused.set(false);
+            pausedDurationOffset = 0;
+            pauseStartTime = 0;
+            isManuallyPaused.set(false);
+            manualPausedDurationOffset = 0;
+            manualPauseStartTime = 0;
+
             // Start first segment
             startNewSegment();
 
@@ -177,6 +190,13 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         synchronized (recordingLock) {
             if (!isActive.get()) {
                 return;
+            }
+
+            // Start tracking manual pause time
+            if (!isManuallyPaused.get()) {
+                isManuallyPaused.set(true);
+                manualPauseStartTime = System.currentTimeMillis();
+                Log.d(TAG, "Started tracking manual pause at: " + manualPauseStartTime);
             }
 
             // Pause current segment recording
@@ -207,6 +227,15 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 throw new IllegalStateException("No segment rolling to resume");
             }
 
+            // End tracking manual pause time
+            if (isManuallyPaused.get() && manualPauseStartTime > 0) {
+                long pauseDuration = System.currentTimeMillis() - manualPauseStartTime;
+                manualPausedDurationOffset += pauseDuration;
+                isManuallyPaused.set(false);
+                manualPauseStartTime = 0;
+                Log.d(TAG, "Ended manual pause tracking. Pause duration: " + pauseDuration + "ms, Total manual pause offset: " + manualPausedDurationOffset + "ms");
+            }
+
             // Resume current segment or start new one if needed
             if (currentSegmentRecorder != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
                 try {
@@ -220,7 +249,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             }
 
             // Restart segment timer - calculate remaining time to next rotation
-            long elapsedInCurrentSegment = (System.currentTimeMillis() - recordingStartTime) % SEGMENT_DURATION_MS;
+            long elapsedInCurrentSegment = (System.currentTimeMillis() - recordingStartTime - pausedDurationOffset - manualPausedDurationOffset) % SEGMENT_DURATION_MS;
             long timeToNextRotation = SEGMENT_DURATION_MS - elapsedInCurrentSegment;
 
             segmentTimer = new Timer("SegmentRotationTimer", true);
@@ -286,6 +315,15 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
             // Cleanup segments AFTER merging
             isActive.set(false);
+
+            // Reset pause tracking state
+            isDurationPaused.set(false);
+            pausedDurationOffset = 0;
+            pauseStartTime = 0;
+            isManuallyPaused.set(false);
+            manualPausedDurationOffset = 0;
+            manualPauseStartTime = 0;
+
             cleanupSegments();
 
             Log.d(TAG, "Stopped segment rolling and merged " + segmentCountBeforeMerge + " segments");
@@ -295,7 +333,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     }    /**
      * Get current recording duration across all segments in the rolling window
      * For rolling recording, this returns the actual elapsed time since recording started,
-     * accounting for interruption pauses to provide accurate usable recording time
+     * accounting for interruption pauses and manual pauses to provide accurate usable recording time
      */
     public long getCurrentDuration() {
         if (!isActive.get()) {
@@ -308,7 +346,16 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         // Subtract time spent paused due to interruptions for accurate duration
         long adjustedElapsedTime = elapsedTime - pausedDurationOffset;
 
-        // Return the actual recording time (excluding interruption pauses)
+        // Subtract time spent manually paused for accurate duration
+        adjustedElapsedTime -= manualPausedDurationOffset;
+
+        // If currently manually paused, subtract the current pause duration
+        if (isManuallyPaused.get() && manualPauseStartTime > 0) {
+            long currentPauseDuration = System.currentTimeMillis() - manualPauseStartTime;
+            adjustedElapsedTime -= currentPauseDuration;
+        }
+
+        // Return the actual recording time (excluding interruption pauses and manual pauses)
         return Math.max(0, adjustedElapsedTime);
     }
 
@@ -343,6 +390,13 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
      */
     public boolean isSegmentRollingActive() {
         return isActive.get();
+    }
+
+    /**
+     * Check if recording is currently paused (either manually or due to interruption)
+     */
+    public boolean isRecordingPaused() {
+        return isManuallyPaused.get() || isDurationPaused.get();
     }
 
     /**
@@ -1156,6 +1210,15 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
             isActive.set(false);
             recordingStartTime = 0;
+
+            // Reset pause tracking state
+            isDurationPaused.set(false);
+            pausedDurationOffset = 0;
+            pauseStartTime = 0;
+            isManuallyPaused.set(false);
+            manualPausedDurationOffset = 0;
+            manualPauseStartTime = 0;
+
             cleanupSegments();
         }
     }
