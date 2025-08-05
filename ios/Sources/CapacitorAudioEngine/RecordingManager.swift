@@ -77,6 +77,9 @@ class RecordingManager: NSObject {
     /// Stored recording settings for consistent retrieval after recording stops
     private var storedRecordingSettings: [String: Any] = [:]
 
+    /// Last recording settings used for resuming after reset
+    private var lastRecordingSettings: [String: Any]?
+
     // MARK: - Thread Safety & Async Processing
 
     /// Dedicated queue for thread-safe state operations
@@ -141,6 +144,9 @@ class RecordingManager: NSObject {
      */
     func startRecording(with settings: [String: Any]) {
         performStateOperation {
+            // Store settings for potential resume after reset
+            self.lastRecordingSettings = settings
+
             let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
             let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
             let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
@@ -356,22 +362,31 @@ class RecordingManager: NSObject {
             do {
                 if self.isSegmentRollingEnabled {
                     // Resume segment rolling
-                    try self.segmentRollingManager?.resumeSegmentRolling()
+                    if let segmentManager = self.segmentRollingManager {
+                        try segmentManager.resumeSegmentRolling()
+                    } else {
+                        // If segment rolling manager is nil (e.g., after reset), recreate it
+                        self.log("Segment rolling manager not found, recreating for resume")
+                        self.startSegmentRollingRecording(with: self.lastRecordingSettings ?? [:])
+                        self.log("Segment rolling recording resumed with fresh session")
+                    }
                 } else {
-                    // Resume linear recording
-                    guard let recorder = self.audioRecorder else {
-                        self.log("No paused recording to resume")
-                        return
-                    }
+                    // Resume linear recording or recreate if needed
+                    if let recorder = self.audioRecorder {
+                        // Ensure audio session is active before resuming
+                        if let session = self.recordingSession {
+                            try session.setActive(true)
+                        }
 
-                    // Ensure audio session is active before resuming
-                    if let session = self.recordingSession {
-                        try session.setActive(true)
-                    }
-
-                    if !recorder.record() {
-                        let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to resume recording"])
-                        self.delegate?.recordingDidEncounterError(error)
+                        if !recorder.record() {
+                            let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to resume recording"])
+                            self.delegate?.recordingDidEncounterError(error)
+                            return
+                        }
+                    } else {
+                        // No recorder found, create fresh recording session
+                        self.log("No paused recording to resume, starting fresh session")
+                        self.startRecording(with: self.lastRecordingSettings ?? [:])
                         return
                     }
                 }
@@ -386,6 +401,71 @@ class RecordingManager: NSObject {
                 self.log("Failed to resume recording: \(nsError.localizedDescription)")
                 self.delegate?.recordingDidEncounterError(nsError)
             }
+        }
+    }
+
+    /**
+     * Resets the current recording session by pausing, deleting previous segments,
+     * and resetting all counters. After calling this method, resumeRecording()
+     * will behave like starting a fresh recording session.
+     *
+     * This method:
+     * 1. Pauses the current recording if active
+     * 2. Deletes all existing segments if using segment rolling
+     * 3. Resets duration counters to zero
+     * 4. Maintains the recording session for immediate resumption
+     *
+     * Thread Safety: State changes are synchronized on state queue
+     *
+     * Throws: RecordingError if no active recording or reset fails
+     */
+    func resetRecording() throws {
+        try performStateOperation {
+            guard self.isRecording || self.isPaused else {
+                throw RecordingError.noActiveRecording
+            }
+
+            self.log("Resetting recording session...")
+
+            // First pause the recording if it's currently active
+            if self.isRecording {
+                if self.isSegmentRollingEnabled {
+                    self.segmentRollingManager?.pauseSegmentRolling()
+                } else if let recorder = self.audioRecorder {
+                    recorder.pause()
+                }
+                self.isRecording = false
+                self.isPaused = true
+            }
+
+            // For segment rolling, we need to stop and restart to clear segments
+            if self.isSegmentRollingEnabled {
+                // Stop the current segment rolling to clear all segments
+                self.segmentRollingManager?.cleanup()
+                self.segmentRollingManager = nil
+                self.log("Segment rolling manager cleaned up to clear segments")
+
+                // The manager will be recreated when resumeRecording is called
+                // This ensures a fresh start with no previous segments
+            } else {
+                // For linear recording, we need to stop and recreate the recorder
+                if let recorder = self.audioRecorder {
+                    recorder.stop()
+                }
+                // The recorder will be recreated when resumeRecording is called
+                self.audioRecorder = nil
+            }
+
+            // Reset duration monitoring
+            self.currentDuration = 0
+            self.stopDurationMonitoring()
+
+            // Notify delegate of duration reset
+            DispatchQueue.main.async {
+                self.delegate?.recordingDidUpdateDuration(0)
+            }
+
+            self.log("Recording session reset successfully - ready for fresh recording")
         }
     }
 
