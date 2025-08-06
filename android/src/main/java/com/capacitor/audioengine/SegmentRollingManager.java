@@ -306,6 +306,68 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     }
 
     /**
+     * Reset segment rolling to clear all segments and reset duration counters
+     * Keeps the recording session ready but stops active recording
+     */
+    public void resetSegmentRolling() throws IOException {
+        synchronized (recordingLock) {
+            if (!isActive.get()) {
+                throw new IllegalStateException("No segment rolling to reset");
+            }
+
+            Log.d(TAG, "Resetting segment rolling - clearing segments and duration");
+
+            // Stop timers
+            if (segmentTimer != null) {
+                segmentTimer.cancel();
+                segmentTimer = null;
+            }
+
+            if (durationUpdateTimer != null) {
+                durationUpdateTimer.cancel();
+                durationUpdateTimer = null;
+            }
+
+            // Stop current segment if recording
+            if (currentSegmentRecorder != null) {
+                try {
+                    currentSegmentRecorder.stop();
+                    currentSegmentRecorder.release();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping current segment during reset", e);
+                } finally {
+                    currentSegmentRecorder = null;
+                }
+            }
+
+            // Clear all segments and reset buffers
+            cleanupSegments();
+
+            // Reset all duration tracking variables to start fresh
+            recordingStartTime = System.currentTimeMillis(); // Reset start time to now
+            pausedDurationOffset = 0;
+            pauseStartTime = 0;
+            manualPausedDurationOffset = 0;
+            manualPauseStartTime = 0;
+
+            // Reset segment counter
+            segmentCounter.set(0);
+            totalDuration.set(0);
+
+            // Reset pause states
+            isDurationPaused.set(false);
+            isManuallyPaused.set(false);
+
+            // Keep session active without creating a new recorder
+            // This maintains the session state while avoiding MediaRecorder stop issues
+            // The session can be resumed later or stopped cleanly
+            Log.d(TAG, "Session remains active but without active recorder - ready for resume or stop");
+
+            Log.d(TAG, "Segment rolling reset completed - session active and ready");
+        }
+    }
+
+    /**
      * Stop segment rolling and return the merged file
      */
     public File stopSegmentRolling() throws IOException {
@@ -329,29 +391,55 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 durationUpdateTimer = null;
             }
 
-            // Stop current segment recording
+            // Stop current segment recording (if any exists)
             if (currentSegmentRecorder != null) {
                 try {
+                    // If recording is manually paused, we need to handle it carefully
+                    if (isManuallyPaused.get() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                        Log.d(TAG, "MediaRecorder is paused, resuming before stop to avoid error -1007");
+                        try {
+                            currentSegmentRecorder.resume();
+                            // Give it a moment to resume
+                            Thread.sleep(50);
+                        } catch (Exception resumeException) {
+                            Log.w(TAG, "Failed to resume paused recorder, will try to stop anyway", resumeException);
+                        }
+                    }
+
                     currentSegmentRecorder.stop();
                     currentSegmentRecorder.release();
 
                     // Add current segment to buffer if it has content
                     File lastSegmentFile = getSegmentFile(segmentCounter.get());
-                    addSegmentToBuffer(lastSegmentFile);
+                    if (lastSegmentFile.exists() && lastSegmentFile.length() > 1024) { // Only add if has content
+                        addSegmentToBuffer(lastSegmentFile);
+                    } else {
+                        Log.d(TAG, "Last segment file has no content or doesn't exist, skipping buffer addition");
+                    }
 
                 } catch (Exception e) {
-                    Log.w(TAG, "Error stopping current segment", e);
+                    Log.w(TAG, "Error stopping current segment: " + e.getMessage(), e);
+                    // Don't let this block the rest of the cleanup process
                 } finally {
                     currentSegmentRecorder = null;
                 }
+            } else {
+                Log.d(TAG, "No current segment recorder to stop (this is normal after reset)");
             }
 
             // Log segment buffer info before merge
             int segmentCountBeforeMerge = segmentBuffer.size();
             Log.d(TAG, "Starting merge with " + segmentCountBeforeMerge + " segments in buffer");
 
-            // Merge all segments (smart merging handles duration limits internally)
-            File mergedFile = mergeSegments();
+            // Handle empty segments case (can happen after reset)
+            File mergedFile;
+            if (segmentCountBeforeMerge == 0) {
+                Log.w(TAG, "No segments to merge - creating minimal empty file (this can happen after reset)");
+                mergedFile = createMinimalEmptyAudioFile();
+            } else {
+                // Merge all segments (smart merging handles duration limits internally)
+                mergedFile = mergeSegments();
+            }
 
             // Log merge completion
             Log.d(TAG, "Merge completed. Output file: " + mergedFile.getName() +
@@ -1861,6 +1949,32 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             lastInterruptionType = null;
 
             Log.d(TAG, "SegmentRollingManager cleanup completed");
+        }
+    }
+
+    /**
+     * Create a minimal empty audio file for cases where no segments exist (e.g., after reset)
+     * This ensures stopRecording can return a valid file even when no actual recording occurred
+     */
+    private File createMinimalEmptyAudioFile() throws IOException {
+        File emptyFile = new File(segmentsDirectory.getParent(),
+            "empty_recording_" + System.currentTimeMillis() + ".m4a");
+
+        Log.d(TAG, "Creating minimal empty audio file: " + emptyFile.getName());
+
+        // Simple approach: just create an empty file
+        // The calling code can handle this case appropriately
+        try {
+            if (emptyFile.createNewFile()) {
+                Log.d(TAG, "Created empty audio file placeholder: " + emptyFile.getName() +
+                      " (size: " + emptyFile.length() + " bytes)");
+                return emptyFile;
+            } else {
+                throw new IOException("Failed to create empty file");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create empty audio file", e);
+            throw new IOException("Failed to create empty audio file after reset: " + e.getMessage());
         }
     }
 }

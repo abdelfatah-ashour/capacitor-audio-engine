@@ -577,6 +577,19 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         }
     }
 
+    func recordingDidChangeState(_ state: String, data: [String: Any]) {
+        // Log the state change for debugging
+        log("recordingDidChangeState called - state: \(state), data: \(data)")
+
+        // Emit state change event to match Android behavior
+        notifyListeners("recordingStateChange", data: [
+            "state": state,
+            "data": data
+        ])
+
+        log("recordingStateChange event emitted to JavaScript")
+    }
+
     // MARK: - Playback Methods
 
     @objc func preloadTracks(_ call: CAPPluginCall) {

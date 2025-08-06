@@ -348,6 +348,70 @@ class SegmentRollingManager: NSObject {
     }
 
     /**
+     * Clear all segments and reset duration counters while maintaining active session
+     * This method is used for reset functionality to clear segments but keep the microphone session active
+     */
+    func clearSegmentsAndReset() {
+        performQueueSafeOperation {
+            guard isActive else { return }
+
+            log("Clearing all segments and resetting duration counters")
+
+            // Stop and invalidate timer if running
+            if useSegmentRolling {
+                segmentTimer?.invalidate()
+                segmentTimer = nil
+            }
+
+            // Stop current segment recorder completely
+            if let recorder = currentSegmentRecorder {
+                if recorder.isRecording {
+                    recorder.stop()
+                }
+                recorder.delegate = nil
+                currentSegmentRecorder = nil
+            }
+
+            // Clear all segments from buffer and file system
+            for segmentURL in segmentBuffer {
+                do {
+                    try FileManager.default.removeItem(at: segmentURL)
+                    log("Removed segment: \(segmentURL.lastPathComponent)")
+                } catch {
+                    log("Failed to remove segment during reset: \(error.localizedDescription)")
+                }
+            }
+            segmentBuffer.removeAll()
+
+            // Reset all duration and timing counters
+            segmentCounter = 0
+            totalRecordingDuration = 0
+            recordingStartTime = Date() // Reset to current time for fresh start
+            totalPausedDuration = 0
+            pausedTime = nil
+
+            // Keep session active by starting a paused segment immediately to maintain microphone access
+            // This ensures the microphone LED stays ON indicating active recording session
+            do {
+                try startNewSegment()
+                // Immediately pause the segment to maintain session without recording
+                if let newRecorder = currentSegmentRecorder {
+                    newRecorder.pause()
+                    isPaused = true
+                    pausedTime = Date()
+                    log("Started paused segment to maintain microphone session after reset")
+                }
+            } catch {
+                log("Failed to maintain microphone session after reset: \(error.localizedDescription)")
+                // If we can't maintain the session, set to inactive as fallback
+                isActive = false
+            }
+
+            log("Segments cleared and duration reset - session remains active for microphone indicator")
+        }
+    }
+
+    /**
      * Stop segment rolling and merge all segments into final file
      * - returns: URL of the merged audio file
      */

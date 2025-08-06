@@ -747,11 +747,20 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             info.put("mimeType", "audio/mp4"); // Default for M4A files
             info.put("createdAt", file.lastModified());
 
-            // Calculate actual duration using AudioFileProcessor
-            double actualDuration = AudioFileProcessor.getAudioDuration(filePath);
-            info.put("duration", actualDuration);
+            // Calculate duration
+            double actualDuration = 0.0;
 
-            Log.d(TAG, "Calculated duration: " + actualDuration + " seconds for file: " + file.getName());
+            // Handle empty files (created after reset with no recording)
+            if (file.length() == 0) {
+                Log.d(TAG, "Empty file detected (created after reset), setting duration to 0");
+                actualDuration = 0.0;
+            } else {
+                // Calculate actual duration using AudioFileProcessor
+                actualDuration = AudioFileProcessor.getAudioDuration(filePath);
+                Log.d(TAG, "Calculated duration: " + actualDuration + " seconds for file: " + file.getName());
+            }
+
+            info.put("duration", actualDuration);
 
             // Use the current recording config
             if (recordingConfig != null) {
@@ -1272,6 +1281,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             if (segmentRollingManager != null) {
                 segmentRollingManager.pauseSegmentRolling();
                 Log.d(TAG, "Segment rolling recording paused");
+
+                // Emit pause state change event for consistency
+                if (eventManager != null) {
+                    JSObject pauseData = new JSObject();
+                    long currentDuration = segmentRollingManager.getCurrentDuration();
+                    pauseData.put("duration", currentDuration / 1000.0);
+                    pauseData.put("isRecording", true); // Session is still active
+                    pauseData.put("status", "paused");
+                    eventManager.emitRecordingStateChange("paused", pauseData);
+                }
+
                 if (call != null) call.resolve();
             } else {
                 if (call != null) call.reject("Segment rolling manager not initialized");
@@ -1294,11 +1314,30 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         try {
             // Resume segment rolling
             if (segmentRollingManager != null) {
-                segmentRollingManager.resumeSegmentRolling();
-                Log.d(TAG, "Segment rolling recording resumed");
+                if (segmentRollingManager.isSegmentRollingActive()) {
+                    // Normal resume case - manager is active (including after reset with paused segment)
+                    segmentRollingManager.resumeSegmentRolling();
+                    Log.d(TAG, "Segment rolling recording resumed from pause/reset state");
+                } else {
+                    // Legacy case - manager exists but not active, need to restart fresh
+                    Log.d(TAG, "Segment rolling not active (legacy state), restarting segment rolling");
+                    segmentRollingManager.startSegmentRolling(recordingConfig);
+                    Log.d(TAG, "Fresh segment rolling started after legacy reset");
+                }
+
+                // Emit recording state change event for consistency
+                if (eventManager != null) {
+                    JSObject resumeData = new JSObject();
+                    long currentDuration = segmentRollingManager.getCurrentDuration();
+                    resumeData.put("duration", currentDuration / 1000.0);
+                    resumeData.put("isRecording", true);
+                    resumeData.put("status", "recording");
+                    eventManager.emitRecordingStateChange("recording", resumeData);
+                }
+
                 if (call != null) call.resolve();
             } else {
-                // If segment rolling manager is null (e.g., after reset), recreate it
+                // If segment rolling manager is null, recreate it
                 Log.d(TAG, "Segment rolling manager not initialized, recreating for resume");
                 try {
                     startSegmentRollingRecording();
@@ -1316,7 +1355,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
     /**
-     * Internal reset recording method that pauses, deletes segments, and resets counters
+     * Internal reset recording method that clears segments and resets duration counters
      */
     private void resetRecordingInternal() throws Exception {
         if (!isRecording) {
@@ -1326,38 +1365,36 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         Log.d(TAG, "Resetting recording session...");
 
         try {
-            // First pause the recording to ensure clean state
+            // First pause the recording to ensure proper state transition
+            pauseRecordingInternal(null);
+            Log.d(TAG, "Recording paused before reset");
+
+            // Reset segment rolling manager to clear all segments and reset duration
             if (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive()) {
-                segmentRollingManager.pauseSegmentRolling();
-                Log.d(TAG, "Segment rolling paused for reset");
+                segmentRollingManager.resetSegmentRolling();
+                Log.d(TAG, "Segment rolling manager reset - segments cleared and duration reset");
+            } else {
+                throw new Exception("Segment rolling manager not active or not available");
             }
 
-            // For segment rolling, we need to stop and restart to clear segments
-            if (segmentRollingManager != null) {
-                // Stop the current segment rolling to clear all segments
-                segmentRollingManager.release();
-                segmentRollingManager = null;
-                Log.d(TAG, "Segment rolling manager released to clear segments");
-
-                // The manager will be recreated when resumeRecording is called
-                // This ensures a fresh start with no previous segments
-            }
-
-            // Keep isRecording true but in a paused state - don't stop the recording session
+            // Keep isRecording true to maintain the session active
             // This allows resumeRecording to work as expected after reset
-            Log.d(TAG, "Recording session remains active but reset - ready for resumption");
+            // Also ensures stopRecording can be called to properly clean up the session
+            Log.d(TAG, "Recording session remains active but reset - ready for resumption or stop");
 
-            // Reset duration monitoring
+            // Emit reset state events
             if (eventManager != null) {
                 JSObject resetData = new JSObject();
                 resetData.put("duration", 0);
-                eventManager.emitRecordingStateChange("reset", resetData);
+                resetData.put("isRecording", true); // Session is still active
+                resetData.put("status", "paused"); // Reset state is effectively paused
+                eventManager.emitRecordingStateChange("paused", resetData);
 
                 // Emit duration change event to reset UI counters
                 eventManager.emitDurationChange(0.0);
             }
 
-            Log.d(TAG, "Recording session reset successfully - ready for fresh recording");
+            Log.d(TAG, "Recording session reset successfully - ready for fresh recording or stop");
 
         } catch (Exception e) {
             Log.e(TAG, "Error during recording reset", e);
