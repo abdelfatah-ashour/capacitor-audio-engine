@@ -516,7 +516,7 @@ class RecordingManager: NSObject {
      */
     func stopRecording() {
         performStateOperation {
-            guard self.isRecording else {
+            guard self.isRecording || self.isPaused else {
                 self.log("No active recording to stop - already stopped or stopping")
                 // Don't treat this as an error - just ignore duplicate stops gracefully
                 return
