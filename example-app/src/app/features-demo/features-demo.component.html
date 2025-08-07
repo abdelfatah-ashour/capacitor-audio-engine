@@ -444,179 +444,185 @@
             </ion-card-header>
             <ion-card-content>
               @for (track of demoPlaylist; track track.id) {
-                <ion-card
-                  class="per-url-track-card"
-                  [color]="isTrackPlaying(track.url) ? 'primary' : undefined"
-                >
+                <ion-card class="track-player-card">
                   <ion-card-header>
-                    <ion-card-title>
-                      {{ track.title }}
+                    <ion-card-title>{{ track.title }}</ion-card-title>
+                    <ion-note>{{ track.artist }}</ion-note>
+
+                    <!-- Track Status Chips -->
+                    <div class="track-status">
                       @if (isTrackPreloaded(track.url)) {
                         <ion-chip color="success" size="small">
                           <ion-icon name="checkmark-circle"></ion-icon>
-                          Preloaded
+                          <ion-label>Preloaded</ion-label>
                         </ion-chip>
                       }
-                    </ion-card-title>
-                    <ion-note>{{ track.artist }}</ion-note>
 
-                    <!-- Show detailed track info if preloaded -->
-                    @if (getPreloadedTrackInfo(track.url); as trackInfo) {
-                      <div class="track-metadata" style="margin-top: 8px">
+                      @if (getPreloadedTrackInfo(track.url); as trackInfo) {
                         @if (trackInfo.loaded) {
-                          <ion-chip color="success" size="small">
-                            <ion-label>✓ Loaded</ion-label>
-                          </ion-chip>
-                          @if (trackInfo.mimeType) {
-                            <ion-chip color="primary" size="small">
-                              <ion-label>{{ trackInfo.mimeType }}</ion-label>
-                            </ion-chip>
-                          }
                           @if (trackInfo.duration && trackInfo.duration > 0) {
                             <ion-chip color="medium" size="small">
                               <ion-label>{{ formatTime(trackInfo.duration) }}</ion-label>
                             </ion-chip>
                           }
-                          @if (trackInfo.size && trackInfo.size > 0) {
-                            <ion-chip color="medium" size="small">
-                              <ion-label>{{ formatFileSize(trackInfo.size) }}</ion-label>
-                            </ion-chip>
-                          }
                         } @else {
                           <ion-chip color="danger" size="small">
-                            <ion-label>✗ Failed to Load</ion-label>
+                            <ion-label>Failed to Load</ion-label>
                           </ion-chip>
                         }
-                      </div>
-                    }
+                      }
+                    </div>
                   </ion-card-header>
 
                   <ion-card-content>
-                    <!-- Track Status & Progress -->
-                    @if (getTrackPlaybackInfo(track.url)) {
-                      <div class="track-info">
-                        <ion-progress-bar
-                          [value]="getTrackProgress(track.url) / 100"
-                        ></ion-progress-bar>
-                        <ion-note>{{ getFormattedTrackTime(track.url) }}</ion-note>
-                        <ion-chip
-                          [color]="isTrackPlaying(track.url) ? 'success' : 'medium'"
-                          size="small"
-                        >
-                          {{ getTrackPlaybackInfo(track.url)?.status | titlecase }}
-                        </ion-chip>
+                    @if (!isTrackPreloaded(track.url)) {
+                      <!-- Preload Section -->
+                      <div class="preload-section">
+                        <ion-button expand="block" fill="outline" (click)="preloadTrack(track.url)">
+                          <ion-icon name="download" slot="start"></ion-icon>
+                          Load Track
+                        </ion-button>
                       </div>
-                    }
+                    } @else {
+                      <!-- Player Controls Section -->
+                      <div class="player-controls">
+                        <!-- Progress Bar Section -->
+                        @if (getTrackPlaybackInfo(track.url)) {
+                          <div class="progress-section">
+                            <ion-range
+                              [value]="getTrackProgress(track.url)"
+                              [min]="0"
+                              [max]="100"
+                              [pin]="true"
+                              [snaps]="false"
+                              [ticks]="false"
+                              (ionInput)="onSeekChange($event, track.url)"
+                              color="primary"
+                            >
+                              <ion-label slot="start">{{
+                                formatTime(getTrackPosition(track.url))
+                              }}</ion-label>
+                              <ion-label slot="end">{{
+                                formatTime(getTrackDuration(track.url))
+                              }}</ion-label>
+                            </ion-range>
+                          </div>
+                        }
 
-                    <!-- Track Controls -->
-                    <ion-grid>
-                      <ion-row>
-                        <ion-col size="3">
-                          @if (!isTrackPreloaded(track.url)) {
-                            <ion-button
-                              size="small"
-                              fill="outline"
-                              (click)="preloadTrack(track.url)"
-                            >
-                              <ion-icon name="download"></ion-icon>
-                            </ion-button>
-                          } @else {
-                            @if (isTrackPlaying(track.url)) {
-                              <ion-button
-                                size="small"
-                                fill="solid"
-                                color="warning"
-                                (click)="pauseTrack(track.url)"
-                              >
-                                <ion-icon name="pause"></ion-icon>
-                              </ion-button>
-                            } @else {
-                              <ion-button
-                                size="small"
-                                fill="solid"
-                                color="success"
-                                (click)="playTrack(track.url)"
-                              >
-                                <ion-icon name="play"></ion-icon>
-                              </ion-button>
-                            }
-                          }
-                        </ion-col>
-                        <ion-col size="3">
-                          <ion-button
-                            size="small"
-                            fill="outline"
-                            [disabled]="!isTrackPreloaded(track.url)"
-                            (click)="stopTrack(track.url)"
-                          >
-                            <ion-icon name="stop"></ion-icon>
-                          </ion-button>
-                        </ion-col>
-                        <ion-col size="3">
-                          <ion-button
-                            size="small"
-                            fill="outline"
-                            [disabled]="
-                              !isTrackPreloaded(track.url) || !getTrackPlaybackInfo(track.url)
-                            "
-                            (click)="seekTrack(track.url, 0)"
-                          >
-                            <ion-icon name="refresh"></ion-icon>
-                          </ion-button>
-                        </ion-col>
-                        <ion-col size="3">
-                          <ion-button
-                            size="small"
-                            fill="outline"
-                            [disabled]="
-                              !isTrackPreloaded(track.url) || !getTrackPlaybackInfo(track.url)
-                            "
-                            (click)="seekTrack(track.url, getTrackDuration(track.url) / 2)"
-                          >
-                            50%
-                          </ion-button>
-                        </ion-col>
-                      </ion-row>
-                    </ion-grid>
+                        <!-- Main Control Buttons -->
+                        <div class="control-buttons">
+                          <ion-grid>
+                            <ion-row>
+                              <ion-col size="3">
+                                <ion-button
+                                  expand="block"
+                                  fill="solid"
+                                  color="success"
+                                  [disabled]="isTrackPlaying(track.url)"
+                                  (click)="playTrack(track.url)"
+                                >
+                                  <ion-icon name="play"></ion-icon>
+                                </ion-button>
+                                <ion-label class="button-label">Play</ion-label>
+                              </ion-col>
+                              <ion-col size="3">
+                                <ion-button
+                                  expand="block"
+                                  fill="solid"
+                                  color="warning"
+                                  [disabled]="!isTrackPlaying(track.url)"
+                                  (click)="pauseTrack(track.url)"
+                                >
+                                  <ion-icon name="pause"></ion-icon>
+                                </ion-button>
+                                <ion-label class="button-label">Pause</ion-label>
+                              </ion-col>
+                              <ion-col size="3">
+                                <ion-button
+                                  expand="block"
+                                  fill="solid"
+                                  color="secondary"
+                                  [disabled]="
+                                    !getTrackPlaybackInfo(track.url) || isTrackPlaying(track.url)
+                                  "
+                                  (click)="resumeTrack(track.url)"
+                                >
+                                  <ion-icon name="play"></ion-icon>
+                                </ion-button>
+                                <ion-label class="button-label">Resume</ion-label>
+                              </ion-col>
+                              <ion-col size="3">
+                                <ion-button
+                                  expand="block"
+                                  fill="solid"
+                                  color="danger"
+                                  [disabled]="!getTrackPlaybackInfo(track.url)"
+                                  (click)="stopTrack(track.url)"
+                                >
+                                  <ion-icon name="stop"></ion-icon>
+                                </ion-button>
+                                <ion-label class="button-label">Stop</ion-label>
+                              </ion-col>
+                            </ion-row>
+                          </ion-grid>
+                        </div>
 
-                    <!-- Quick Seek for Current Track -->
-                    @if (isTrackPreloaded(track.url) && getTrackPlaybackInfo(track.url)) {
-                      <ion-grid>
-                        <ion-row>
-                          <ion-col size="3">
-                            <ion-button size="small" fill="clear" (click)="seekTrack(track.url, 5)">
-                              5s
-                            </ion-button>
-                          </ion-col>
-                          <ion-col size="3">
-                            <ion-button
-                              size="small"
-                              fill="clear"
-                              (click)="seekTrack(track.url, 15)"
-                            >
-                              15s
-                            </ion-button>
-                          </ion-col>
-                          <ion-col size="3">
-                            <ion-button
-                              size="small"
-                              fill="clear"
-                              (click)="seekTrack(track.url, 30)"
-                            >
-                              30s
-                            </ion-button>
-                          </ion-col>
-                          <ion-col size="3">
-                            <ion-button
-                              size="small"
-                              fill="clear"
-                              (click)="seekTrack(track.url, 60)"
-                            >
-                              60s
-                            </ion-button>
-                          </ion-col>
-                        </ion-row>
-                      </ion-grid>
+                        <!-- Quick Seek Buttons -->
+                        @if (getTrackPlaybackInfo(track.url)) {
+                          <div class="seek-buttons">
+                            <ion-label><strong>Quick Seek:</strong></ion-label>
+                            <ion-grid>
+                              <ion-row>
+                                <ion-col size="2.4">
+                                  <ion-button
+                                    size="small"
+                                    fill="clear"
+                                    (click)="seekTrack(track.url, 0)"
+                                  >
+                                    Start
+                                  </ion-button>
+                                </ion-col>
+                                <ion-col size="2.4">
+                                  <ion-button
+                                    size="small"
+                                    fill="clear"
+                                    (click)="seekTrack(track.url, 15)"
+                                  >
+                                    15s
+                                  </ion-button>
+                                </ion-col>
+                                <ion-col size="2.4">
+                                  <ion-button
+                                    size="small"
+                                    fill="clear"
+                                    (click)="seekTrack(track.url, 30)"
+                                  >
+                                    30s
+                                  </ion-button>
+                                </ion-col>
+                                <ion-col size="2.4">
+                                  <ion-button
+                                    size="small"
+                                    fill="clear"
+                                    (click)="seekTrack(track.url, 60)"
+                                  >
+                                    60s
+                                  </ion-button>
+                                </ion-col>
+                                <ion-col size="2.4">
+                                  <ion-button
+                                    size="small"
+                                    fill="clear"
+                                    (click)="seekTrack(track.url, getTrackDuration(track.url) / 2)"
+                                  >
+                                    50%
+                                  </ion-button>
+                                </ion-col>
+                              </ion-row>
+                            </ion-grid>
+                          </div>
+                        }
+                      </div>
                     }
                   </ion-card-content>
                 </ion-card>

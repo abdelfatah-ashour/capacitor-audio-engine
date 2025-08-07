@@ -26,6 +26,7 @@ import {
   IonSegmentButton,
   IonNote,
   IonCheckbox,
+  IonRange,
   AlertController,
   ToastController,
 } from '@ionic/angular/standalone';
@@ -97,7 +98,6 @@ interface AudioFileInfoWithMetadata extends AudioFileInfo {
     IonItemDivider,
     IonLabel,
     IonProgressBar,
-
     IonChip,
     IonGrid,
     IonRow,
@@ -106,6 +106,7 @@ interface AudioFileInfoWithMetadata extends AudioFileInfo {
     IonSegmentButton,
     IonNote,
     IonCheckbox,
+    IonRange,
   ],
 })
 export class FeaturesDemoComponent {
@@ -641,6 +642,33 @@ export class FeaturesDemoComponent {
     } catch (error) {
       console.error('Failed to seek track:', error);
       await this.showToast('Failed to seek', 'danger');
+    }
+  }
+
+  onProgressBarClick(event: MouseEvent, url: string): void {
+    const target = event.target as HTMLElement;
+    const progressBar = target.closest('ion-progress-bar');
+
+    if (progressBar) {
+      const rect = progressBar.getBoundingClientRect();
+      const clickX = event.clientX - rect.left;
+      const percentage = Math.min(Math.max(clickX / rect.width, 0), 1);
+      const duration = this.getTrackDuration(url);
+      const seekTime = percentage * duration;
+
+      if (duration > 0) {
+        this.seekTrack(url, seekTime);
+      }
+    }
+  }
+
+  onSeekChange(event: any, url: string): void {
+    const percentage = event.detail.value;
+    const duration = this.getTrackDuration(url);
+    const seekTime = (percentage / 100) * duration;
+
+    if (duration > 0) {
+      this.seekTrack(url, seekTime);
     }
   }
 

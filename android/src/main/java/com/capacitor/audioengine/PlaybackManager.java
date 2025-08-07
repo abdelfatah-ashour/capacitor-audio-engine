@@ -60,6 +60,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     private List<AudioTrack> playlist;
     private int currentIndex = 0;
     private PlaybackStatus status = PlaybackStatus.IDLE;
+    private HashMap<String, Long> trackPositions = new HashMap<>();
 
   // Media sources
     private ConcatenatingMediaSource concatenatingMediaSource;
@@ -439,10 +440,16 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             return;
         }
 
+        // Store current position before pausing
+        AudioTrack currentTrack = getCurrentTrack();
+        if (currentTrack != null && player != null) {
+            long currentPosition = player.getCurrentPosition();
+            trackPositions.put(currentTrack.getUrl(), currentPosition);
+        }
+
         player.setPlayWhenReady(false);
         status = PlaybackStatus.PAUSED;
 
-        AudioTrack currentTrack = getCurrentTrack();
         if (currentTrack != null && listener != null) {
             listener.onPlaybackPaused(currentTrack, currentIndex);
         }
@@ -463,6 +470,12 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post(this::stop);
             return;
+        }
+
+        // Clear stored position when stopping
+        AudioTrack currentTrack = getCurrentTrack();
+        if (currentTrack != null) {
+            trackPositions.remove(currentTrack.getUrl());
         }
 
         player.setPlayWhenReady(false);
@@ -584,7 +597,10 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             throw new Exception("Track with URL '" + url + "' not found in preloaded tracks");
         }
 
-        // Switch to the track and play
+        // Clear any stored position for this track since we're starting fresh
+        trackPositions.remove(url);
+
+        // Switch to the track and play from beginning
         currentIndex = trackIndex;
         switchToTrack(trackIndex);
         play();
@@ -610,10 +626,16 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             return;
         }
 
-        // Switch to the track and resume/play
-        currentIndex = trackIndex;
-        switchToTrack(trackIndex);
-        play();
+        // Check if we're resuming the same track that's currently selected
+        if (trackIndex == currentIndex) {
+            // Same track - just resume without switching
+            play();
+        } else {
+            // Different track - switch to it and restore its position if available
+            currentIndex = trackIndex;
+            switchToTrackWithPosition(trackIndex);
+            play();
+        }
     }
 
     public void stopByUrl(String url) {
@@ -622,6 +644,9 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
             return;
         }
+
+        // Clear stored position for this track
+        trackPositions.remove(url);
 
         // Only stop if this is the currently playing track
         if (trackIndex == currentIndex) {
@@ -679,7 +704,43 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         }
     }
 
+    private void switchToTrackWithPosition(int index) {
+        // Ensure we're on the main thread
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(() -> switchToTrackWithPosition(index));
+            return;
+        }
+
+        if (player != null && index >= 0 && index < playlist.size()) {
+            // Reset status to allow proper playback control after track switch
+            if (status == PlaybackStatus.PLAYING) {
+                status = PlaybackStatus.PAUSED;
+            }
+
+            AudioTrack newTrack = playlist.get(index);
+
+            // Check if we have a stored position for this track
+            Long storedPosition = trackPositions.get(newTrack.getUrl());
+            if (storedPosition != null) {
+                // Seek to the stored position
+                player.seekTo(index, storedPosition);
+            } else {
+                // No stored position, start from beginning
+                player.seekTo(index, 0);
+            }
+
+            if (listener != null) {
+                listener.onTrackChanged(newTrack, index);
+            }
+        }
+    }
+
     public void release() {
+        // Clear all stored positions
+        if (trackPositions != null) {
+            trackPositions.clear();
+        }
+
         if (player != null) {
             player.release();
             player = null;
