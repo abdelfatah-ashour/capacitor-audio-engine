@@ -5,11 +5,11 @@ import UIKit
 /**
  * Manages segment rolling audio recording with automatic cleanup
  * Features:
- * - Linear recording without segments when no maxDuration is set
- * - Records audio in 30-second segments when maxDuration is set
- * - Maintains a rolling buffer based on maxDuration (keeps only last N seconds)
+ * - Records audio in 30-second segments for all recordings
+ * - When no maxDuration is set, maintains all segments (unlimited recording)
+ * - When maxDuration is set, maintains a rolling buffer (keeps only last N seconds)
  * - Duration reporting continues to count up (never resets)
- * - Final recording contains only the last maxDuration seconds of audio
+ * - Final recording contains only the buffered segments of audio
  * - Automatically removes oldest segments when buffer reaches capacity
  * - Merges segments into final audio file when recording stops
  */
@@ -32,9 +32,6 @@ class SegmentRollingManager: NSObject {
 
     // Duration control
     private var maxDuration: TimeInterval?
-
-    // Recording mode - determines if we use segments or linear recording
-    private var useSegmentRolling: Bool = false
 
     // Total recording duration tracking (never resets)
     private var totalRecordingDuration: TimeInterval = 0
@@ -257,26 +254,22 @@ class SegmentRollingManager: NSObject {
         isPaused = false
 
         // Determine recording mode based on maxDuration
-        useSegmentRolling = maxDuration != nil
+        // Always use segment rolling
 
-        log("Starting recording with mode: \(useSegmentRolling ? "segment rolling" : "linear")")
+        log("Starting recording with segment rolling mode (maxDuration: \(maxDuration?.description ?? "unlimited"))")
 
         // Start recording
         log("About to call startNewSegment()")
         try startNewSegment()
         log("startNewSegment() completed successfully")
 
-        // Only start segment timer if using segment rolling
-        if useSegmentRolling {
-            DispatchQueue.main.async {
-                self.segmentTimer = Timer.scheduledTimer(withTimeInterval: AudioEngineConstants.segmentDuration, repeats: true) { _ in
-                    self.rotateSegment()
-                }
+        // Start segment timer for rotating segments every 30 seconds
+        DispatchQueue.main.async {
+            self.segmentTimer = Timer.scheduledTimer(withTimeInterval: AudioEngineConstants.segmentDuration, repeats: true) { _ in
+                self.rotateSegment()
             }
-            log("Started segment rolling with 30-second intervals")
-        } else {
-            log("Started linear recording (no segments)")
         }
+        log("Started segment rolling with 30-second intervals")
     }
 
     /**
@@ -295,13 +288,11 @@ class SegmentRollingManager: NSObject {
 
             log("Pause - pausedTime set to: \(pausedTime!), totalPausedDuration before: \(totalPausedDuration)")
 
-            // Only stop timer if using segment rolling
-            if useSegmentRolling {
-                segmentTimer?.invalidate()
-                segmentTimer = nil
-            }
+            // Stop segment timer
+            segmentTimer?.invalidate()
+            segmentTimer = nil
 
-            log("Paused \(useSegmentRolling ? "segment rolling" : "linear") recording")
+            log("Paused segment rolling recording")
         }
     }
 
@@ -334,16 +325,14 @@ class SegmentRollingManager: NSObject {
                 try startNewSegment()
             }
 
-            // Only restart segment timer if using segment rolling
-            if useSegmentRolling {
-                DispatchQueue.main.async {
-                    self.segmentTimer = Timer.scheduledTimer(withTimeInterval: AudioEngineConstants.segmentDuration, repeats: true) { _ in
-                        self.rotateSegment()
-                    }
+            // Restart segment timer
+            DispatchQueue.main.async {
+                self.segmentTimer = Timer.scheduledTimer(withTimeInterval: AudioEngineConstants.segmentDuration, repeats: true) { _ in
+                    self.rotateSegment()
                 }
             }
 
-            log("Resumed \(useSegmentRolling ? "segment rolling" : "linear") recording")
+            log("Resumed segment rolling recording")
         }
     }
 
@@ -358,10 +347,8 @@ class SegmentRollingManager: NSObject {
             log("Clearing all segments and resetting duration counters")
 
             // Stop and invalidate timer if running
-            if useSegmentRolling {
-                segmentTimer?.invalidate()
-                segmentTimer = nil
-            }
+            segmentTimer?.invalidate()
+            segmentTimer = nil
 
             // Stop current segment recorder completely
             if let recorder = currentSegmentRecorder {
@@ -421,12 +408,10 @@ class SegmentRollingManager: NSObject {
                 throw SegmentRecordingError.noRecordingToStop
             }
 
-            // Stop timer if using segment rolling
-            if useSegmentRolling {
-                DispatchQueue.main.sync {
-                    segmentTimer?.invalidate()
-                    segmentTimer = nil
-                }
+            // Stop timer
+            DispatchQueue.main.sync {
+                segmentTimer?.invalidate()
+                segmentTimer = nil
             }
 
             // Stop current segment recording with aggressive cleanup
@@ -440,76 +425,45 @@ class SegmentRollingManager: NSObject {
 
             let finalFileURL: URL
 
-            if useSegmentRolling {
-                // Segment rolling mode - add current segment to buffer and merge
-                log("Stopping segment rolling mode")
+            // Segment rolling mode - add current segment to buffer and merge
+            log("Stopping segment rolling mode")
 
-                // Add current segment to buffer if it exists and has content
-                if let lastSegmentURL = getLastSegmentURL() {
-                    log("Found last segment, adding to buffer")
-                    addSegmentToBuffer(lastSegmentURL)
-                } else {
-                    log("No last segment found")
-                }
-
-                // Check if we have any segments to merge
-                if segmentBuffer.isEmpty {
-                    log("Warning: No segments in buffer, this might be a very short recording")
-                    throw SegmentRecordingError.noValidSegments
-                }
-
-                // Merge all segments
-                let mergedFileURL = try mergeSegments()
-
-                // Apply trimming if maxDuration is set (matching Android behavior)
-                if let maxDuration = maxDuration {
-                    log("Applying trimming to merged file with maxDuration: \(maxDuration) seconds")
-                    finalFileURL = try trimMergedFile(mergedFileURL, maxDuration: maxDuration)
-                    log("Successfully trimmed recording to exact maxDuration")
-                } else {
-                    finalFileURL = mergedFileURL
-                }
-
-                log("Stopped segment rolling and merged \(segmentBuffer.count) segments")
+            // Add current segment to buffer if it exists and has content
+            if let lastSegmentURL = getLastSegmentURL() {
+                log("Found last segment, adding to buffer")
+                addSegmentToBuffer(lastSegmentURL)
             } else {
-                // Linear recording mode - return the single recorded file
-                log("Stopping linear recording mode")
-
-                guard let lastSegmentURL = getLastSegmentURL(),
-                      FileManager.default.fileExists(atPath: lastSegmentURL.path) else {
-                    throw SegmentRecordingError.noRecordingFile
-                }
-
-                // Move the single file to final location
-                let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                let tempFinalFileURL = documentsPath.appendingPathComponent("linear_recording_\(Int(Date().timeIntervalSince1970)).m4a")
-
-                try FileManager.default.moveItem(at: lastSegmentURL, to: tempFinalFileURL)
-
-                // Apply trimming if maxDuration is set (matching Android behavior)
-                if let maxDuration = maxDuration {
-                    log("Applying trimming to linear recording with maxDuration: \(maxDuration) seconds")
-                    finalFileURL = try trimMergedFile(tempFinalFileURL, maxDuration: maxDuration)
-                    log("Successfully trimmed linear recording to exact maxDuration")
-                } else {
-                    finalFileURL = tempFinalFileURL
-                }
-
-                log("Stopped linear recording")
+                log("No last segment found")
             }
+
+            // Check if we have any segments to merge
+            if segmentBuffer.isEmpty {
+                log("Warning: No segments in buffer, this might be a very short recording")
+                throw SegmentRecordingError.noValidSegments
+            }
+
+            // Merge all segments
+            let mergedFileURL = try mergeSegments()
+
+            // Apply trimming if maxDuration is set (matching Android behavior)
+            if let maxDuration = maxDuration {
+                log("Applying trimming to merged file with maxDuration: \(maxDuration) seconds")
+                finalFileURL = try trimMergedFile(mergedFileURL, maxDuration: maxDuration)
+                log("Successfully trimmed recording to exact maxDuration")
+            } else {
+                finalFileURL = mergedFileURL
+            }
+
+            log("Stopped segment rolling and merged \(segmentBuffer.count) segments")
 
             // Cleanup
             isActive = false
-            let wasUsingSegmentRolling = useSegmentRolling
-            useSegmentRolling = false
             totalRecordingDuration = 0
             recordingStartTime = nil
             totalPausedDuration = 0
             pausedTime = nil
             isPaused = false
-            if wasUsingSegmentRolling {
-                cleanupSegments()
-            }
+            cleanupSegments()
 
             return finalFileURL
         }
@@ -517,39 +471,33 @@ class SegmentRollingManager: NSObject {
 
     /**
      * Get elapsed recording time across all segments
-     * For segment rolling: Returns total elapsed time since recording started (excluding paused time)
-     * For linear recording: Returns current recorder time
+     * Returns total elapsed time since recording started (excluding paused time)
      */
     func getElapsedRecordingTime() -> TimeInterval {
         return performQueueSafeOperation {
             guard isActive else { return 0 }
 
-            if useSegmentRolling {
-                // For segment rolling, return total elapsed time since recording started minus paused time
-                if let startTime = recordingStartTime {
-                    let totalElapsed = Date().timeIntervalSince(startTime)
-                    var currentPausedDuration = totalPausedDuration
+            // For segment rolling, return total elapsed time since recording started minus paused time
+            if let startTime = recordingStartTime {
+                let totalElapsed = Date().timeIntervalSince(startTime)
+                var currentPausedDuration = totalPausedDuration
 
-                    // If currently paused, add the current pause duration
-                    if isPaused, let pauseStart = pausedTime {
-                        currentPausedDuration += Date().timeIntervalSince(pauseStart)
-                    }
-
-                    let actualRecordingTime = max(0, totalElapsed - currentPausedDuration)
-
-                    // Debug logging
-                    log("Duration calculation - totalElapsed: \(totalElapsed), totalPausedDuration: \(totalPausedDuration), currentPausedDuration: \(currentPausedDuration), actualRecordingTime: \(actualRecordingTime), isPaused: \(isPaused)")
-
-                    return actualRecordingTime
-                } else {
-                    // Fallback to old calculation if startTime is somehow nil
-                    let segmentsDuration = Double(segmentBuffer.count) * AudioEngineConstants.segmentDuration
-                    let currentSegmentDuration = currentSegmentRecorder?.currentTime ?? 0
-                    return segmentsDuration + currentSegmentDuration
+                // If currently paused, add the current pause duration
+                if isPaused, let pauseStart = pausedTime {
+                    currentPausedDuration += Date().timeIntervalSince(pauseStart)
                 }
+
+                let actualRecordingTime = max(0, totalElapsed - currentPausedDuration)
+
+                // Debug logging
+                log("Duration calculation - totalElapsed: \(totalElapsed), totalPausedDuration: \(totalPausedDuration), currentPausedDuration: \(currentPausedDuration), actualRecordingTime: \(actualRecordingTime), isPaused: \(isPaused)")
+
+                return actualRecordingTime
             } else {
-                // Linear recording - just return current time
-                return currentSegmentRecorder?.currentTime ?? 0
+                // Fallback to old calculation if startTime is somehow nil
+                let segmentsDuration = Double(segmentBuffer.count) * AudioEngineConstants.segmentDuration
+                let currentSegmentDuration = currentSegmentRecorder?.currentTime ?? 0
+                return segmentsDuration + currentSegmentDuration
             }
         }
     }
@@ -560,7 +508,7 @@ class SegmentRollingManager: NSObject {
      */
     func getBufferedAudioDuration() -> TimeInterval {
         return performQueueSafeOperation {
-            guard isActive && useSegmentRolling else { return getElapsedRecordingTime() }
+            guard isActive else { return getElapsedRecordingTime() }
 
             let segmentsDuration = Double(segmentBuffer.count) * AudioEngineConstants.segmentDuration
             let currentSegmentDuration = currentSegmentRecorder?.currentTime ?? 0
@@ -589,18 +537,18 @@ class SegmentRollingManager: NSObject {
         return performQueueSafeOperation { isActive }
     }
 
-    /**
+        /**
      * Set maximum recording duration in seconds
-     * Setting maxDuration enables segment rolling mode
-     * Not setting maxDuration (nil) enables linear recording mode
+     * Setting maxDuration enables automatic cleanup when buffer reaches capacity
+     * Not setting maxDuration (nil) enables unlimited segment rolling recording
      */
     func setMaxDuration(_ duration: TimeInterval?) {
         performQueueSafeOperation {
             maxDuration = duration
             if let duration = duration {
-                log("Set max duration to \(duration) seconds - segment rolling mode will be used")
+                log("Set max duration to \(duration) seconds - segment rolling with automatic cleanup")
             } else {
-                log("Max duration cleared - linear recording mode will be used")
+                log("Set unlimited duration - segment rolling without cleanup")
             }
         }
     }
@@ -625,12 +573,10 @@ class SegmentRollingManager: NSObject {
                         throw SegmentRecordingError.noRecordingToStop
                     }
 
-                    // Stop timer if using segment rolling
-                    if self.useSegmentRolling {
-                        DispatchQueue.main.sync {
-                            self.segmentTimer?.invalidate()
-                            self.segmentTimer = nil
-                        }
+                    // Stop timer
+                    DispatchQueue.main.sync {
+                        self.segmentTimer?.invalidate()
+                        self.segmentTimer = nil
                     }
 
                     // Stop current segment recording with aggressive cleanup
@@ -644,19 +590,18 @@ class SegmentRollingManager: NSObject {
 
                     let finalFileURL: URL
 
-                    if self.useSegmentRolling {
-                        // Segment rolling mode - add current segment to buffer and merge
-                        self.log("Stopping segment rolling mode")
+                    // Segment rolling mode - add current segment to buffer and merge
+                    self.log("Stopping segment rolling mode")
 
-                        // Add current segment to buffer if it exists and has content
-                        if let lastSegmentURL = self.getLastSegmentURL() {
-                            self.log("Found last segment, adding to buffer")
-                            self.addSegmentToBuffer(lastSegmentURL)
-                        } else {
-                            self.log("No last segment found")
-                        }
+                    // Add current segment to buffer if it exists and has content
+                    if let lastSegmentURL = self.getLastSegmentURL() {
+                        self.log("Found last segment, adding to buffer")
+                        self.addSegmentToBuffer(lastSegmentURL)
+                    } else {
+                        self.log("No last segment found")
+                    }
 
-                        // Check if we have any segments to merge
+                    // Check if we have any segments to merge
                         if self.segmentBuffer.isEmpty {
                             self.log("Warning: No segments in buffer, this might be a very short recording")
                             throw SegmentRecordingError.noValidSegments
@@ -674,19 +619,7 @@ class SegmentRollingManager: NSObject {
                             finalFileURL = mergedFileURL
                         }
 
-                        self.log("Stopped segment rolling and merged \(self.segmentBuffer.count) segments")
-                    } else {
-                        // Linear recording mode - return the single recorded file
-                        self.log("Stopping linear recording mode")
-
-                        guard let lastSegmentURL = self.getLastSegmentURL(),
-                              FileManager.default.fileExists(atPath: lastSegmentURL.path) else {
-                            throw SegmentRecordingError.noRecordingFile
-                        }
-
-                        finalFileURL = lastSegmentURL
-                        self.log("Linear recording file ready: \(finalFileURL.path)")
-                    }
+                    self.log("Stopped segment rolling and merged \(self.segmentBuffer.count) segments")
 
                     // Cleanup state
                     self.isActive = false
@@ -1032,7 +965,7 @@ class SegmentRollingManager: NSObject {
      */
     private func rotateSegment() {
         queue.async {
-            guard self.isActive && self.useSegmentRolling else { return }
+            guard self.isActive else { return }
 
             let totalElapsed = self.recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
             self.throttledLog("Rotating segment \(self.segmentCounter) after 30s (total elapsed: \(totalElapsed)s)",
@@ -1070,9 +1003,6 @@ class SegmentRollingManager: NSObject {
      * Only used in segment rolling mode
      */
     private func addSegmentToBuffer(_ segmentURL: URL) {
-        // Only add to buffer in segment rolling mode
-        guard useSegmentRolling else { return }
-
         // Check if file exists and has content
         guard FileManager.default.fileExists(atPath: segmentURL.path) else {
             log("Segment file does not exist: \(segmentURL.lastPathComponent)")
@@ -1323,12 +1253,7 @@ class SegmentRollingManager: NSObject {
      * Get URL for segment file
      */
     private func getSegmentURL(for index: Int) -> URL {
-        if useSegmentRolling {
-            return segmentsDirectory.appendingPathComponent("segment_\(index).m4a")
-        } else {
-            // Linear recording uses a single file
-            return segmentsDirectory.appendingPathComponent("linear_recording.m4a")
-        }
+        return segmentsDirectory.appendingPathComponent("segment_\(index).m4a")
     }
 
     /**

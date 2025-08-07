@@ -25,8 +25,7 @@ protocol RecordingManagerDelegate: AnyObject {
 
 /**
  * RecordingManager handles audio recording operations with support for:
- * - Linear recording for simple use cases
- * - Segment rolling for long recordings with automatic cleanup
+ * - Segment rolling for all recordings with automatic cleanup
  * - Asynchronous file processing to prevent UI blocking
  * - Compressed base64 generation with memory management
  * - Proper resource cleanup and error handling
@@ -43,9 +42,6 @@ class RecordingManager: NSObject {
 
     // MARK: - Recording Properties
 
-    /// AVAudioRecorder for linear recording mode
-    private var audioRecorder: AVAudioRecorder?
-
     /// Audio session for recording configuration
     private var recordingSession: AVAudioSession?
 
@@ -54,9 +50,6 @@ class RecordingManager: NSObject {
 
     /// Whether recording is currently paused
     private var isPaused = false
-
-    /// URL of the current recording file
-    private var recordingPath: URL?
 
     /// Last reported duration to avoid duplicate callbacks
     private var lastReportedDuration: Double?
@@ -71,9 +64,6 @@ class RecordingManager: NSObject {
 
     /// Manager for segment rolling recordings
     private var segmentRollingManager: SegmentRollingManager?
-
-    /// Flag indicating if segment rolling is enabled for current recording
-    private var isSegmentRollingEnabled = false
 
     /// Maximum duration for segment rolling recordings
     private var maxDuration: TimeInterval?
@@ -137,8 +127,8 @@ class RecordingManager: NSObject {
      *   - maxDuration: Maximum recording duration for segment rolling (seconds) - optional
      *
      * Behavior:
-     * - If maxDuration is provided, uses segment rolling mode (30s segments, automatic cleanup)
-     * - Otherwise uses linear recording mode (single file)
+     * - Uses segment rolling mode for all recordings
+     * - If maxDuration is provided, enables automatic cleanup when buffer reaches capacity
      * - Configures audio session for recording
      * - Starts duration monitoring with 1-second intervals
      *
@@ -173,7 +163,7 @@ class RecordingManager: NSObject {
 
     private func startRecordingInternal(settings: [String: Any], sampleRate: Int, channels: Int, bitrate: Int) {
 
-        // Check if maxDuration is provided to enable segment rolling
+        // Check if maxDuration is provided to configure segment rolling behavior
         // Try multiple ways to extract maxDuration (could be Int, Double, or TimeInterval)
         var maxDurationValue: TimeInterval?
 
@@ -194,81 +184,9 @@ class RecordingManager: NSObject {
             maxDuration = duration
         }
 
-        // Always use segment rolling for all recordings
-        isSegmentRollingEnabled = true
-        log("Segment rolling enabled for all recordings (maxDuration: \(maxDuration?.description ?? "unlimited"))")
+        // Use segment rolling for all recordings
+        log("Starting segment rolling recording (maxDuration: \(maxDuration?.description ?? "unlimited"))")
         startSegmentRollingRecording(with: settings)
-    }
-
-    private func startLinearRecording(with settings: [String: Any]) {
-        // Variables extracted in startLinearRecordingInternal where they're actually used
-        performStateOperation {
-            startLinearRecordingInternal(with: settings)
-        }
-    }
-
-    private func startLinearRecordingInternal(with settings: [String: Any]) {
-        let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
-        let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-        let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
-
-        do {
-            // Configure audio session for recording
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord,
-                                       mode: .measurement,
-                                       options: [.allowBluetooth, .defaultToSpeaker, .mixWithOthers, .duckOthers])
-            try audioSession.setActive(true)
-            self.recordingSession = audioSession
-
-            // Set up interruption handling for linear recording
-            setupAudioInterruptionHandling()
-
-            // Create recording settings
-            let recordingSettings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: Double(sampleRate),
-                AVNumberOfChannelsKey: channels,
-                AVEncoderBitRateKey: bitrate,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-            ]
-
-            // Create recording file path
-            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let recordingFileName = "recording_\(Int(Date().timeIntervalSince1970)).m4a"
-            let recordingURL = documentsPath.appendingPathComponent(recordingFileName)
-
-            // Create audio recorder
-            self.audioRecorder = try AVAudioRecorder(url: recordingURL, settings: recordingSettings)
-            self.audioRecorder?.delegate = self
-            self.recordingPath = recordingURL
-
-            // Start recording
-            if self.audioRecorder?.record() == true {
-                self.isRecording = true
-                self.isPaused = false
-                self.currentDuration = 0
-
-                // Start duration monitoring
-                self.startDurationMonitoring()
-
-                // Notify delegate of state change to recording (consistent with Android)
-                DispatchQueue.main.async {
-                    self.delegate?.recordingDidChangeState("recording", data: [
-                        "duration": 0,
-                        "isRecording": true,
-                        "status": "recording"
-                    ])
-                }
-
-                self.log("Linear recording started successfully")
-            } else {
-                throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to start recording"])
-            }
-        } catch {
-            self.log("Failed to start linear recording: \(error.localizedDescription)")
-            self.delegate?.recordingDidEncounterError(error)
-        }
     }
 
     private func startSegmentRollingRecording(with settings: [String: Any]) {
@@ -289,7 +207,7 @@ class RecordingManager: NSObject {
                 self.log("Setting maxDuration to \(maxDurationValue) seconds in SegmentRollingManager (segment rolling mode)")
                 self.segmentRollingManager?.setMaxDuration(maxDurationValue)
             } else {
-                self.log("No maxDuration set - using linear recording mode")
+                self.log("No maxDuration set - using unlimited segment rolling mode")
                 self.segmentRollingManager?.setMaxDuration(nil)
             }
 
@@ -334,12 +252,7 @@ class RecordingManager: NSObject {
 
         } catch {
             self.log("Failed to start segment rolling: \(error.localizedDescription)")
-            self.log("Falling back to linear recording due to segment rolling error")
             self.delegate?.recordingDidEncounterError(error)
-
-            // Fall back to linear recording if segment rolling fails
-            self.isSegmentRollingEnabled = false
-            self.startLinearRecordingInternal(with: settings)
         }
     }
 
@@ -350,17 +263,8 @@ class RecordingManager: NSObject {
                 return
             }
 
-            if self.isSegmentRollingEnabled {
-                // Pause segment rolling
-                self.segmentRollingManager?.pauseSegmentRolling()
-            } else {
-                // Pause linear recording
-                guard let recorder = self.audioRecorder else {
-                    self.log("No active linear recording to pause")
-                    return
-                }
-                recorder.pause()
-            }
+            // Pause segment rolling
+            self.segmentRollingManager?.pauseSegmentRolling()
 
             self.isRecording = false
             self.isPaused = true
@@ -392,74 +296,22 @@ class RecordingManager: NSObject {
             }
 
             do {
-                if self.isSegmentRollingEnabled {
-                    // Resume segment rolling
-                    if let segmentManager = self.segmentRollingManager {
-                        // Check if this is a reset state (duration = 0) - start fresh
-                        if self.currentDuration == 0 {
-                            self.log("Starting fresh segment rolling after reset")
+                // Resume segment rolling
+                if let segmentManager = self.segmentRollingManager {
+                    // Check if this is a reset state (duration = 0) - start fresh
+                    if self.currentDuration == 0 {
+                        self.log("Starting fresh segment rolling after reset")
 
-                            // Don't call cleanup() as it stops the microphone session
-                            // Instead, start fresh segment rolling which will handle the restart
-                            let settings = self.lastRecordingSettings ?? [:]
-
-                            // Call the internal start method directly to avoid recursive calls
-                            let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
-                            let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-                            let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
-
-                            // Set up recording settings
-                            let recordingSettings: [String: Any] = [
-                                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                                AVSampleRateKey: Double(sampleRate),
-                                AVNumberOfChannelsKey: channels,
-                                AVEncoderBitRateKey: bitrate,
-                                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-                            ]
-
-                            // Configure maxDuration for segment rolling
-                            if let maxDurationValue = self.maxDuration {
-                                segmentManager.setMaxDuration(maxDurationValue)
-                            } else {
-                                segmentManager.setMaxDuration(nil)
-                            }
-
-                            try segmentManager.startSegmentRolling(with: recordingSettings)
-                            self.log("Fresh segment rolling started after reset")
-                        } else {
-                            // Normal resume from pause
-                            try segmentManager.resumeSegmentRolling()
-                        }
-                    } else {
-                        // If segment rolling manager is nil (e.g., after reset), recreate it
-                        self.log("Segment rolling manager not found, recreating for resume")
-                        // Don't call self.startSegmentRollingRecording() directly to avoid potential issues
-                        // Instead, recreate the segment rolling recording properly
+                        // Don't call cleanup() as it stops the microphone session
+                        // Instead, start fresh segment rolling which will handle the restart
                         let settings = self.lastRecordingSettings ?? [:]
+
+                        // Call the internal start method directly to avoid recursive calls
                         let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
                         let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
                         let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
 
-                        // Initialize segment rolling manager if needed
-                        if self.segmentRollingManager == nil {
-                            self.log("Creating new SegmentRollingManager for resume")
-                            self.segmentRollingManager = SegmentRollingManager()
-                            self.log("New SegmentRollingManager created")
-                        }
-
-                        // Ensure the manager is ready for use
-                        guard let manager = self.segmentRollingManager else {
-                            throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create segment rolling manager"])
-                        }
-
-                        // Configure maxDuration for segment rolling
-                        if let maxDurationValue = self.maxDuration {
-                            manager.setMaxDuration(maxDurationValue)
-                        } else {
-                            manager.setMaxDuration(nil)
-                        }
-
-                        // Create recording settings for segment rolling
+                        // Set up recording settings
                         let recordingSettings: [String: Any] = [
                             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
                             AVSampleRateKey: Double(sampleRate),
@@ -468,54 +320,59 @@ class RecordingManager: NSObject {
                             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
                         ]
 
-                        try manager.startSegmentRolling(with: recordingSettings)
-                        self.log("Segment rolling recording resumed with fresh session")
+                        // Configure maxDuration for segment rolling
+                        if let maxDurationValue = self.maxDuration {
+                            segmentManager.setMaxDuration(maxDurationValue)
+                        } else {
+                            segmentManager.setMaxDuration(nil)
+                        }
+
+                        try segmentManager.startSegmentRolling(with: recordingSettings)
+                        self.log("Fresh segment rolling started after reset")
+                    } else {
+                        // Normal resume from pause
+                        try segmentManager.resumeSegmentRolling()
                     }
                 } else {
-                    // Resume linear recording or recreate if needed
-                    if let recorder = self.audioRecorder {
-                        // Check if we need to create a fresh recording after reset
-                        // (currentDuration = 0 indicates a reset state)
-                        if self.currentDuration == 0 {
-                            self.log("Starting fresh recording after reset")
+                    // If segment rolling manager is nil (e.g., after reset), recreate it
+                    self.log("Segment rolling manager not found, recreating for resume")
+                    // Don't call self.startSegmentRollingRecording() directly to avoid potential issues
+                    // Instead, recreate the segment rolling recording properly
+                    let settings = self.lastRecordingSettings ?? [:]
+                    let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
+                    let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
+                    let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
 
-                            // Stop the current recorder to start fresh
-                            if recorder.isRecording {
-                                recorder.pause()
-                            }
-                            recorder.delegate = nil
-                            self.audioRecorder = nil
-
-                            // Start fresh recording session
-                            self.startRecordingInternal(settings: self.lastRecordingSettings ?? [:],
-                                                       sampleRate: self.lastRecordingSettings?["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate),
-                                                       channels: self.lastRecordingSettings?["channels"] as? Int ?? AudioEngineConstants.defaultChannels,
-                                                       bitrate: self.lastRecordingSettings?["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate)
-                            return
-                        } else {
-                            // Normal resume from pause
-                            // Ensure audio session is active before resuming
-                            if let session = self.recordingSession {
-                                try session.setActive(true)
-                            }
-
-                            if !recorder.record() {
-                                let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to resume recording"])
-                                self.delegate?.recordingDidEncounterError(error)
-                                return
-                            }
-                        }
-                    } else {
-                        // No recorder found, create fresh recording session
-                        self.log("No paused recording to resume, starting fresh session")
-                        // Don't call self.startRecording() here as it would cause recursive performStateOperation
-                        // Instead, call the internal method directly
-                        self.startRecordingInternal(settings: self.lastRecordingSettings ?? [:],
-                                                   sampleRate: self.lastRecordingSettings?["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate),
-                                                   channels: self.lastRecordingSettings?["channels"] as? Int ?? AudioEngineConstants.defaultChannels,
-                                                   bitrate: self.lastRecordingSettings?["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate)
-                        return
+                    // Initialize segment rolling manager if needed
+                    if self.segmentRollingManager == nil {
+                        self.log("Creating new SegmentRollingManager for resume")
+                        self.segmentRollingManager = SegmentRollingManager()
+                        self.log("New SegmentRollingManager created")
                     }
+
+                    // Ensure the manager is ready for use
+                    guard let manager = self.segmentRollingManager else {
+                        throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create segment rolling manager"])
+                    }
+
+                    // Configure maxDuration for segment rolling
+                    if let maxDurationValue = self.maxDuration {
+                        manager.setMaxDuration(maxDurationValue)
+                    } else {
+                        manager.setMaxDuration(nil)
+                    }
+
+                    // Create recording settings for segment rolling
+                    let recordingSettings: [String: Any] = [
+                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                        AVSampleRateKey: Double(sampleRate),
+                        AVNumberOfChannelsKey: channels,
+                        AVEncoderBitRateKey: bitrate,
+                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                    ]
+
+                    try manager.startSegmentRolling(with: recordingSettings)
+                    self.log("Segment rolling recording resumed with fresh session")
                 }
 
                 self.isRecording = true
@@ -568,37 +425,21 @@ class RecordingManager: NSObject {
             self.stopDurationMonitoring()
 
             // For segment rolling, reset the manager to clear all segments
-            if self.isSegmentRollingEnabled {
-                // Reset segment rolling manager to clear all segments and reset duration
-                if let segmentManager = self.segmentRollingManager {
-                    // First pause the current recording
-                    segmentManager.pauseSegmentRolling()
-                    self.log("Segment rolling paused")
+            // Reset segment rolling manager to clear all segments and reset duration
+            if let segmentManager = self.segmentRollingManager {
+                // First pause the current recording
+                segmentManager.pauseSegmentRolling()
+                self.log("Segment rolling paused")
 
-                    // Clear all segments and reset counters while maintaining session
-                    segmentManager.clearSegmentsAndReset()
-                    self.log("Segment rolling cleared and reset - session maintained for microphone indicator")
-                } else {
-                    self.log("Warning: Segment rolling manager was already nil during reset")
-                }
-
-                // Don't set segmentRollingManager to nil to keep the session active
-                self.log("Segment rolling reset completed - ready for fresh recording")
+                // Clear all segments and reset counters while maintaining session
+                segmentManager.clearSegmentsAndReset()
+                self.log("Segment rolling cleared and reset - session maintained for microphone indicator")
             } else {
-                // For linear recording, pause instead of stop to keep microphone session active
-                if let recorder = self.audioRecorder {
-                    if recorder.isRecording {
-                        // Use pause() instead of stop() to maintain audio session and microphone indicator
-                        recorder.pause()
-                        self.log("Linear recording paused (not stopped) to maintain microphone session")
-                    }
-                    // Don't set recorder.delegate = nil or audioRecorder = nil
-                    // This keeps the session active for resumption
-                } else {
-                    self.log("No active linear recording to reset")
-                }
-                // Note: We don't nil out audioRecorder to keep the session active
+                self.log("Warning: Segment rolling manager was already nil during reset")
             }
+
+            // Don't set segmentRollingManager to nil to keep the session active
+            self.log("Segment rolling reset completed - ready for fresh recording")
 
             // Reset duration and state
             self.currentDuration = 0
@@ -686,105 +527,42 @@ class RecordingManager: NSObject {
             self.isRecording = false
             self.isPaused = false
 
-            self.log("stopRecording - isSegmentRollingEnabled: \(self.isSegmentRollingEnabled)")
-
-            if self.isSegmentRollingEnabled {
-                self.log("Stopping segment rolling recording...")
-                // Stop segment rolling and merge segments asynchronously to avoid blocking UI
-                guard let segmentManager = self.segmentRollingManager else {
-                    self.log("Error: segmentRollingManager is nil")
-                    DispatchQueue.main.async {
-                        let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Segment rolling manager not initialized"])
-                        self.delegate?.recordingDidEncounterError(error)
-                    }
-                    return
+            self.log("Stopping segment rolling recording...")
+            // Stop segment rolling and merge segments asynchronously to avoid blocking UI
+            guard let segmentManager = self.segmentRollingManager else {
+                self.log("Error: segmentRollingManager is nil")
+                DispatchQueue.main.async {
+                    let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Segment rolling manager not initialized"])
+                    self.delegate?.recordingDidEncounterError(error)
                 }
+                return
+            }
 
-                self.log("Calling stopSegmentRollingAsync on manager...")
-                segmentManager.stopSegmentRollingAsync { [weak self] result in
-                    guard let self = self else { return }
+            self.log("Calling stopSegmentRollingAsync on manager...")
+            segmentManager.stopSegmentRollingAsync { [weak self] result in
+                guard let self = self else { return }
 
-                    switch result {
-                    case .success(let mergedFileURL):
-                        self.log("Segment rolling stopped successfully, processing file: \(mergedFileURL.path)")
-                        self.processRecordingFile(mergedFileURL)
+                switch result {
+                case .success(let mergedFileURL):
+                    self.log("Segment rolling stopped successfully, processing file: \(mergedFileURL.path)")
+                    self.processRecordingFile(mergedFileURL)
 
-                    case .failure(let error):
-                        self.log("Error stopping segment rolling: \(error.localizedDescription)")
+                case .failure(let error):
+                    self.log("Error stopping segment rolling: \(error.localizedDescription)")
 
-                        // Check if this is a "no valid segments" error (very short recording)
-                        if error.localizedDescription.contains("No valid recording segments found") {
-                            self.log("Segment rolling failed due to short recording, this should be handled by fallback linear recording")
-                            DispatchQueue.main.async {
-                                let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Recording was too short for segment rolling"])
-                                self.delegate?.recordingDidEncounterError(error)
-                            }
-                        } else {
-                            DispatchQueue.main.async {
-                                self.delegate?.recordingDidEncounterError(error)
-                            }
-                        }
-                    }
-                }
-            } else {
-                self.log("Stopping linear recording...")
-                // Stop linear recording
-                guard let recorder = self.audioRecorder else {
-                    DispatchQueue.main.async {
-                        let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "No active linear recording to stop"])
-                        self.delegate?.recordingDidEncounterError(error)
-                    }
-                    return
-                }
-
-                // Stop recording
-                recorder.stop()
-
-                // Remove interruption handling for linear recording
-                self.removeAudioInterruptionHandling()
-
-                // Process recording file
-                if let recordingPath = self.recordingPath {
-                    // If maxDuration is set for linear recording, trim the file first
-                    if let maxDuration = self.maxDuration, !self.isSegmentRollingEnabled {
-                        self.log("Linear recording with maxDuration: \(maxDuration)s, checking if trimming is needed")
-
-                        Task {
-                            do {
-                                let asset = AVAsset(url: recordingPath)
-                                let actualDuration = asset.duration.seconds
-
-                                self.log("Linear recording duration: \(actualDuration)s, maxDuration: \(maxDuration)s")
-
-                                if actualDuration > maxDuration {
-                                    self.log("Trimming linear recording from \(actualDuration)s to \(maxDuration)s")
-                                    let trimmedURL = try await self.trimAudioFile(recordingPath, maxDuration: maxDuration)
-                                    self.processRecordingFile(trimmedURL)
-                                } else {
-                                    self.log("Linear recording already within maxDuration, no trimming needed")
-                                    self.processRecordingFile(recordingPath)
-                                }
-                            } catch {
-                                self.log("Error trimming linear recording: \(error.localizedDescription)")
-                                DispatchQueue.main.async {
-                                    self.delegate?.recordingDidEncounterError(error)
-                                }
-                            }
+                    // Check if this is a "no valid segments" error (very short recording)
+                    if error.localizedDescription.contains("No valid recording segments found") {
+                        self.log("Segment rolling failed due to short recording")
+                        DispatchQueue.main.async {
+                            let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Recording was too short"])
+                            self.delegate?.recordingDidEncounterError(error)
                         }
                     } else {
-                        self.processRecordingFile(recordingPath)
-                    }
-                } else {
-                    // If no recording path, notify delegate of error
-                    DispatchQueue.main.async {
-                        let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "No recording path found"])
-                        self.delegate?.recordingDidEncounterError(error)
+                        DispatchQueue.main.async {
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
                     }
                 }
-
-                // Cleanup linear recording
-                self.audioRecorder = nil
-                self.recordingPath = nil
             }
 
             // Reset common state
@@ -794,11 +572,7 @@ class RecordingManager: NSObject {
     }
 
     func getDuration() -> Int {
-        if isSegmentRollingEnabled {
-            return Int(segmentRollingManager?.getCurrentDuration() ?? currentDuration)
-        } else {
-            return Int(currentDuration)
-        }
+        return Int(segmentRollingManager?.getCurrentDuration() ?? currentDuration)
     }
 
     func getStatus() -> String {
@@ -1004,17 +778,9 @@ class RecordingManager: NSObject {
         dispatchSource.setEventHandler { [weak self] in
             guard let self = self else { return }
 
-            let duration: Double
-            if self.isSegmentRollingEnabled {
-                // Get duration from segment rolling manager
-                duration = self.segmentRollingManager?.getCurrentDuration() ?? 0
-                self.currentDuration = duration
-            } else {
-                // Get duration from linear recorder
-                guard let recorder = self.audioRecorder, self.isRecording else { return }
-                duration = max(0, recorder.currentTime)
-                self.currentDuration += AudioEngineConstants.timerInterval
-            }
+            // Get duration from segment rolling manager
+            let duration = self.segmentRollingManager?.getCurrentDuration() ?? 0
+            self.currentDuration = duration
 
             self.lastReportedDuration = duration
 
@@ -1217,7 +983,7 @@ class RecordingManager: NSObject {
 
 
     private func getRecorderSettings() -> [String: Any] {
-        // Use stored settings instead of trying to read from audioRecorder (which may be nil)
+        // Use stored settings instead of trying to read from segment rolling manager
         return storedRecordingSettings.isEmpty ? getDefaultSettings() : storedRecordingSettings
     }
 
@@ -1254,15 +1020,6 @@ class RecordingManager: NSObject {
         // Stop duration monitoring
         stopDurationMonitoring()
 
-        // Stop and release audio recorder
-        if let recorder = audioRecorder {
-            if recorder.isRecording {
-                recorder.stop()
-            }
-            recorder.delegate = nil
-            audioRecorder = nil
-        }
-
         // Clean up segment rolling manager
         segmentRollingManager?.cleanup()
         segmentRollingManager = nil
@@ -1286,9 +1043,7 @@ class RecordingManager: NSObject {
         currentDuration = 0
         lastReportedDuration = nil
         storedRecordingSettings.removeAll()
-        recordingPath = nil
         maxDuration = nil
-        isSegmentRollingEnabled = false
 
         log("Cleanup completed")
     }
@@ -1390,7 +1145,7 @@ class RecordingManager: NSObject {
     // MARK: - Audio Interruption Handling
 
     /**
-     * Set up audio session interruption handling for linear recording
+     * Set up audio session interruption handling
      */
     private func setupAudioInterruptionHandling() {
         NotificationCenter.default.addObserver(
@@ -1407,7 +1162,7 @@ class RecordingManager: NSObject {
             object: AVAudioSession.sharedInstance()
         )
 
-        log("Audio interruption handling set up for linear recording")
+        log("Audio interruption handling set up")
     }
 
     /**
@@ -1416,7 +1171,7 @@ class RecordingManager: NSObject {
     private func removeAudioInterruptionHandling() {
         NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
-        log("Audio interruption handling removed for linear recording")
+        log("Audio interruption handling removed")
     }
 
     /**
@@ -1441,7 +1196,7 @@ class RecordingManager: NSObject {
 
             switch interruptionReason {
             case .phoneCall, .siri:
-                log("Critical interruption (\(interruptionReason)) - pausing linear recording and duration")
+                log("Critical interruption (\(interruptionReason)) - pausing recording and duration")
                 pauseRecording()
 
             case .systemNotification, .audioFocusLoss, .unknown:
@@ -1464,7 +1219,7 @@ class RecordingManager: NSObject {
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) {
-                    log("Resuming linear recording after interruption")
+                    log("Resuming recording after interruption")
                     do {
                         // Reactivate audio session
                         try AVAudioSession.sharedInstance().setActive(true)
@@ -1478,7 +1233,7 @@ class RecordingManager: NSObject {
                             startDurationMonitoring()
                         }
                     } catch {
-                        log("Failed to resume linear recording after interruption: \(error.localizedDescription)")
+                        log("Failed to resume recording after interruption: \(error.localizedDescription)")
                         delegate?.recordingDidEncounterError(error)
                     }
                 } else {
@@ -1579,20 +1334,5 @@ class RecordingManager: NSObject {
         #if DEBUG
         print("[RecordingManager] \(message)")
         #endif
-    }
-}
-
-// MARK: - AVAudioRecorderDelegate
-
-extension RecordingManager: AVAudioRecorderDelegate {
-    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        log("Audio recorder finished recording, success: \(flag)")
-    }
-
-    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
-        if let error = error {
-            log("Audio recorder encode error: \(error.localizedDescription)")
-            delegate?.recordingDidEncounterError(error)
-        }
     }
 }
