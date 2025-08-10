@@ -319,18 +319,6 @@ export interface CapacitorAudioEnginePlugin {
   resumeRecording(): Promise<void>;
 
   /**
-   * Reset the current recording session by pausing, deleting previous segments,
-   * and resetting all counters. After calling this method, resumeRecording()
-   * will behave like starting a fresh recording session.
-   * @returns Promise that resolves when recording is reset successfully
-   * @throws {Error} If no active recording exists
-   * @platform web Resets MediaRecorder state and clears recorded data
-   * @platform android Stops segment rolling, deletes segments, resets duration monitoring
-   * @platform ios Stops segment rolling, deletes segments, resets AVAudioRecorder state
-   */
-  resetRecording(): Promise<void>;
-
-  /**
    * Stop the current recording and get the recorded file information.
    * @returns Promise that resolves with the recorded audio file details
    * @throws {Error} If no active recording exists

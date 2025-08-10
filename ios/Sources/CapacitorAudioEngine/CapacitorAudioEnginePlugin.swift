@@ -19,7 +19,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "pauseRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resumeRecording", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "resetRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getDuration", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimAudio", returnType: CAPPluginReturnPromise),
@@ -265,15 +264,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     @objc func resumeRecording(_ call: CAPPluginCall) {
         recordingManager.resumeRecording()
         call.resolve()
-    }
-
-    @objc func resetRecording(_ call: CAPPluginCall) {
-        do {
-            try recordingManager.resetRecording()
-            call.resolve()
-        } catch {
-            call.reject("Failed to reset recording: \(error.localizedDescription)")
-        }
     }
 
     @objc func stopRecording(_ call: CAPPluginCall) {

@@ -129,17 +129,6 @@
               <ion-col size="4">
                 <ion-button
                   expand="block"
-                  color="medium"
-                  [disabled]="!canReset()"
-                  (click)="resetRecording()"
-                >
-                  <ion-icon name="refresh" slot="start"></ion-icon>
-                  Reset
-                </ion-button>
-              </ion-col>
-              <ion-col size="4">
-                <ion-button
-                  expand="block"
                   color="danger"
                   [disabled]="!canStop()"
                   (click)="stopRecording()"

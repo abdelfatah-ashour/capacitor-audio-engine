@@ -266,17 +266,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
     @PluginMethod
-    public void resetRecording(PluginCall call) {
-        try {
-            resetRecordingInternal();
-            call.resolve();
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to reset recording", e);
-            call.reject("Failed to reset recording: " + e.getMessage());
-        }
-    }
-
-    @PluginMethod
     public void stopRecording(PluginCall call) {
         try {
             JSObject result = stopRecordingInternal();
@@ -1357,49 +1346,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     /**
      * Internal reset recording method that clears segments and resets duration counters
      */
-    private void resetRecordingInternal() throws Exception {
-        if (!isRecording) {
-            throw new Exception("No recording session active");
-        }
-
-        Log.d(TAG, "Resetting recording session...");
-
-        try {
-            // First pause the recording to ensure proper state transition
-            pauseRecordingInternal(null);
-            Log.d(TAG, "Recording paused before reset");
-
-            // Reset segment rolling manager to clear all segments and reset duration
-            if (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive()) {
-                segmentRollingManager.resetSegmentRolling();
-                Log.d(TAG, "Segment rolling manager reset - segments cleared and duration reset");
-            } else {
-                throw new Exception("Segment rolling manager not active or not available");
-            }
-
-            // Keep isRecording true to maintain the session active
-            // This allows resumeRecording to work as expected after reset
-            // Also ensures stopRecording can be called to properly clean up the session
-            Log.d(TAG, "Recording session remains active but reset - ready for resumption or stop");
-
-            // Emit reset state events
-            if (eventManager != null) {
-                JSObject resetData = new JSObject();
-                resetData.put("duration", 0);
-                resetData.put("isRecording", true); // Session is still active
-                resetData.put("status", "paused"); // Reset state is effectively paused
-                eventManager.emitRecordingStateChange("paused", resetData);
-
-                // Emit duration change event to reset UI counters
-                eventManager.emitDurationChange(0.0);
-            }
-
-            Log.d(TAG, "Recording session reset successfully - ready for fresh recording or stop");
-
-        } catch (Exception e) {
-            Log.e(TAG, "Error during recording reset", e);
-            throw new Exception("Failed to reset recording: " + e.getMessage());
-        }
-    }
+    // resetRecording removed: clients should stop and start a new recording instead
 
 }

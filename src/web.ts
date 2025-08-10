@@ -115,20 +115,6 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
-   * Reset the current recording session by pausing, deleting previous segments,
-   * and resetting all counters. After calling this method, resumeRecording()
-   * will behave like starting a fresh recording session.
-   * @returns Promise that resolves when recording is reset successfully
-   * @platform web Not supported
-   */
-  async resetRecording(): Promise<void> {
-    console.warn(
-      'resetRecording is not supported on web platform. For web implementation, consider managing MediaRecorder state directly.',
-    );
-    throw new Error('resetRecording is not supported on web platform');
-  }
-
-  /**
    * Get the current recording duration.
    * @returns Promise that resolves with the current duration in seconds
    * @platform web Not supported - returns 0
