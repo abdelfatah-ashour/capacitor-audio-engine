@@ -967,47 +967,85 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
     @PluginMethod
-    public void openAppSettings(PluginCall call) {
+    public void openSettings(PluginCall call) {
         try {
-            // For Android 6.0+ (API 23+), try different approaches to get to permissions
-            // First try: Direct app permissions page (works on some manufacturers)
+            String packageName = getContext().getPackageName();
+            Log.d(TAG, "Attempting to open app settings for package: " + packageName);
+
+            // Try multiple approaches for different Android versions and manufacturers
+
+            // First try: Direct app info/permissions page (most reliable)
             try {
-                Intent permissionsIntent = new Intent("android.settings.APPLICATION_DETAILS_SETTINGS");
-                permissionsIntent.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
-                permissionsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                getContext().startActivity(permissionsIntent);
-                call.resolve();
-                return;
+                Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.setData(android.net.Uri.parse("package:" + packageName));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+
+                // Verify the intent can be resolved
+                if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+                    getContext().startActivity(intent);
+                    Log.d(TAG, "Successfully opened app settings using ACTION_APPLICATION_DETAILS_SETTINGS");
+                    call.resolve(createSuccessResponse("ACTION_APPLICATION_DETAILS_SETTINGS"));
+                    return;
+                } else {
+                    Log.d(TAG, "ACTION_APPLICATION_DETAILS_SETTINGS intent cannot be resolved");
+                }
             } catch (Exception e) {
-                Log.d(TAG, "Direct permissions intent failed, trying alternative approaches");
+                Log.d(TAG, "ACTION_APPLICATION_DETAILS_SETTINGS failed: " + e.getMessage());
             }
 
-            // Second try: App permissions screen (Android 11+)
+            // Second try: App permissions screen for Android 11+ (API 30+)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
                 try {
-                    Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                    intent.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
+                    Intent intent = new Intent(android.provider.Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS);
+                    intent.setData(android.net.Uri.parse("package:" + packageName));
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    // Add extra to focus on permissions tab
-                    intent.putExtra(":settings:fragment_args_key", "permission");
-                    getContext().startActivity(intent);
-                    call.resolve();
-                    return;
+
+                    if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+                        getContext().startActivity(intent);
+                        Log.d(TAG, "Successfully opened app settings using ACTION_APP_OPEN_BY_DEFAULT_SETTINGS");
+                        call.resolve(createSuccessResponse("ACTION_APP_OPEN_BY_DEFAULT_SETTINGS"));
+                        return;
+                    }
                 } catch (Exception e) {
-                    Log.d(TAG, "Android 11+ permissions intent failed");
+                    Log.d(TAG, "ACTION_APP_OPEN_BY_DEFAULT_SETTINGS failed: " + e.getMessage());
                 }
             }
 
-            // Fallback: Standard app details page (will show permissions section)
-            Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            intent.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            getContext().startActivity(intent);
-            call.resolve();
+            // Third try: Generic app settings intent
+            try {
+                Intent intent = new Intent();
+                intent.setAction(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.addCategory(Intent.CATEGORY_DEFAULT);
+                intent.setData(android.net.Uri.parse("package:" + packageName));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+                    getContext().startActivity(intent);
+                    Log.d(TAG, "Successfully opened app settings using generic intent");
+                    call.resolve(createSuccessResponse("GENERIC_APPLICATION_DETAILS"));
+                    return;
+                }
+            } catch (Exception e) {
+                Log.d(TAG, "Generic app settings intent failed: " + e.getMessage());
+            }
+
+            // If all specific methods fail, this shouldn't happen on modern Android
+            Log.e(TAG, "All attempts to open app settings failed");
+            call.reject("Unable to open app settings - no suitable intent found");
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to open app settings", e);
             call.reject("Failed to open app settings: " + e.getMessage());
+        }
+    }
+
+    private JSObject createSuccessResponse(String method) {
+        JSObject result = new JSObject();
+        result.put("opened", true);
+        result.put("method", method);
+        result.put("packageName", getContext().getPackageName());
+        return result;
+    }
         }
     }
 

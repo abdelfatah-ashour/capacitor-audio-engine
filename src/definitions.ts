@@ -513,8 +513,8 @@ export interface CapacitorAudioEnginePlugin {
    * @returns Promise that resolves when navigation is initiated
    * @throws {Error} If navigation fails
    * @platform web Not supported - shows alert with instructions
-   * @platform android Opens app permissions section using ACTION_APPLICATION_DETAILS_SETTINGS intent, attempts direct permissions page first
-   * @platform ios Opens app settings using UIApplication.openSettingsURLString (iOS directs to app-specific settings)
+   * @platform android Opens the app-specific settings page (App Info) using ACTION_APPLICATION_DETAILS_SETTINGS intent, where users can manage permissions, notifications, and other app settings
+   * @platform ios Opens the app-specific settings page using UIApplication.openSettingsURLString, which navigates directly to Settings > [App Name] where users can manage app permissions and settings
    */
-  openAppSettings(): Promise<void>;
+  openSettings(): Promise<void>;
 }

@@ -354,13 +354,13 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   /**
    * Navigate to the app's permission settings screen.
    * @returns Promise that resolves when navigation is initiated
-   * @platform web Shows alert with instructions to manually open browser settings
+   * @platform web Shows alert with instructions to manually open browser settings for permissions
    */
-  async openAppSettings(): Promise<void> {
-    console.warn('openAppSettings is not fully supported on web platform. Showing alert with instructions.');
+  async openSettings(): Promise<void> {
+    console.warn('openSettings is not fully supported on web platform. Showing alert with instructions.');
 
     const message =
-      'To manage permissions:\n\n' +
+      'To manage app permissions:\n\n' +
       "1. Click the lock icon in your browser's address bar\n" +
       '2. Select "Site settings" or "Permissions"\n' +
       '3. Adjust microphone and other permissions as needed\n\n' +

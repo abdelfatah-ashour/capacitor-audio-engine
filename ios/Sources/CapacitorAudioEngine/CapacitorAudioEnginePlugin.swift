@@ -39,7 +39,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "skipToPrevious", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "skipToIndex", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPlaybackInfo", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "openAppSettings", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
     ]
 
     // Add a property for RecordingManager
@@ -743,7 +743,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         call.resolve(result)
     }
 
-    @objc func openAppSettings(_ call: CAPPluginCall) {
+    @objc func openSettings(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
                 if UIApplication.shared.canOpenURL(settingsUrl) {

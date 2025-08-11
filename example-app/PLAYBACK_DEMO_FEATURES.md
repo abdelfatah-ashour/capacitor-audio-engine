@@ -207,9 +207,9 @@ A new feature has been added to help users manage app permissions more easily:
 #### **Implementation Details:**
 
 ```typescript
-async openAppSettings(): Promise<void> {
+async openSettings(): Promise<void> {
   try {
-    await CapacitorAudioEngine.openAppSettings();
+    await CapacitorAudioEngine.openSettings();
     await this.showToast('Opening app permissions...', 'success');
   } catch (error) {
     console.error('Failed to open app settings:', error);
