@@ -10,6 +10,9 @@
     <ion-icon name="settings" slot="start"></ion-icon>
     Open App Permissions
   </ion-button>
+  <ion-button expand="block" fill="outline" color="medium" (click)="checkPermission()">
+    Check Permission
+  </ion-button>
   @if (!hasPermission()) {
     <ion-card color="warning">
       <ion-card-header>
