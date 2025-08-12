@@ -9,6 +9,7 @@ import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Handler;
 import android.os.IBinder;
+import android.provider.Settings;
 import android.os.Looper;
 import android.util.Log;
 
@@ -309,15 +310,11 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         isRecording = false;
 
         // Get file info and return - with actual duration calculation
-        if (fileToReturn != null) {
-            // Create response with actual duration calculation
-            JSObject response = createFileInfoWithDuration(fileToReturn);
-            Log.d(TAG, "Recording stopped - File: " + new File(fileToReturn).getName());
+        // Create response with actual duration calculation
+        JSObject response = createFileInfoWithDuration(fileToReturn);
+        Log.d(TAG, "Recording stopped - File: " + new File(fileToReturn).getName());
 
-            return response;
-        } else {
-            throw new IllegalStateException("No recording file to return");
-        }
+        return response;
     }
 
     @PluginMethod
@@ -972,11 +969,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             String packageName = getContext().getPackageName();
             Log.d(TAG, "Attempting to open app settings for package: " + packageName);
 
-            // Try multiple approaches for different Android versions and manufacturers
-
-            // First try: Direct app info/permissions page (most reliable)
+            // Primary approach: Direct app info/permissions page (works on all Android versions)
             try {
-                Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
                 intent.setData(android.net.Uri.parse("package:" + packageName));
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
 
@@ -993,49 +988,28 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 Log.d(TAG, "ACTION_APPLICATION_DETAILS_SETTINGS failed: " + e.getMessage());
             }
 
-            // Second try: App permissions screen for Android 11+ (API 30+)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                try {
-                    Intent intent = new Intent(android.provider.Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS);
-                    intent.setData(android.net.Uri.parse("package:" + packageName));
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-                    if (intent.resolveActivity(getContext().getPackageManager()) != null) {
-                        getContext().startActivity(intent);
-                        Log.d(TAG, "Successfully opened app settings using ACTION_APP_OPEN_BY_DEFAULT_SETTINGS");
-                        call.resolve(createSuccessResponse("ACTION_APP_OPEN_BY_DEFAULT_SETTINGS"));
-                        return;
-                    }
-                } catch (Exception e) {
-                    Log.d(TAG, "ACTION_APP_OPEN_BY_DEFAULT_SETTINGS failed: " + e.getMessage());
-                }
-            }
-
-            // Third try: Generic app settings intent
+            // Fallback approach: Open general device settings if app-specific settings fail
             try {
-                Intent intent = new Intent();
-                intent.setAction(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                intent.addCategory(Intent.CATEGORY_DEFAULT);
-                intent.setData(android.net.Uri.parse("package:" + packageName));
+                Intent intent = new Intent(Settings.ACTION_SETTINGS);
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
                 if (intent.resolveActivity(getContext().getPackageManager()) != null) {
                     getContext().startActivity(intent);
-                    Log.d(TAG, "Successfully opened app settings using generic intent");
-                    call.resolve(createSuccessResponse("GENERIC_APPLICATION_DETAILS"));
+                    Log.d(TAG, "Successfully opened general settings as fallback");
+                    call.resolve(createSuccessResponse("ACTION_SETTINGS_FALLBACK"));
                     return;
                 }
             } catch (Exception e) {
-                Log.d(TAG, "Generic app settings intent failed: " + e.getMessage());
+                Log.d(TAG, "General settings fallback failed: " + e.getMessage());
             }
 
-            // If all specific methods fail, this shouldn't happen on modern Android
-            Log.e(TAG, "All attempts to open app settings failed");
-            call.reject("Unable to open app settings - no suitable intent found");
+            // If all attempts fail, this is highly unlikely on any Android device
+            Log.e(TAG, "All attempts to open settings failed");
+            call.reject("SETTINGS_UNAVAILABLE", "Unable to open device settings - no suitable intent found");
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to open app settings", e);
-            call.reject("Failed to open app settings: " + e.getMessage());
+            call.reject("SETTINGS_ERROR", "Failed to open app settings: " + e.getMessage());
         }
     }
 
@@ -1045,8 +1019,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         result.put("method", method);
         result.put("packageName", getContext().getPackageName());
         return result;
-    }
-        }
     }
 
 
@@ -1380,10 +1352,4 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             if (call != null) call.reject("Failed to resume recording: " + e.getMessage());
         }
     }
-
-    /**
-     * Internal reset recording method that clears segments and resets duration counters
-     */
-    // resetRecording removed: clients should stop and start a new recording instead
-
 }
