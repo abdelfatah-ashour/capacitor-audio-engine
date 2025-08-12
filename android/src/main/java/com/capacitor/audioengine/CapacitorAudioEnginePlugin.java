@@ -159,8 +159,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
     @PermissionCallback
     private void permissionCallback(PluginCall call) {
-        JSObject result = permissionManager.checkPermissions();
-        call.resolve(result);
+        Log.d(TAG, "permissionCallback triggered - handling permission response");
+        // Delegate to the permission manager to handle the callback properly
+        // This ensures proper sequential permission handling (audio first, then notifications)
+        permissionManager.handlePermissionCallback(call);
     }
 
   // Implementation of PermissionRequestCallback interface

@@ -347,6 +347,11 @@ export class FeaturesDemoComponent {
       this.hasPermission.set(false);
       this.permissionChecked.set(true);
     }
+    if (!this.hasPermission()) {
+      await this.showToast('Permission denied. Cannot record audio.', 'danger');
+    } else {
+      await this.showToast('Permission granted. You can record audio.', 'success');
+    }
   }
 
   async requestPermission(): Promise<void> {

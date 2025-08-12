@@ -94,13 +94,23 @@ public class PermissionManager {
             result.put("notificationPermission", true);
             call.resolve(result);
         } else if (!audioGranted) {
-            // Request audio permission first
+            // Request audio permission first - this will show the system dialog
+            // The call will be resolved in the permission callback after user response
             Log.d(TAG, "Requesting RECORD_AUDIO permission");
             permissionCallback.requestPermission("microphone", call, "permissionCallback");
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Request notification permission
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationGranted) {
+            // Request notification permission - this will show the system dialog
+            // The call will be resolved in the permission callback after user response
             Log.d(TAG, "Requesting POST_NOTIFICATIONS permission");
             permissionCallback.requestPermission("notifications", call, "permissionCallback");
+        } else {
+            // Edge case: handle unexpected state
+            Log.d(TAG, "Unexpected permission state, returning current status");
+            JSObject result = new JSObject();
+            result.put("granted", audioGranted && notificationGranted);
+            result.put("audioPermission", audioGranted);
+            result.put("notificationPermission", notificationGranted);
+            call.resolve(result);
         }
     }
 
