@@ -27,6 +27,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "switchMicrophone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "configureWaveform", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "configureWaveformSpeechDetection", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "destroyWaveform", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
         CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getAudioInfo", returnType: CAPPluginReturnPromise),
@@ -390,6 +391,19 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             "calibrationDuration": calibrationDuration
         ]
         call.resolve(result)
+    }
+
+    @objc func destroyWaveform(_ call: CAPPluginCall) {
+        // Stop monitoring if active
+        if waveformDataManager.isMonitoring() {
+            log("Stopping waveform monitoring before destruction")
+        }
+
+        // Cleanup waveform resources
+        waveformDataManager.cleanup()
+        log("Waveform configuration destroyed and resources cleaned up")
+
+        call.resolve()
     }
 
     @objc func getAudioInfo(_ call: CAPPluginCall) {

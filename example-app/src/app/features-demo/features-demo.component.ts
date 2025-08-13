@@ -839,6 +839,7 @@ export class FeaturesDemoComponent {
   }
 
   private setupWaveformEventListeners(): void {
+    // Listen for waveform data
     CapacitorAudioEngine.addListener('waveformData', (event: WaveformData) => {
       console.log('Waveform level received:', event.level);
 
@@ -866,6 +867,24 @@ export class FeaturesDemoComponent {
           this.maxWaveformLevel.set(event.level);
         }
       }
+    });
+
+    // Listen for waveform initialization
+    CapacitorAudioEngine.addListener('waveformInit' as any, (event: any) => {
+      console.log('Waveform initialized:', event);
+      this.showToast(
+        `Waveform initialized with ${event.numberOfBars} bars. Speech-only: ${event.speechOnlyMode}, VAD: ${event.vadEnabled}`,
+        'success'
+      );
+    });
+
+    // Listen for waveform destruction
+    CapacitorAudioEngine.addListener('waveformDestroy' as any, (event: any) => {
+      console.log('Waveform destroyed:', event);
+      this.showToast(`Waveform destroyed. Reason: ${event.reason}`, 'warning');
+
+      // Reset waveform-related state when destroyed
+      this.resetWaveformState();
     });
   }
 
@@ -1176,6 +1195,27 @@ export class FeaturesDemoComponent {
   async updateWaveformBars(bars: number): Promise<void> {
     this.waveformBars.set(bars);
     await this.configureWaveform();
+  }
+
+  async destroyWaveform(): Promise<void> {
+    try {
+      await (CapacitorAudioEngine as any).destroyWaveform();
+      await this.showToast('Waveform configuration destroyed', 'success');
+    } catch (error: any) {
+      console.error('Error destroying waveform:', error);
+      await this.showToast(`Error destroying waveform: ${error.message}`, 'danger');
+    }
+  }
+
+  resetWaveformState(): void {
+    // Reset all waveform-related state to initial values
+    this.waveformHistory.set([]);
+    this.maxWaveformLevel.set(0);
+    this.totalEmissions.set(0);
+    this.silenceEmissions.set(0);
+    this.silenceDetected.set(false);
+    this.lastEmissionTime.set(0);
+    console.log('Waveform state reset');
   }
 
   // Speech detection configuration methods

@@ -228,9 +228,22 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @platform web Not supported
    */
   async configureWaveform(options?: WaveformOptions): Promise<ConfigureWaveformResult> {
-    const numberOfBars = options?.numberOfBars ?? 32;
-    console.warn(`configureWaveform is not supported on web platform. Attempted to configure ${numberOfBars} bars.`);
-    throw new Error('configureWaveform is not supported on web platform');
+    console.warn(
+      'configureWaveform is not supported on web platform. Waveform data is not available for web recordings. Consider using MediaRecorder events and manual amplitude analysis.',
+    );
+    return {
+      success: false,
+      numberOfBars: options?.numberOfBars || 32,
+    };
+  }
+
+  /**
+   * Destroy waveform configuration and clean up resources.
+   * @returns Promise that resolves when waveform configuration is destroyed
+   * @platform web Not supported
+   */
+  async destroyWaveform(): Promise<void> {
+    console.warn('destroyWaveform is not supported on web platform. No waveform resources to clean up.');
   }
 
   /**

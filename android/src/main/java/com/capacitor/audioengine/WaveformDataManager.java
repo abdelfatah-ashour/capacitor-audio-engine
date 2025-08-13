@@ -198,6 +198,9 @@ public class WaveformDataManager {
             isActive.set(true);
             startRecordingThread();
 
+            // Emit waveform init event
+            emitWaveformInit();
+
             Log.d(TAG, "Waveform monitoring started successfully");
 
         } catch (SecurityException e) {
@@ -217,6 +220,9 @@ public class WaveformDataManager {
         }
 
         Log.d(TAG, "Stopping waveform monitoring");
+
+        // Emit waveform destroy event before cleanup
+        emitWaveformDestroy("stop_recording");
 
         isActive.set(false);
         isRecording.set(false);
@@ -474,6 +480,42 @@ public class WaveformDataManager {
 
         } catch (Exception e) {
             Log.e(TAG, "Error emitting waveform level", e);
+        }
+    }
+
+    /**
+     * Emit waveform initialization event
+     */
+    private void emitWaveformInit() {
+        try {
+            JSObject data = new JSObject();
+            data.put("numberOfBars", numberOfBars);
+            data.put("speechOnlyMode", speechOnlyMode);
+            data.put("speechThreshold", speechThreshold);
+            data.put("vadEnabled", vadEnabled);
+            data.put("calibrationDuration", backgroundCalibrationDuration);
+
+            eventCallback.notifyListeners("waveformInit", data);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error emitting waveform init event", e);
+        }
+    }
+
+    /**
+     * Emit waveform destroy event
+     * @param reason Reason for destruction
+     */
+    private void emitWaveformDestroy(String reason) {
+        try {
+            JSObject data = new JSObject();
+            data.put("reason", reason);
+            data.put("timestamp", System.currentTimeMillis());
+
+            eventCallback.notifyListeners("waveformDestroy", data);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error emitting waveform destroy event", e);
         }
     }
 

@@ -2,7 +2,7 @@ import type { PluginListenerHandle } from '@capacitor/core';
 
 export type RecordingStatus = 'idle' | 'recording' | 'paused';
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
-export type AudioRecordingEventName = 'durationChange' | 'error' | 'waveformData';
+export type AudioRecordingEventName = 'durationChange' | 'error' | 'waveformData' | 'waveformInit' | 'waveformDestroy';
 export type AudioPlaybackEventName =
   | 'trackChanged'
   | 'trackEnded'
@@ -27,6 +27,8 @@ export type AudioRecordingEventMap = {
   durationChange: DurationChangeData;
   error: ErrorEventData;
   waveformData: WaveformData;
+  waveformInit: WaveformInitData;
+  waveformDestroy: WaveformDestroyData;
 };
 
 export type AudioPlaybackEventMap = {
@@ -47,6 +49,19 @@ export interface DurationChangeData {
 
 export interface WaveformData {
   level: number;
+}
+
+export interface WaveformInitData {
+  numberOfBars: number;
+  speechOnlyMode?: boolean;
+  speechThreshold?: number;
+  vadEnabled?: boolean;
+  calibrationDuration?: number;
+}
+
+export interface WaveformDestroyData {
+  reason: string;
+  timestamp: number;
 }
 
 export interface ErrorEventData {
@@ -485,6 +500,22 @@ export interface CapacitorAudioEnginePlugin {
    * ```
    */
   configureWaveform(options?: WaveformOptions): Promise<ConfigureWaveformResult>;
+
+  /**
+   * Destroy waveform configuration and clean up resources.
+   * This will stop waveform monitoring if active and reset configuration to defaults.
+   * @returns Promise that resolves when waveform configuration is destroyed
+   * @platform web Not supported
+   * @platform android Stops waveform monitoring and releases AudioRecord resources
+   * @platform ios Stops AVAudioEngine tap and cleans up resources
+   *
+   * @example
+   * ```typescript
+   * // Destroy waveform configuration when no longer needed
+   * await CapacitorAudioEngine.destroyWaveform();
+   * ```
+   */
+  destroyWaveform(): Promise<void>;
 
   /**
    * Configure speech detection for waveform levels

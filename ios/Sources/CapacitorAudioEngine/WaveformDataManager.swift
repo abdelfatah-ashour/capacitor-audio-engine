@@ -307,6 +307,9 @@ class WaveformDataManager {
             isRecording = true
             lastEmissionTime = 0
 
+            // Emit waveform init event
+            emitWaveformInit()
+
             log("Waveform monitoring started successfully")
 
         } catch {
@@ -322,6 +325,9 @@ class WaveformDataManager {
         }
 
         log("Stopping waveform monitoring")
+
+        // Emit waveform destroy event before cleanup
+        emitWaveformDestroy(reason: "stop_recording")
 
         isActive = false
         isRecording = false
@@ -573,6 +579,44 @@ class WaveformDataManager {
         ]
 
         eventCallback.notifyListeners("waveformData", data: data)
+    }
+
+    /**
+     * Emit waveform initialization event
+     */
+    private func emitWaveformInit() {
+        guard let eventCallback = eventCallback else {
+            log("No event callback available for waveform init")
+            return
+        }
+
+        let data: [String: Any] = [
+            "numberOfBars": numberOfBars,
+            "speechOnlyMode": speechOnlyMode,
+            "speechThreshold": speechThreshold,
+            "vadEnabled": vadEnabled,
+            "calibrationDuration": backgroundCalibrationDuration
+        ]
+
+        eventCallback.notifyListeners("waveformInit", data: data)
+    }
+
+    /**
+     * Emit waveform destroy event
+     * - Parameter reason: Reason for destruction
+     */
+    private func emitWaveformDestroy(reason: String) {
+        guard let eventCallback = eventCallback else {
+            log("No event callback available for waveform destroy")
+            return
+        }
+
+        let data: [String: Any] = [
+            "reason": reason,
+            "timestamp": Int64(Date().timeIntervalSince1970 * 1000) // milliseconds
+        ]
+
+        eventCallback.notifyListeners("waveformDestroy", data: data)
     }
 
     /**

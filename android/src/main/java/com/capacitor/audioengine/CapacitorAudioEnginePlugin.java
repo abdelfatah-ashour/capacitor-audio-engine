@@ -669,6 +669,29 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         }
     }
 
+    @PluginMethod
+    public void destroyWaveform(PluginCall call) {
+        try {
+            if (waveformDataManager != null) {
+                // Stop monitoring if active
+                if (waveformDataManager.isMonitoring()) {
+                    Log.d(TAG, "Stopping waveform monitoring before destruction");
+                }
+
+                // Cleanup waveform resources
+                waveformDataManager.cleanup();
+                Log.d(TAG, "Waveform configuration destroyed and resources cleaned up");
+
+                call.resolve();
+            } else {
+                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to destroy waveform", e);
+            call.reject("DESTROY_ERROR", "Failed to destroy waveform: " + e.getMessage());
+        }
+    }
+
     // Helper methods for the refactored implementation
 
     private void startSegmentRollingRecording() throws IOException {
