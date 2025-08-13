@@ -2,7 +2,7 @@ import type { PluginListenerHandle } from '@capacitor/core';
 
 export type RecordingStatus = 'idle' | 'recording' | 'paused';
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
-export type AudioRecordingEventName = 'durationChange' | 'error';
+export type AudioRecordingEventName = 'durationChange' | 'error' | 'waveformData';
 export type AudioPlaybackEventName =
   | 'trackChanged'
   | 'trackEnded'
@@ -26,6 +26,7 @@ export interface AudioPlaybackEvent<T = any> {
 export type AudioRecordingEventMap = {
   durationChange: DurationChangeData;
   error: ErrorEventData;
+  waveformData: WaveformData;
 };
 
 export type AudioPlaybackEventMap = {
@@ -42,6 +43,10 @@ export type AudioEventMap = AudioRecordingEventMap & AudioPlaybackEventMap;
 
 export interface DurationChangeData {
   duration: number;
+}
+
+export interface WaveformData {
+  level: number;
 }
 
 export interface ErrorEventData {
@@ -186,6 +191,30 @@ export interface SwitchMicrophoneOptions {
 export interface SwitchMicrophoneResult {
   success: boolean;
   microphoneId: number;
+}
+
+export interface WaveformOptions {
+  numberOfBars?: number;
+}
+
+export interface WaveformSpeechDetectionOptions {
+  enabled?: boolean;
+  threshold?: number;
+  useVAD?: boolean;
+  calibrationDuration?: number;
+}
+
+export interface WaveformSpeechDetectionResult {
+  success: boolean;
+  enabled: boolean;
+  threshold: number;
+  useVAD: boolean;
+  calibrationDuration: number;
+}
+
+export interface ConfigureWaveformResult {
+  success: boolean;
+  numberOfBars: number;
 }
 
 export interface PreloadTracksOptions {
@@ -433,6 +462,60 @@ export interface CapacitorAudioEnginePlugin {
    * @platform ios Uses AVAudioSession.setPreferredInput() to switch input
    */
   switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
+
+  /**
+   * Configure waveform data generation settings.
+   * @param options - Configuration options for waveform data
+   * @param options.numberOfBars - Number of amplitude bars in the waveform data (default: 32)
+   * @returns Promise that resolves with configuration result
+   * @throws {Error} If configuration fails
+   * @platform web Not supported
+   * @platform android Configures real-time PCM audio processing for amplitude levels
+   * @platform ios Configures AVAudioEngine audio tap for amplitude levels
+   *
+   * @example
+   * ```typescript
+   * // Configure waveform with 64 bars for higher resolution
+   * await CapacitorAudioEngine.configureWaveform({ numberOfBars: 64 });
+   *
+   * // Listen for waveform data events during recording
+   * const waveformListener = await CapacitorAudioEngine.addListener('waveformData', (data) => {
+   *   console.log('Amplitude levels:', data.levels); // Array of 64 normalized values (0-1)
+   * });
+   * ```
+   */
+  configureWaveform(options?: WaveformOptions): Promise<ConfigureWaveformResult>;
+
+  /**
+   * Configure speech detection for waveform levels
+   * Enable speech-only detection with threshold filtering and optional Voice Activity Detection (VAD)
+   *
+   * @param options Configuration options for speech detection
+   * @returns Promise that resolves with configuration result
+   * @throws {Error} If configuration fails
+   * @platform web Not supported
+   * @platform android Uses RMS calculation with energy-based VAD and zero-crossing rate analysis
+   * @platform ios Uses energy-based VAD with spectral analysis and background noise calibration
+   *
+   * @example
+   * ```typescript
+   * // Enable speech detection with basic threshold filtering
+   * await CapacitorAudioEngine.configureWaveformSpeechDetection({
+   *   enabled: true,
+   *   threshold: 0.02,
+   *   useVAD: false
+   * });
+   *
+   * // Enable advanced speech detection with VAD
+   * await CapacitorAudioEngine.configureWaveformSpeechDetection({
+   *   enabled: true,
+   *   threshold: 0.02,
+   *   useVAD: true,
+   *   calibrationDuration: 2000
+   * });
+   * ```
+   */
+  configureWaveformSpeechDetection(options?: WaveformSpeechDetectionOptions): Promise<WaveformSpeechDetectionResult>;
 
   // ==================== AUDIO PLAYBACK METHODS ====================
 

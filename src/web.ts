@@ -12,6 +12,10 @@ import type {
   AvailableMicrophonesResult,
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
+  ConfigureWaveformResult,
+  WaveformOptions,
+  WaveformSpeechDetectionOptions,
+  WaveformSpeechDetectionResult,
   PreloadTracksOptions,
   PreloadTracksResult,
   PlaybackInfo,
@@ -215,6 +219,34 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async removeAllListeners(): Promise<void> {
     console.warn('removeAllListeners is not supported on web platform.');
+  }
+
+  /**
+   * Configure waveform data generation settings.
+   * @param options - Configuration options for waveform data
+   * @returns Promise that resolves with configuration result
+   * @platform web Not supported
+   */
+  async configureWaveform(options?: WaveformOptions): Promise<ConfigureWaveformResult> {
+    const numberOfBars = options?.numberOfBars ?? 32;
+    console.warn(`configureWaveform is not supported on web platform. Attempted to configure ${numberOfBars} bars.`);
+    throw new Error('configureWaveform is not supported on web platform');
+  }
+
+  /**
+   * Configure speech detection for waveform levels.
+   * @param options - Configuration options for speech detection
+   * @returns Promise that resolves with configuration result
+   * @platform web Not supported
+   */
+  async configureWaveformSpeechDetection(
+    options?: WaveformSpeechDetectionOptions,
+  ): Promise<WaveformSpeechDetectionResult> {
+    const enabled = options?.enabled ?? false;
+    console.warn(
+      `configureWaveformSpeechDetection is not supported on web platform. Attempted to configure speech detection enabled: ${enabled}.`,
+    );
+    throw new Error('configureWaveformSpeechDetection is not supported on web platform');
   }
 
   // ==================== AUDIO PLAYBACK METHODS ====================

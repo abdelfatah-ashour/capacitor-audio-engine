@@ -858,7 +858,7 @@ class RecordingManager: NSObject {
                     }
 
                 } catch {
-                    self.log("Failed to generate compressed base64: \(error.localizedDescription)")
+                    print("[RecordingManager] Failed to generate compressed base64: \(error.localizedDescription)")
                     continuation.resume(throwing: RecordingError.compressionFailed(underlying: error))
                 }
             }

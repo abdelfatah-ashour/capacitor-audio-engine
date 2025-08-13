@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { TitleCasePipe } from '@angular/common';
+import { TitleCasePipe, DecimalPipe, JsonPipe } from '@angular/common';
 import {
   IonContent,
   IonHeader,
@@ -9,6 +9,7 @@ import {
   IonCard,
   IonCardHeader,
   IonCardTitle,
+  IonCardSubtitle,
   IonCardContent,
   IonButton,
   IonIcon,
@@ -27,6 +28,10 @@ import {
   IonNote,
   IonCheckbox,
   IonRange,
+  IonSelect,
+  IonSelectOption,
+  IonAccordionGroup,
+  IonAccordion,
   AlertController,
   ToastController,
 } from '@ionic/angular/standalone';
@@ -48,6 +53,7 @@ import {
   download,
   checkmarkCircle,
   closeCircle,
+  pulse,
 } from 'ionicons/icons';
 import { addIcons } from 'ionicons';
 import { CapacitorAudioEngine } from 'capacitor-audio-engine';
@@ -65,6 +71,7 @@ import type {
   PlaybackPausedData,
   ErrorEventData,
   PreloadedTrackInfo,
+  WaveformData,
 } from 'capacitor-audio-engine';
 
 // Extended interface for demo to track segment rolling metadata
@@ -82,6 +89,8 @@ interface AudioFileInfoWithMetadata extends AudioFileInfo {
   imports: [
     FormsModule,
     TitleCasePipe,
+    DecimalPipe,
+    JsonPipe,
     IonContent,
     IonHeader,
     IonTitle,
@@ -89,6 +98,7 @@ interface AudioFileInfoWithMetadata extends AudioFileInfo {
     IonCard,
     IonCardHeader,
     IonCardTitle,
+    IonCardSubtitle,
     IonCardContent,
     IonButton,
     IonIcon,
@@ -102,11 +112,13 @@ interface AudioFileInfoWithMetadata extends AudioFileInfo {
     IonGrid,
     IonRow,
     IonCol,
-    IonSegment,
-    IonSegmentButton,
     IonNote,
     IonCheckbox,
     IonRange,
+    IonSelect,
+    IonSelectOption,
+    IonAccordionGroup,
+    IonAccordion,
   ],
 })
 export class FeaturesDemoComponent {
@@ -132,6 +144,7 @@ export class FeaturesDemoComponent {
       download,
       checkmarkCircle,
       closeCircle,
+      pulse,
     });
   }
 
@@ -158,6 +171,25 @@ export class FeaturesDemoComponent {
   protected readonly availableMicrophones = signal<MicrophoneInfo[]>([]);
   protected readonly currentMicrophone = signal<number | null>(null);
   protected readonly microphoneBusy = signal(false);
+
+  // Waveform data signals - growing waveform history
+  protected readonly waveformHistory = signal<number[]>([]);
+  protected readonly waveformBars = signal(32);
+  protected readonly waveformEnabled = signal(true);
+  protected readonly maxWaveformLevel = signal(0);
+
+  // Speech detection configuration signals
+  protected readonly speechDetectionEnabled = signal(false);
+  protected readonly speechThreshold = signal(0.02);
+  protected readonly useVAD = signal(true);
+  protected readonly calibrationDuration = signal(1000);
+
+  // Continuous emission tracking
+  protected readonly continuousEmissionEnabled = signal(true);
+  protected readonly silenceDetected = signal(false);
+  protected readonly lastEmissionTime = signal<number>(0);
+  protected readonly totalEmissions = signal(0);
+  protected readonly silenceEmissions = signal(0);
 
   // Audio files signals
   protected readonly recordedFiles = signal<AudioFileInfoWithMetadata[]>([]);
@@ -208,9 +240,9 @@ export class FeaturesDemoComponent {
   ];
 
   // UI signals
-  protected readonly activeTab = signal<'recording' | 'playback' | 'microphones' | 'audio-info'>(
-    'recording'
-  );
+  protected readonly activeTab = signal<
+    'recording' | 'playback' | 'microphones' | 'audio-info' | 'waveform'
+  >('recording');
 
   // Option arrays for button groups
   protected readonly sampleRateOptions = [
@@ -244,6 +276,33 @@ export class FeaturesDemoComponent {
     { value: 600, label: '10m' },
   ];
 
+  protected readonly waveformBarsOptions = [
+    { value: 16, label: '16' },
+    { value: 24, label: '24' },
+    { value: 32, label: '32' },
+    { value: 48, label: '48' },
+    { value: 64, label: '64' },
+    { value: 96, label: '96' },
+    { value: 128, label: '128' },
+  ];
+
+  protected readonly speechThresholdOptions = [
+    { value: 0.005, label: '0.005 (Ultra Sensitive)' },
+    { value: 0.01, label: '0.01 (Very Sensitive)' },
+    { value: 0.02, label: '0.02 (Default)' },
+    { value: 0.03, label: '0.03 (Less Sensitive)' },
+    { value: 0.05, label: '0.05 (Low Sensitivity)' },
+    { value: 0.1, label: '0.1 (Very Low)' },
+  ];
+
+  protected readonly calibrationDurationOptions = [
+    { value: 500, label: '0.5s' },
+    { value: 1000, label: '1s (Default)' },
+    { value: 1500, label: '1.5s' },
+    { value: 2000, label: '2s' },
+    { value: 3000, label: '3s' },
+  ];
+
   // Computed signals
   protected readonly canRecord = computed(
     () => this.hasPermission() && this.recordingStatus() === 'idle'
@@ -264,7 +323,28 @@ export class FeaturesDemoComponent {
 
   protected readonly formattedDuration = computed(() => this.formatTime(this.recordingDuration()));
 
-  // Per-URL Playback computed signals
+  // Waveform computed signals
+  protected readonly normalizedWaveformHistory = computed(() => {
+    const levels = this.waveformHistory();
+    const maxLevel = this.maxWaveformLevel();
+    if (maxLevel === 0) return levels;
+    return levels.map((level: number) => level / maxLevel);
+  });
+
+  protected readonly waveformVisualizationData = computed(() => {
+    const levels = this.normalizedWaveformHistory();
+    const bars = this.waveformBars();
+
+    // For growing waveform, we want to show the most recent levels
+    // If we have more levels than bars, show the last N bars
+    if (levels.length >= bars) {
+      return levels.slice(-bars);
+    } else {
+      // If we have fewer levels than bars, pad with zeros at the beginning
+      const padding = new Array(bars - levels.length).fill(0);
+      return [...padding, ...levels];
+    }
+  }); // Per-URL Playback computed signals
   protected readonly hasPreloadedTracks = computed(() => this.preloadedTracks().size > 0);
 
   // Helper methods for track-specific state
@@ -520,6 +600,7 @@ export class FeaturesDemoComponent {
       // Initialize event listeners if this is the first preloaded track
       if (this.preloadedTracks().size === 1) {
         this.setupPlaybackEventListeners();
+        this.setupWaveformEventListeners();
       }
     } catch (error) {
       console.error('Failed to preload track:', error);
@@ -556,6 +637,7 @@ export class FeaturesDemoComponent {
 
       // Set up event listeners
       this.setupPlaybackEventListeners();
+      this.setupWaveformEventListeners();
     } catch (error) {
       console.error('Failed to preload all tracks:', error);
       await this.showToast('Failed to preload tracks', 'danger');
@@ -752,6 +834,37 @@ export class FeaturesDemoComponent {
 
           return newStates;
         });
+      }
+    });
+  }
+
+  private setupWaveformEventListeners(): void {
+    CapacitorAudioEngine.addListener('waveformData', (event: WaveformData) => {
+      console.log('Waveform level received:', event.level);
+
+      // Track emission statistics
+      const currentTime = Date.now();
+      this.lastEmissionTime.set(currentTime);
+      this.totalEmissions.update(count => count + 1);
+
+      // Check if this is a silence emission (level = 0)
+      const isSilence = event.level === 0;
+      this.silenceDetected.set(isSilence);
+
+      if (isSilence) {
+        this.silenceEmissions.update(count => count + 1);
+        console.log('Silence detected - continuous emission with level = 0');
+      }
+
+      // Add the new level to the growing history (including silence levels)
+      this.waveformHistory.update(history => [...history, event.level]);
+
+      // Update max level for normalization (excluding silence)
+      if (!isSilence) {
+        const currentMaxLevel = this.maxWaveformLevel();
+        if (event.level > currentMaxLevel) {
+          this.maxWaveformLevel.set(event.level);
+        }
       }
     });
   }
@@ -975,7 +1088,7 @@ export class FeaturesDemoComponent {
 
   // Tab navigation
   selectTab(tab: any): void {
-    if (tab && ['recording', 'playback', 'microphones', 'audio-info'].includes(tab)) {
+    if (tab && ['recording', 'playback', 'microphones', 'audio-info', 'waveform'].includes(tab)) {
       this.activeTab.set(tab);
 
       if (tab === 'microphones') {
@@ -1016,6 +1129,93 @@ export class FeaturesDemoComponent {
     this.maxDurationSeconds.set(value);
   }
 
+  // Waveform configuration methods
+  async configureWaveform(): Promise<void> {
+    try {
+      const options = {
+        numberOfBars: this.waveformBars(),
+        enabled: this.waveformEnabled(),
+      };
+
+      await CapacitorAudioEngine.configureWaveform(options);
+      await this.showToast(`Waveform configured: ${options.numberOfBars} bars`, 'success');
+    } catch (error: any) {
+      console.error('Error configuring waveform:', error);
+      await this.showToast(`Error configuring waveform: ${error.message}`, 'danger');
+    }
+  }
+
+  async configureSpeechDetection(): Promise<void> {
+    try {
+      const options = {
+        enabled: this.speechDetectionEnabled(),
+        threshold: this.speechThreshold(),
+        useVAD: this.useVAD(),
+        calibrationDuration: this.calibrationDuration(),
+      };
+
+      await CapacitorAudioEngine.configureWaveformSpeechDetection(options);
+
+      const statusText = options.enabled
+        ? `Speech detection enabled (threshold: ${options.threshold}, VAD: ${options.useVAD ? 'on' : 'off'})`
+        : 'Speech detection disabled';
+
+      await this.showToast(statusText, 'success');
+    } catch (error: any) {
+      console.error('Error configuring speech detection:', error);
+      await this.showToast(`Error configuring speech detection: ${error.message}`, 'danger');
+    }
+  }
+
+  async toggleWaveformEnabled(): Promise<void> {
+    const enabled = !this.waveformEnabled();
+    this.waveformEnabled.set(enabled);
+    await this.configureWaveform();
+  }
+
+  async updateWaveformBars(bars: number): Promise<void> {
+    this.waveformBars.set(bars);
+    await this.configureWaveform();
+  }
+
+  // Speech detection configuration methods
+  async toggleSpeechDetection(): Promise<void> {
+    const enabled = !this.speechDetectionEnabled();
+    this.speechDetectionEnabled.set(enabled);
+    await this.configureSpeechDetection();
+  }
+
+  async updateSpeechThreshold(threshold: number): Promise<void> {
+    this.speechThreshold.set(threshold);
+    if (this.speechDetectionEnabled()) {
+      await this.configureSpeechDetection();
+    }
+  }
+
+  async toggleVAD(): Promise<void> {
+    const useVAD = !this.useVAD();
+    this.useVAD.set(useVAD);
+    if (this.speechDetectionEnabled()) {
+      await this.configureSpeechDetection();
+    }
+  }
+
+  async updateCalibrationDuration(duration: number): Promise<void> {
+    this.calibrationDuration.set(duration);
+    if (this.speechDetectionEnabled()) {
+      await this.configureSpeechDetection();
+    }
+  }
+
+  resetWaveformLevels(): void {
+    this.waveformHistory.set([]);
+    this.maxWaveformLevel.set(0);
+    this.totalEmissions.set(0);
+    this.silenceEmissions.set(0);
+    this.silenceDetected.set(false);
+    this.lastEmissionTime.set(0);
+  }
+
   // Toast helper
   private async showToast(
     message: string,
@@ -1033,6 +1233,12 @@ export class FeaturesDemoComponent {
   // Lifecycle
   async ngOnInit(): Promise<void> {
     await this.checkPermission();
+    // Setup waveform event listeners immediately
+    this.setupWaveformEventListeners();
+    // Configure waveform with default settings
+    if (this.waveformEnabled()) {
+      await this.configureWaveform();
+    }
   }
 
   ngOnDestroy(): void {

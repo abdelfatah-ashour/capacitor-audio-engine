@@ -9,7 +9,7 @@ import Capacitor
  */
 
 @objc(CapacitorAudioEnginePlugin)
-public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingManagerDelegate, PlaybackManagerDelegate {
+public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingManagerDelegate, PlaybackManagerDelegate, WaveformDataManager.WaveformEventCallback {
     public let identifier = "CapacitorAudioEnginePlugin"
     public let jsName = "CapacitorAudioEngine"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -25,6 +25,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "isMicrophoneBusy", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getAvailableMicrophones", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "switchMicrophone", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "configureWaveform", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "configureWaveformSpeechDetection", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
         CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getAudioInfo", returnType: CAPPluginReturnPromise),
@@ -47,6 +49,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
     // Add a property for PlaybackManager
     private var playbackManager: PlaybackManager!
+
+    // Add a property for WaveformDataManager
+    private var waveformDataManager: WaveformDataManager!
 
     // Add property for pending recording call
     private var pendingStopRecordingCall: CAPPluginCall?
@@ -153,6 +158,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         playbackManager = PlaybackManager()
         playbackManager.delegate = self
 
+        // Initialize the waveform data manager and set self as delegate
+        waveformDataManager = WaveformDataManager(eventCallback: self)
+
         // Set up initial audio session that supports both recording and playback
         do {
             let audioSession = AVAudioSession.sharedInstance()
@@ -253,16 +261,28 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         ]
 
         recordingManager.startRecording(with: settings)
+
+        // Start waveform data monitoring for real-time audio levels
+        waveformDataManager.startMonitoring()
+
         call.resolve()
     }
 
     @objc func pauseRecording(_ call: CAPPluginCall) {
         recordingManager.pauseRecording()
+
+        // Pause waveform data monitoring
+        waveformDataManager.pauseMonitoring()
+
         call.resolve()
     }
 
     @objc func resumeRecording(_ call: CAPPluginCall) {
         recordingManager.resumeRecording()
+
+        // Resume waveform data monitoring
+        waveformDataManager.resumeMonitoring()
+
         call.resolve()
     }
 
@@ -332,6 +352,44 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         }
         recordingManager.switchMicrophone(to: id)
         call.resolve()
+    }
+
+    @objc func configureWaveform(_ call: CAPPluginCall) {
+        let numberOfBars = call.getInt("numberOfBars") ?? 32
+
+        waveformDataManager.setNumberOfBars(numberOfBars)
+        log("Waveform configured with \(numberOfBars) bars")
+
+        let result: [String: Any] = [
+            "success": true,
+            "numberOfBars": numberOfBars
+        ]
+        call.resolve(result)
+    }
+
+    @objc func configureWaveformSpeechDetection(_ call: CAPPluginCall) {
+        let enabled = call.getBool("enabled") ?? false
+        let threshold = call.getDouble("threshold") ?? 0.02
+        let useVAD = call.getBool("useVAD") ?? true
+        let calibrationDuration = call.getInt("calibrationDuration") ?? 1000
+
+        waveformDataManager.configureSpeechDetection(
+            enabled: enabled,
+            threshold: Float(threshold),
+            useVAD: useVAD,
+            calibrationDuration: calibrationDuration
+        )
+
+        log("Speech detection configured - enabled: \(enabled), threshold: \(threshold), VAD: \(useVAD), calibration: \(calibrationDuration)ms")
+
+        let result: [String: Any] = [
+            "success": true,
+            "enabled": enabled,
+            "threshold": threshold,
+            "useVAD": useVAD,
+            "calibrationDuration": calibrationDuration
+        ]
+        call.resolve(result)
     }
 
     @objc func getAudioInfo(_ call: CAPPluginCall) {
@@ -548,6 +606,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         // This will be called when recording finishes
         // The info contains the recording response
         log("Recording finished with info: \(info)")
+
+        // Stop waveform data monitoring
+        waveformDataManager.stopMonitoring()
+        log("Waveform data monitoring stopped")
 
         // Reconfigure audio session for optimal playback after recording
         do {
@@ -887,6 +949,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         }
 
         notifyListeners("playbackStatusChanged", data: data)
+    }
+
+    // MARK: - WaveformEventCallback Implementation
+
+    func notifyListeners(_ eventName: String, data: [String: Any]) {
+        super.notifyListeners(eventName, data: data)
     }
 
 }

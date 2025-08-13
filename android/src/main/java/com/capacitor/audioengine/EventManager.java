@@ -8,7 +8,7 @@ import java.util.Iterator;
 /**
  * Manages event emissions for the audio engine
  */
-public class EventManager {
+public class EventManager implements WaveformDataManager.EventCallback {
     private static final String TAG = "EventManager";
 
     private final EventCallback eventCallback;
@@ -67,5 +67,14 @@ public class EventManager {
         }
 
         eventCallback.notifyListeners("recordingStateChange", data);
+    }
+
+    /**
+     * Implementation of WaveformDataManager.EventCallback interface
+     * Delegates to the internal event callback
+     */
+    @Override
+    public void notifyListeners(String eventName, JSObject data) {
+        eventCallback.notifyListeners(eventName, data);
     }
 }

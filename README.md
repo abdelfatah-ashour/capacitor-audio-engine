@@ -48,6 +48,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 📝 Get detailed recording metadata
 - 🎙️ **Microphone management** - Detect and switch between available microphones
 - 🔍 **Microphone status** - Check if microphone is busy/in use by other apps
+- 📊 **Real-time waveform data** - Get amplitude levels during recording for UI visualizations
 
 ### 🎵 Audio Playback
 
@@ -82,6 +83,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 | Audio Trimming       | ✅      | ✅  | 🔜  |
 | Microphone Detection | ✅      | ✅  | 🔜  |
 | Microphone Switching | ✅      | ✅  | 🔜  |
+| Waveform Data        | ✅      | ✅  | ❌  |
 | Audio Playback       | ✅      | ✅  | 🔜  |
 | Playback Controls    | ✅      | ✅  | 🔜  |
 | Audio Preloading     | ✅      | ✅  | ❌  |
@@ -617,11 +619,7 @@ interface PreloadTracksOptions {
 **Example:**
 
 ```typescript
-const trackUrls = [
-  'https://example.com/song1.mp3',
-  'file:///path/to/local/song2.m4a',
-  'https://example.com/song3.mp3'
-];
+const trackUrls = ['https://example.com/song1.mp3', 'file:///path/to/local/song2.m4a', 'https://example.com/song3.mp3'];
 
 await CapacitorAudioEngine.preloadTracks({
   tracks: trackUrls,

@@ -319,3 +319,60 @@ ion-grid ion-button {
     padding: 8px 0;
   }
 }
+
+// Waveform Visualization Styles
+.waveform-controls {
+  margin-bottom: 24px;
+}
+
+.waveform-container {
+  margin-top: 16px;
+
+  h4 {
+    margin: 0 0 16px 0;
+    color: var(--ion-color-primary);
+  }
+
+  p {
+    margin: 8px 0;
+    font-size: 0.9rem;
+  }
+}
+
+.waveform-bars {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  height: 120px;
+  padding: 12px;
+  background: var(--ion-color-light);
+  border-radius: 8px;
+  margin: 16px 0;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.waveform-bar {
+  flex: 1;
+  min-height: 2px;
+  background-color: var(--ion-color-primary);
+  border-radius: 2px 2px 0 0;
+  transition:
+    height 0.1s ease-out,
+    background-color 0.2s ease;
+
+  &:hover {
+    opacity: 0.8;
+  }
+}
+
+.raw-data {
+  background: var(--ion-color-light);
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  max-height: 200px;
+  overflow-y: auto;
+  word-break: break-all;
+  white-space: pre-wrap;
+}

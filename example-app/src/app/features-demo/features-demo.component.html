@@ -38,24 +38,49 @@
     </ion-card>
   } @else {
     <!-- Main Content -->
-    <ion-segment [value]="activeTab()" (ionChange)="selectTab($event.detail.value)">
-      <ion-segment-button value="recording">
+    <div>
+      <ion-button
+        class="ion-no-padding ion-no-margin"
+        value="recording"
+        (click)="selectTab('recording')"
+      >
         <ion-icon name="mic-circle"></ion-icon>
         <ion-label>Recording</ion-label>
-      </ion-segment-button>
-      <ion-segment-button value="playback">
+      </ion-button>
+      <ion-button
+        class="ion-no-padding ion-no-margin"
+        value="playback"
+        (click)="selectTab('playback')"
+      >
         <ion-icon name="musical-notes"></ion-icon>
         <ion-label>Playback</ion-label>
-      </ion-segment-button>
-      <ion-segment-button value="microphones">
+      </ion-button>
+      <ion-button
+        class="ion-no-padding ion-no-margin"
+        value="microphones"
+        (click)="selectTab('microphones')"
+      >
         <ion-icon name="volume-high"></ion-icon>
         <ion-label>Microphones</ion-label>
-      </ion-segment-button>
-      <ion-segment-button value="audio-info">
+      </ion-button>
+      <ion-button
+        class="ion-no-padding ion-no-margin"
+        value="audio-info"
+        (click)="selectTab('audio-info')"
+      >
         <ion-icon name="information-circle"></ion-icon>
         <ion-label>Audio Info</ion-label>
-      </ion-segment-button>
-    </ion-segment>
+      </ion-button>
+      <ion-button
+        class="ion-no-padding ion-no-margin"
+        value="waveform"
+        (click)="selectTab('waveform')"
+      >
+        <ion-icon name="pulse"></ion-icon>
+        <ion-label>Waveform</ion-label>
+      </ion-button>
+    </div>
+    {{ activeTab() }}
 
     <!-- Recording Tab -->
     @if (activeTab() === 'recording') {
@@ -906,6 +931,183 @@
               </small>
             </p>
           </ion-note>
+        </ion-card-content>
+      </ion-card>
+    }
+
+    <!-- Waveform Tab -->
+    @if (activeTab() === 'waveform') {
+      <ion-card>
+        <ion-card-header>
+          <ion-card-title>
+            <ion-icon name="pulse"></ion-icon>
+            Growing Waveform Visualization with Speech Detection
+          </ion-card-title>
+          <ion-card-subtitle>
+            Real-time incremental audio levels with optional speech-only detection and Voice
+            Activity Detection (VAD)
+          </ion-card-subtitle>
+        </ion-card-header>
+        <ion-card-content>
+          <!-- Waveform Controls -->
+          <div class="waveform-controls">
+            <ion-item>
+              <ion-checkbox [checked]="waveformEnabled()" (ionChange)="toggleWaveformEnabled()">
+              </ion-checkbox>
+              <ion-label class="ion-margin-start">Enable Waveform</ion-label>
+            </ion-item>
+
+            <ion-item>
+              <ion-label>Number of Bars: {{ waveformBars() }}</ion-label>
+              <ion-select
+                [value]="waveformBars()"
+                (ionChange)="updateWaveformBars($event.detail.value)"
+                interface="popover"
+              >
+                @for (option of waveformBarsOptions; track option) {
+                  <ion-select-option [value]="option.value">{{ option.label }}</ion-select-option>
+                }
+              </ion-select>
+            </ion-item>
+
+            <ion-button expand="block" fill="outline" (click)="resetWaveformLevels()">
+              <ion-icon name="refresh" slot="start"></ion-icon>
+              Reset Levels
+            </ion-button>
+          </div>
+
+          <!-- Speech Detection Controls -->
+          <div class="speech-detection-controls">
+            <ion-item-divider>
+              <ion-label>Speech Detection Settings</ion-label>
+            </ion-item-divider>
+
+            <ion-item>
+              <ion-checkbox
+                [checked]="speechDetectionEnabled()"
+                (ionChange)="toggleSpeechDetection()"
+              >
+              </ion-checkbox>
+              <ion-label class="ion-margin-start">Enable Speech-Only Detection</ion-label>
+            </ion-item>
+
+            @if (speechDetectionEnabled()) {
+              <ion-item>
+                <ion-label>Threshold: {{ speechThreshold() }}</ion-label>
+                <ion-select
+                  [value]="speechThreshold()"
+                  (ionChange)="updateSpeechThreshold($event.detail.value)"
+                  interface="popover"
+                >
+                  @for (option of speechThresholdOptions; track option) {
+                    <ion-select-option [value]="option.value">{{ option.label }}</ion-select-option>
+                  }
+                </ion-select>
+              </ion-item>
+
+              <ion-item>
+                <ion-checkbox [checked]="useVAD()" (ionChange)="toggleVAD()"> </ion-checkbox>
+                <ion-label class="ion-margin-start">Use Voice Activity Detection (VAD)</ion-label>
+              </ion-item>
+
+              @if (useVAD()) {
+                <ion-item>
+                  <ion-label>Background Calibration: {{ calibrationDuration() }}ms</ion-label>
+                  <ion-select
+                    [value]="calibrationDuration()"
+                    (ionChange)="updateCalibrationDuration($event.detail.value)"
+                    interface="popover"
+                  >
+                    @for (option of calibrationDurationOptions; track option) {
+                      <ion-select-option [value]="option.value">{{
+                        option.label
+                      }}</ion-select-option>
+                    }
+                  </ion-select>
+                </ion-item>
+              }
+            }
+          </div>
+
+          <!-- Waveform Visualization -->
+          <div class="waveform-container">
+            <h4>Growing Waveform Data</h4>
+            <p><strong>Max Level:</strong> {{ maxWaveformLevel() | number: '1.3-3' }}</p>
+            <p><strong>History Length:</strong> {{ waveformHistory().length }} levels</p>
+            <p><strong>Display Bars:</strong> {{ waveformBars() }}</p>
+
+            <!-- Continuous Emission Statistics -->
+            <div class="emission-stats">
+              <h5>Continuous Emission (50ms intervals)</h5>
+              <p><strong>Total Emissions:</strong> {{ totalEmissions() }}</p>
+              <p><strong>Silence Emissions:</strong> {{ silenceEmissions() }}</p>
+              <p>
+                <strong>Speech Ratio:</strong>
+                {{
+                  totalEmissions() > 0
+                    ? (((totalEmissions() - silenceEmissions()) / totalEmissions()) * 100
+                        | number: '1.1-1') + '%'
+                    : 'N/A'
+                }}
+              </p>
+              <p>
+                <strong>Current State:</strong>
+                <ion-chip [color]="silenceDetected() ? 'medium' : 'success'">
+                  {{ silenceDetected() ? 'Silence (level = 0)' : 'Audio Detected' }}
+                </ion-chip>
+              </p>
+            </div>
+
+            @if (waveformEnabled()) {
+              <div class="waveform-bars">
+                @for (level of waveformVisualizationData(); track $index) {
+                  <div
+                    class="waveform-bar"
+                    [style.height.%]="level === 0 ? 5 : level * 100"
+                    [style.background-color]="
+                      level === 0
+                        ? '#cccccc'
+                        : level > 0.8
+                          ? '#f04141'
+                          : level > 0.5
+                            ? '#ffc409'
+                            : '#2dd36f'
+                    "
+                    [title]="
+                      level === 0
+                        ? 'Silence (level = 0)'
+                        : 'Audio level: ' + (level | number: '1.3-3')
+                    "
+                  ></div>
+                }
+              </div>
+
+              @if (waveformHistory().length === 0) {
+                <ion-note>
+                  <p>
+                    Start recording to see real-time continuous waveform data (50ms intervals)...
+                  </p>
+                  <p><em>Silence will show as level = 0 instead of being omitted</em></p>
+                </ion-note>
+              }
+            } @else {
+              <ion-note>
+                <p>Waveform visualization is disabled. Enable it above to see live audio levels.</p>
+              </ion-note>
+            }
+          </div>
+
+          <!-- Raw Data Display -->
+          <ion-accordion-group>
+            <ion-accordion value="raw-data">
+              <ion-item slot="header" color="light">
+                <ion-label>Growing Waveform History</ion-label>
+              </ion-item>
+              <div class="ion-padding" slot="content">
+                <pre class="raw-data">{{ waveformHistory() | json }}</pre>
+              </div>
+            </ion-accordion>
+          </ion-accordion-group>
         </ion-card-content>
       </ion-card>
     }

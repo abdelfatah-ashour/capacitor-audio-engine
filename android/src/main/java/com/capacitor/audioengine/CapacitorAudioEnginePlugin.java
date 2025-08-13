@@ -52,6 +52,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     private FileDirectoryManager fileManager;
     private PlaybackManager playbackManager;
 
+    // Waveform data manager for real-time audio levels
+    private WaveformDataManager waveformDataManager;
+
     // Background recording service
     private RecordingService recordingService;
     private boolean isServiceBound = false;
@@ -77,6 +80,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         permissionManager = new PermissionManager(getContext(), this);
         eventManager = new EventManager(this);
         fileManager = new FileDirectoryManager(getContext());
+
+        // Initialize waveform data manager with event manager callback
+        waveformDataManager = new WaveformDataManager(eventManager);
 
 
         // Initialize recording configuration with defaults
@@ -307,6 +313,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         } else {
             Log.e(TAG, "Segment rolling manager is null!");
             throw new IllegalStateException("Segment rolling manager not initialized");
+        }
+
+        // Stop waveform data monitoring
+        if (waveformDataManager != null) {
+            waveformDataManager.stopMonitoring();
+            Log.d(TAG, "Waveform data monitoring stopped");
         }
 
         isRecording = false;
@@ -600,6 +612,63 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         }
     }
 
+    @PluginMethod
+    public void configureWaveform(PluginCall call) {
+        try {
+            Integer numberOfBars = call.getInt("numberOfBars");
+            if (numberOfBars == null) {
+                numberOfBars = 32; // Default value
+            }
+
+            if (waveformDataManager != null) {
+                waveformDataManager.setNumberOfBars(numberOfBars);
+                Log.d(TAG, "Waveform configured with " + numberOfBars + " bars");
+
+                JSObject result = new JSObject();
+                result.put("success", true);
+                result.put("numberOfBars", numberOfBars);
+                call.resolve(result);
+            } else {
+                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to configure waveform", e);
+            call.reject("CONFIGURE_ERROR", "Failed to configure waveform: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void configureWaveformSpeechDetection(PluginCall call) {
+        try {
+            Boolean enabled = call.getBoolean("enabled", false);
+            Double threshold = call.getDouble("threshold", 0.02);
+            Boolean useVAD = call.getBoolean("useVAD", true);
+            Integer calibrationDuration = call.getInt("calibrationDuration", 1000);
+
+            if (waveformDataManager != null) {
+                assert threshold != null;
+                waveformDataManager.configureSpeechDetection(Boolean.TRUE.equals(enabled), threshold.floatValue(), Boolean.TRUE.equals(useVAD), calibrationDuration);
+
+                Log.d(TAG, "Speech detection configured - enabled: " + enabled +
+                     ", threshold: " + threshold + ", VAD: " + useVAD +
+                     ", calibration: " + calibrationDuration + "ms");
+
+                JSObject result = new JSObject();
+                result.put("success", true);
+                result.put("enabled", enabled);
+                result.put("threshold", threshold);
+                result.put("useVAD", useVAD);
+                result.put("calibrationDuration", calibrationDuration);
+                call.resolve(result);
+            } else {
+                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to configure speech detection", e);
+            call.reject("CONFIGURE_ERROR", "Failed to configure speech detection: " + e.getMessage());
+        }
+    }
+
     // Helper methods for the refactored implementation
 
     private void startSegmentRollingRecording() throws IOException {
@@ -640,6 +709,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         // Start segment rolling
         segmentRollingManager.startSegmentRolling(recordingConfig);
 
+        // Start waveform data monitoring for real-time audio levels
+        if (waveformDataManager != null) {
+            waveformDataManager.startMonitoring();
+            Log.d(TAG, "Waveform data monitoring started");
+        }
+
         isRecording = true;
 
         Log.d(TAG, "Started segment rolling recording with rolling window: " + maxDurationSeconds + " seconds");
@@ -661,6 +736,16 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                     Log.w(TAG, "Error releasing segment rolling manager during cleanup", e);
                 }
                 segmentRollingManager = null;
+            }
+
+            // Stop waveform data monitoring
+            if (waveformDataManager != null) {
+                try {
+                    waveformDataManager.stopMonitoring();
+                    Log.d(TAG, "Waveform data monitoring cleaned up");
+                } catch (Exception e) {
+                    Log.w(TAG, "Error cleaning up waveform data manager", e);
+                }
             }
 
             // Stop recording service
@@ -1155,6 +1240,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 fileManager = null;
             }
 
+            // Clean up waveform data manager
+            if (waveformDataManager != null) {
+                waveformDataManager.cleanup();
+                waveformDataManager = null;
+            }
+
             // Unbind recording service
             unbindRecordingService();
 
@@ -1283,6 +1374,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 segmentRollingManager.pauseSegmentRolling();
                 Log.d(TAG, "Segment rolling recording paused");
 
+                // Pause waveform data monitoring
+                if (waveformDataManager != null) {
+                    waveformDataManager.pauseMonitoring();
+                    Log.d(TAG, "Waveform data monitoring paused");
+                }
+
                 // Emit pause state change event for consistency
                 if (eventManager != null) {
                     JSObject pauseData = new JSObject();
@@ -1324,6 +1421,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                     Log.d(TAG, "Segment rolling not active (legacy state), restarting segment rolling");
                     segmentRollingManager.startSegmentRolling(recordingConfig);
                     Log.d(TAG, "Fresh segment rolling started after legacy reset");
+                }
+
+                // Resume waveform data monitoring
+                if (waveformDataManager != null) {
+                    waveformDataManager.resumeMonitoring();
+                    Log.d(TAG, "Waveform data monitoring resumed");
                 }
 
                 // Emit recording state change event for consistency
