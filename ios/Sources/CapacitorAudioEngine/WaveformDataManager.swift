@@ -429,8 +429,9 @@ class WaveformDataManager {
         // Calculate RMS
         let rms = sqrt(sum / Float(totalSamples))
 
-        // Apply automatic gain for iOS audio (iOS tends to have lower levels than Android)
-        let gainFactor: Float = 4.0 // Boost audio levels by 4x for better speech detection
+        // Apply automatic gain for iOS audio to match recorded audio levels
+        // iOS AVAudioRecorder applies AGC and normalization, so we boost raw levels to compensate
+        let gainFactor: Float = 8.0 // Increased from 4.0 to better match final recording levels
         let adjustedRms = rms * gainFactor
 
         // Ensure it's in 0-1 range

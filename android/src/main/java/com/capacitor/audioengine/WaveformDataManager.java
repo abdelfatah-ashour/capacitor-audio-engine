@@ -355,7 +355,12 @@ public class WaveformDataManager {
 
             // Calculate RMS and normalize to 0-1 range
             double rms = Math.sqrt(sum / (double) samplesRead);
-            float calculatedLevel = (float) Math.min(1.0, rms / Short.MAX_VALUE);
+
+            // Apply gain factor to match recorded audio levels (similar to AGC)
+            // Android MediaRecorder applies automatic gain, so we boost raw levels to compensate
+            float rawLevel = (float) (rms / Short.MAX_VALUE);
+            float gainFactor = 8.0f; // Boost to better match final recording levels
+            float calculatedLevel = (float) Math.min(1.0, rawLevel * gainFactor);
 
             // Determine final emit level for lambda
             final float finalEmitLevel;

@@ -180,7 +180,7 @@ export class FeaturesDemoComponent {
 
   // Speech detection configuration signals
   protected readonly speechDetectionEnabled = signal(false);
-  protected readonly speechThreshold = signal(0.02);
+  protected readonly speechThreshold = signal(0.04); // Increased from 0.02 to account for higher gain
   protected readonly useVAD = signal(true);
   protected readonly calibrationDuration = signal(1000);
 
@@ -289,10 +289,10 @@ export class FeaturesDemoComponent {
   protected readonly speechThresholdOptions = [
     { value: 0.005, label: '0.005 (Ultra Sensitive)' },
     { value: 0.01, label: '0.01 (Very Sensitive)' },
-    { value: 0.02, label: '0.02 (Default)' },
-    { value: 0.03, label: '0.03 (Less Sensitive)' },
-    { value: 0.05, label: '0.05 (Low Sensitivity)' },
-    { value: 0.1, label: '0.1 (Very Low)' },
+    { value: 0.02, label: '0.02 (Sensitive)' },
+    { value: 0.04, label: '0.04 (Default)' },
+    { value: 0.06, label: '0.06 (Less Sensitive)' },
+    { value: 0.1, label: '0.1 (Low Sensitivity)' },
   ];
 
   protected readonly calibrationDurationOptions = [
@@ -1153,7 +1153,6 @@ export class FeaturesDemoComponent {
     try {
       const options = {
         numberOfBars: this.waveformBars(),
-        enabled: this.waveformEnabled(),
       };
 
       await CapacitorAudioEngine.configureWaveform(options);
