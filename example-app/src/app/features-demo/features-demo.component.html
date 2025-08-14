@@ -79,6 +79,14 @@
         <ion-icon name="pulse"></ion-icon>
         <ion-label>Waveform</ion-label>
       </ion-button>
+      <ion-button
+        class="ion-no-padding ion-no-margin"
+        value="intelligent-waveform"
+        (click)="selectTab('intelligent-waveform')"
+      >
+        <ion-icon name="analytics"></ion-icon>
+        <ion-label>Smart Buffer</ion-label>
+      </ion-button>
     </div>
     {{ activeTab() }}
 
@@ -1115,6 +1123,11 @@
           </ion-accordion-group>
         </ion-card-content>
       </ion-card>
+    }
+
+    <!-- Intelligent Waveform Tab -->
+    @if (activeTab() === 'intelligent-waveform') {
+      <app-intelligent-waveform></app-intelligent-waveform>
     }
   }
 </ion-content>

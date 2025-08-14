@@ -54,6 +54,7 @@ import {
   checkmarkCircle,
   closeCircle,
   pulse,
+  analytics,
 } from 'ionicons/icons';
 import { addIcons } from 'ionicons';
 import { CapacitorAudioEngine } from 'capacitor-audio-engine';
@@ -73,6 +74,7 @@ import type {
   PreloadedTrackInfo,
   WaveformData,
 } from 'capacitor-audio-engine';
+import { IntelligentWaveformComponent } from '../components/intelligent-waveform.component';
 
 // Extended interface for demo to track segment rolling metadata
 interface AudioFileInfoWithMetadata extends AudioFileInfo {
@@ -119,6 +121,7 @@ interface AudioFileInfoWithMetadata extends AudioFileInfo {
     IonSelectOption,
     IonAccordionGroup,
     IonAccordion,
+    IntelligentWaveformComponent,
   ],
 })
 export class FeaturesDemoComponent {
@@ -145,6 +148,7 @@ export class FeaturesDemoComponent {
       checkmarkCircle,
       closeCircle,
       pulse,
+      analytics,
     });
   }
 
@@ -241,7 +245,7 @@ export class FeaturesDemoComponent {
 
   // UI signals
   protected readonly activeTab = signal<
-    'recording' | 'playback' | 'microphones' | 'audio-info' | 'waveform'
+    'recording' | 'playback' | 'microphones' | 'audio-info' | 'waveform' | 'intelligent-waveform'
   >('recording');
 
   // Option arrays for button groups
@@ -1107,7 +1111,17 @@ export class FeaturesDemoComponent {
 
   // Tab navigation
   selectTab(tab: any): void {
-    if (tab && ['recording', 'playback', 'microphones', 'audio-info', 'waveform'].includes(tab)) {
+    if (
+      tab &&
+      [
+        'recording',
+        'playback',
+        'microphones',
+        'audio-info',
+        'waveform',
+        'intelligent-waveform',
+      ].includes(tab)
+    ) {
       this.activeTab.set(tab);
 
       if (tab === 'microphones') {
