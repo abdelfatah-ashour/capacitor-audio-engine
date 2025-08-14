@@ -210,6 +210,12 @@ export interface SwitchMicrophoneResult {
 
 export interface WaveformOptions {
   numberOfBars?: number;
+  debounceInSeconds?: number;
+}
+
+export interface WaveformConfigurationOptions {
+  numberOfBars?: number;
+  debounceInSeconds?: number;
 }
 
 export interface WaveformSpeechDetectionOptions {
@@ -230,6 +236,7 @@ export interface WaveformSpeechDetectionResult {
 export interface ConfigureWaveformResult {
   success: boolean;
   numberOfBars: number;
+  debounceInSeconds: number;
 }
 
 export interface PreloadTracksOptions {
@@ -482,6 +489,7 @@ export interface CapacitorAudioEnginePlugin {
    * Configure waveform data generation settings.
    * @param options - Configuration options for waveform data
    * @param options.numberOfBars - Number of amplitude bars in the waveform data (default: 32)
+   * @param options.debounceInSeconds - Emission interval in seconds (0.01 to 10.0 seconds, default: 1.0)
    * @returns Promise that resolves with configuration result
    * @throws {Error} If configuration fails
    * @platform web Not supported
@@ -490,12 +498,20 @@ export interface CapacitorAudioEnginePlugin {
    *
    * @example
    * ```typescript
-   * // Configure waveform with 64 bars for higher resolution
-   * await CapacitorAudioEngine.configureWaveform({ numberOfBars: 64 });
+   * // Configure waveform with 64 bars and 0.5 second intervals
+   * await CapacitorAudioEngine.configureWaveform({
+   *   numberOfBars: 64,
+   *   debounceInSeconds: 0.5
+   * });
+   *
+   * // Configure for real-time visualization (50ms intervals)
+   * await CapacitorAudioEngine.configureWaveform({
+   *   debounceInSeconds: 0.05
+   * });
    *
    * // Listen for waveform data events during recording
    * const waveformListener = await CapacitorAudioEngine.addListener('waveformData', (data) => {
-   *   console.log('Amplitude levels:', data.levels); // Array of 64 normalized values (0-1)
+   *   console.log('Amplitude level:', data.level); // Single normalized value (0-1)
    * });
    * ```
    */

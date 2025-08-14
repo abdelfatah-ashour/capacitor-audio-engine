@@ -47,6 +47,7 @@ public class WaveformDataManager {
 
     // Configuration
     private int numberOfBars = DEFAULT_BARS;
+    private int emissionIntervalMs = DEFAULT_EMISSION_INTERVAL_MS; // Configurable emission interval
     private final Handler mainHandler;
 
     // Speech detection configuration
@@ -93,6 +94,34 @@ public class WaveformDataManager {
             Log.w(TAG, "Invalid number of bars: " + bars + ", using default: " + DEFAULT_BARS);
             this.numberOfBars = DEFAULT_BARS;
         }
+    }
+
+    /**
+     * Configure waveform settings including emission interval
+     * @param debounceInSeconds Emission interval in seconds (0.01 to 10.0 seconds)
+     * @param bars Number of bars in the waveform (1 to 256, optional, default: current value)
+     */
+    public void configureWaveform(float debounceInSeconds, int bars) {
+        // Validate and set emission interval
+        if (debounceInSeconds >= 0.01f && debounceInSeconds <= 10.0f) {
+            this.emissionIntervalMs = Math.round(debounceInSeconds * 1000);
+            Log.d(TAG, "Emission interval set to: " + debounceInSeconds + " seconds (" + this.emissionIntervalMs + "ms)");
+        } else {
+            Log.w(TAG, "Invalid emission interval: " + debounceInSeconds + " seconds, keeping current: " + (this.emissionIntervalMs / 1000.0f) + " seconds");
+        }
+
+        // Validate and set number of bars if provided
+        if (bars > 0) {
+            setNumberOfBars(bars);
+        }
+    }
+
+    /**
+     * Configure waveform settings with emission interval only
+     * @param debounceInSeconds Emission interval in seconds (0.01 to 10.0 seconds)
+     */
+    public void configureWaveform(float debounceInSeconds) {
+        configureWaveform(debounceInSeconds, -1); // -1 means don't change bars
     }
 
     /**
@@ -308,7 +337,7 @@ public class WaveformDataManager {
                         long currentTime = System.currentTimeMillis();
 
                         // Emit waveform data at the specified interval
-                        if (currentTime - lastEmissionTime >= EMISSION_INTERVAL_MS) {
+                        if (currentTime - lastEmissionTime >= emissionIntervalMs) {
                             processAndEmitWaveformData(buffer, samplesRead);
                             lastEmissionTime = currentTime;
                         }

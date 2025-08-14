@@ -181,6 +181,7 @@ export class FeaturesDemoComponent {
   protected readonly waveformBars = signal(32);
   protected readonly waveformEnabled = signal(true);
   protected readonly maxWaveformLevel = signal(0);
+  protected readonly waveformIntervalSeconds = signal(1.0); // Emission interval in seconds
 
   // Speech detection configuration signals
   protected readonly speechDetectionEnabled = signal(false);
@@ -288,6 +289,16 @@ export class FeaturesDemoComponent {
     { value: 64, label: '64' },
     { value: 96, label: '96' },
     { value: 128, label: '128' },
+  ];
+
+  protected readonly waveformIntervalOptions = [
+    { value: 0.05, label: '50ms (20fps - Real-time)' },
+    { value: 0.1, label: '100ms (10fps - Smooth)' },
+    { value: 0.2, label: '200ms (5fps - Responsive)' },
+    { value: 0.5, label: '500ms (2fps - Moderate)' },
+    { value: 1.0, label: '1s (1fps - Default)' },
+    { value: 2.0, label: '2s (0.5fps - Slow)' },
+    { value: 5.0, label: '5s (0.2fps - Very Slow)' },
   ];
 
   protected readonly speechThresholdOptions = [
@@ -1167,10 +1178,14 @@ export class FeaturesDemoComponent {
     try {
       const options = {
         numberOfBars: this.waveformBars(),
+        debounceInSeconds: this.waveformIntervalSeconds(),
       };
 
-      await CapacitorAudioEngine.configureWaveform(options);
-      await this.showToast(`Waveform configured: ${options.numberOfBars} bars`, 'success');
+      const result = await CapacitorAudioEngine.configureWaveform(options);
+      await this.showToast(
+        `Waveform configured: ${result.numberOfBars} bars, ${options.debounceInSeconds}s interval`,
+        'success'
+      );
     } catch (error: any) {
       console.error('Error configuring waveform:', error);
       await this.showToast(`Error configuring waveform: ${error.message}`, 'danger');
@@ -1207,6 +1222,11 @@ export class FeaturesDemoComponent {
 
   async updateWaveformBars(bars: number): Promise<void> {
     this.waveformBars.set(bars);
+    await this.configureWaveform();
+  }
+
+  async updateWaveformInterval(debounceInSeconds: number): Promise<void> {
+    this.waveformIntervalSeconds.set(debounceInSeconds);
     await this.configureWaveform();
   }
 

@@ -41,6 +41,7 @@ class WaveformDataManager {
     private var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
     private var numberOfBars: Int = defaultBars
+    private var emissionIntervalMs: TimeInterval = defaultEmissionIntervalMs // Configurable emission interval
     private var isActive: Bool = false
     private var isRecording: Bool = false
     private var lastEmissionTime: TimeInterval = 0
@@ -109,6 +110,34 @@ class WaveformDataManager {
 
         numberOfBars = bars
         log("Number of waveform bars set to: \(bars)")
+    }
+
+    /**
+     * Configure waveform settings including emission interval
+     * - Parameter debounceInSeconds: Emission interval in seconds (0.01 to 10.0 seconds)
+     * - Parameter bars: Number of bars in the waveform (1 to 256, optional, default: current value)
+     */
+    func configureWaveform(debounceInSeconds: Float, bars: Int = -1) {
+        // Validate and set emission interval
+        if debounceInSeconds >= 0.01 && debounceInSeconds <= 10.0 {
+            emissionIntervalMs = TimeInterval(debounceInSeconds)
+            log("Emission interval set to: \(debounceInSeconds) seconds (\(emissionIntervalMs * 1000)ms)")
+        } else {
+            log("Invalid emission interval: \(debounceInSeconds) seconds, keeping current: \(emissionIntervalMs) seconds")
+        }
+
+        // Validate and set number of bars if provided
+        if bars > 0 {
+            setNumberOfBars(bars)
+        }
+    }
+
+    /**
+     * Configure waveform settings with emission interval only
+     * - Parameter debounceInSeconds: Emission interval in seconds (0.01 to 10.0 seconds)
+     */
+    func configureWaveform(debounceInSeconds: Float) {
+        configureWaveform(debounceInSeconds: debounceInSeconds, bars: -1) // -1 means don't change bars
     }
 
     /**
@@ -358,7 +387,7 @@ class WaveformDataManager {
 
         // Check emission interval to maintain target frequency
         let currentTime = CACurrentMediaTime()
-        guard currentTime - lastEmissionTime >= Self.emissionIntervalMs else { return }
+        guard currentTime - lastEmissionTime >= emissionIntervalMs else { return }
 
         lastEmissionTime = currentTime
 
@@ -509,8 +538,9 @@ class WaveformDataManager {
         energyIndex = (energyIndex + 1) % Self.vadWindowSize
 
         // Calculate calibration frames based on configurable duration
-        // At 50ms intervals (20fps), calculate how many frames needed for calibration duration
-        let calibrationFrames = max(10, backgroundCalibrationDuration / 50) // Minimum 10 frames, default ~20 frames for 1000ms
+        // At current emission interval, calculate how many frames needed for calibration duration
+        let intervalMs = Int(emissionIntervalMs * 1000)
+        let calibrationFrames = max(2, backgroundCalibrationDuration / intervalMs) // Minimum 2 frames
 
         // Calibrate background noise level using configurable duration
         if !backgroundCalibrated && frameCount <= calibrationFrames {

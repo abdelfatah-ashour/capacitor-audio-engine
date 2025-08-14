@@ -234,6 +234,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     return {
       success: false,
       numberOfBars: options?.numberOfBars || 32,
+      debounceInSeconds: options?.debounceInSeconds || 1.0,
     };
   }
 
