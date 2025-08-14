@@ -357,9 +357,17 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
     @objc func configureWaveform(_ call: CAPPluginCall) {
         let numberOfBars = call.getInt("numberOfBars") ?? 32
+        let debounceInSeconds = call.getDouble("debounceInSeconds")
 
-        waveformDataManager.setNumberOfBars(numberOfBars)
-        log("Waveform configured with \(numberOfBars) bars")
+        if let debounceInSeconds = debounceInSeconds {
+            // Configure both emission interval and bars
+            waveformDataManager.configureWaveform(debounceInSeconds: Float(debounceInSeconds), bars: numberOfBars)
+            log("Waveform configured with \(numberOfBars) bars and \(debounceInSeconds) seconds emission interval")
+        } else {
+            // Configure only bars
+            waveformDataManager.setNumberOfBars(numberOfBars)
+            log("Waveform configured with \(numberOfBars) bars")
+        }
 
         let result: [String: Any] = [
             "success": true,

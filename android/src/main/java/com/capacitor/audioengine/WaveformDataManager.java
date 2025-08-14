@@ -47,7 +47,7 @@ public class WaveformDataManager {
 
     // Configuration
     private int numberOfBars = DEFAULT_BARS;
-    private int emissionIntervalMs = DEFAULT_EMISSION_INTERVAL_MS; // Configurable emission interval
+    private int emissionIntervalMs = EMISSION_INTERVAL_MS; // Configurable emission interval
     private final Handler mainHandler;
 
     // Speech detection configuration
@@ -98,12 +98,12 @@ public class WaveformDataManager {
 
     /**
      * Configure waveform settings including emission interval
-     * @param debounceInSeconds Emission interval in seconds (0.01 to 10.0 seconds)
+     * @param debounceInSeconds Emission interval in seconds (0.01 to 3600.0 seconds)
      * @param bars Number of bars in the waveform (1 to 256, optional, default: current value)
      */
     public void configureWaveform(float debounceInSeconds, int bars) {
         // Validate and set emission interval
-        if (debounceInSeconds >= 0.01f && debounceInSeconds <= 10.0f) {
+        if (debounceInSeconds >= 0.01f && debounceInSeconds <= 3600.0f) {
             this.emissionIntervalMs = Math.round(debounceInSeconds * 1000);
             Log.d(TAG, "Emission interval set to: " + debounceInSeconds + " seconds (" + this.emissionIntervalMs + "ms)");
         } else {
@@ -118,7 +118,7 @@ public class WaveformDataManager {
 
     /**
      * Configure waveform settings with emission interval only
-     * @param debounceInSeconds Emission interval in seconds (0.01 to 10.0 seconds)
+     * @param debounceInSeconds Emission interval in seconds (0.01 to 3600.0 seconds)
      */
     public void configureWaveform(float debounceInSeconds) {
         configureWaveform(debounceInSeconds, -1); // -1 means don't change bars

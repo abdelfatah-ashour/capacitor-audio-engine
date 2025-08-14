@@ -616,17 +616,25 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     public void configureWaveform(PluginCall call) {
         try {
             Integer numberOfBars = call.getInt("numberOfBars");
+            Float debounceInSeconds = call.getFloat("debounceInSeconds");
+
             if (numberOfBars == null) {
                 numberOfBars = 32; // Default value
             }
 
+            if (debounceInSeconds == null) {
+                debounceInSeconds = 1.0f; // Default value
+            }
+
             if (waveformDataManager != null) {
-                waveformDataManager.setNumberOfBars(numberOfBars);
-                Log.d(TAG, "Waveform configured with " + numberOfBars + " bars");
+                // Configure both bars and emission interval
+                waveformDataManager.configureWaveform(debounceInSeconds, numberOfBars);
+                Log.d(TAG, "Waveform configured with " + numberOfBars + " bars and " + debounceInSeconds + "s interval");
 
                 JSObject result = new JSObject();
                 result.put("success", true);
                 result.put("numberOfBars", numberOfBars);
+                result.put("debounceInSeconds", debounceInSeconds);
                 call.resolve(result);
             } else {
                 call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");

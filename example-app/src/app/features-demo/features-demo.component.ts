@@ -479,6 +479,12 @@ export class FeaturesDemoComponent {
     }
 
     try {
+      // Configure waveform settings before starting recording
+      if (this.waveformEnabled()) {
+        await this.configureWaveform();
+        await this.configureSpeechDetection();
+      }
+
       const options = this.recordingOptions();
       const segmentOptions = this.isSegmentRollingEnabled()
         ? { maxDuration: this.maxDurationSeconds() }

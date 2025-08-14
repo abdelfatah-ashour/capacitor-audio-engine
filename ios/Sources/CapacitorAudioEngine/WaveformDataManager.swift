@@ -41,7 +41,7 @@ class WaveformDataManager {
     private var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
     private var numberOfBars: Int = defaultBars
-    private var emissionIntervalMs: TimeInterval = defaultEmissionIntervalMs // Configurable emission interval
+    private var emissionIntervalMs: TimeInterval = 0.05 // Configurable emission interval, initialized with default value
     private var isActive: Bool = false
     private var isRecording: Bool = false
     private var lastEmissionTime: TimeInterval = 0
@@ -114,14 +114,18 @@ class WaveformDataManager {
 
     /**
      * Configure waveform settings including emission interval
-     * - Parameter debounceInSeconds: Emission interval in seconds (0.01 to 10.0 seconds)
+     * - Parameter debounceInSeconds: Emission interval in seconds (0.01 to 3600.0 seconds)
      * - Parameter bars: Number of bars in the waveform (1 to 256, optional, default: current value)
      */
     func configureWaveform(debounceInSeconds: Float, bars: Int = -1) {
+        log("configureWaveform called with debounceInSeconds: \(debounceInSeconds), bars: \(bars)")
+        log("Current emissionIntervalMs before update: \(emissionIntervalMs)")
+
         // Validate and set emission interval
-        if debounceInSeconds >= 0.01 && debounceInSeconds <= 10.0 {
+        if debounceInSeconds >= 0.01 && debounceInSeconds <= 3600.0 {
             emissionIntervalMs = TimeInterval(debounceInSeconds)
             log("Emission interval set to: \(debounceInSeconds) seconds (\(emissionIntervalMs * 1000)ms)")
+            log("Updated emissionIntervalMs: \(emissionIntervalMs)")
         } else {
             log("Invalid emission interval: \(debounceInSeconds) seconds, keeping current: \(emissionIntervalMs) seconds")
         }
@@ -134,7 +138,7 @@ class WaveformDataManager {
 
     /**
      * Configure waveform settings with emission interval only
-     * - Parameter debounceInSeconds: Emission interval in seconds (0.01 to 10.0 seconds)
+     * - Parameter debounceInSeconds: Emission interval in seconds (0.01 to 3600.0 seconds)
      */
     func configureWaveform(debounceInSeconds: Float) {
         configureWaveform(debounceInSeconds: debounceInSeconds, bars: -1) // -1 means don't change bars
@@ -336,6 +340,8 @@ class WaveformDataManager {
             isRecording = true
             lastEmissionTime = 0
 
+            log("Waveform monitoring started with emissionIntervalMs: \(emissionIntervalMs) seconds (\(emissionIntervalMs * 1000)ms)")
+
             // Emit waveform init event
             emitWaveformInit()
 
@@ -387,7 +393,15 @@ class WaveformDataManager {
 
         // Check emission interval to maintain target frequency
         let currentTime = CACurrentMediaTime()
-        guard currentTime - lastEmissionTime >= emissionIntervalMs else { return }
+        let timeSinceLastEmission = currentTime - lastEmissionTime
+
+        // Debug logging every 100 calls to avoid spam
+        debugFrameCount += 1
+        if debugFrameCount % 100 == 0 {
+            log("processAudioBuffer: currentTime=\(currentTime), lastEmissionTime=\(lastEmissionTime), timeSinceLastEmission=\(timeSinceLastEmission), emissionIntervalMs=\(emissionIntervalMs), shouldEmit=\(timeSinceLastEmission >= emissionIntervalMs)")
+        }
+
+        guard timeSinceLastEmission >= emissionIntervalMs else { return }
 
         lastEmissionTime = currentTime
 
@@ -419,7 +433,6 @@ class WaveformDataManager {
             }
 
             // Debug logging for speech detection (every 25 frames)
-            debugFrameCount += 1
             if debugFrameCount % 25 == 0 {
                 log("Audio level: \(String(format: "%.4f", calculatedLevel)), speech: \(isSpeech), threshold: \(String(format: "%.4f", speechThreshold)), VAD: \(vadEnabled)")
             }
