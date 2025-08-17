@@ -343,8 +343,6 @@ export interface WaveformConfiguration {
     windowSize?: VADWindowSize | number;
     /** Enable human voice band filtering (85Hz-3400Hz) */
     enableVoiceFilter?: boolean;
-    /** Enable debug mode to bypass speech detection */
-    debugMode?: boolean;
   };
 }
 
@@ -366,7 +364,6 @@ export interface WaveformConfigurationResult {
       windowSize: number;
       estimatedLatencyMs: number;
       enableVoiceFilter: boolean;
-      debugMode: boolean;
     };
   };
 }
@@ -409,8 +406,6 @@ export interface AdvancedVADOptions {
   windowSize?: number;
   /** Enable human voice band filtering (85Hz-3400Hz) for noise rejection. Default: true */
   enableVoiceFilter?: boolean;
-  /** Enable debug mode to bypass speech detection for testing. Default: false */
-  debugMode?: boolean;
 }
 
 /** @deprecated Use WaveformConfigurationResult instead */
@@ -421,7 +416,6 @@ export interface AdvancedVADResult {
   /** Approximate VAD latency in milliseconds */
   latencyMs: number;
   enableVoiceFilter: boolean;
-  debugMode: boolean;
 }
 
 /** @deprecated Use WaveformConfigurationResult instead */
@@ -708,8 +702,7 @@ export interface CapacitorAudioEnginePlugin {
    *   vad: {
    *     enabled: true,
    *     windowSize: VADWindowSize.LOW,
-   *     enableVoiceFilter: true,
-   *     debugMode: false
+   *     enableVoiceFilter: true
    *   }
    * });
    *

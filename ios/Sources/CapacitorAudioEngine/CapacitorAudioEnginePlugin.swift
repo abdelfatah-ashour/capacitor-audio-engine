@@ -399,13 +399,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         var vadEnabled = false
         var vadWindowSize = 5
         var enableVoiceFilter = true
-        var debugMode = false
 
         if let vad = call.getObject("vad") {
             vadEnabled = vad["enabled"] as? Bool ?? false
             vadWindowSize = vad["windowSize"] as? Int ?? 5
             enableVoiceFilter = vad["enableVoiceFilter"] as? Bool ?? true
-            debugMode = vad["debugMode"] as? Bool ?? false
 
             // Validate window size
             vadWindowSize = max(3, min(20, vadWindowSize))
@@ -429,8 +427,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             waveformDataManager.configureAdvancedVAD(
                 enabled: vadEnabled,
                 windowSize: vadWindowSize,
-                enableVoiceFilter: enableVoiceFilter,
-                debugMode: debugMode
+                enableVoiceFilter: enableVoiceFilter
             )
         }
 
@@ -447,8 +444,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             "enabled": vadEnabled,
             "windowSize": vadWindowSize,
             "estimatedLatencyMs": vadWindowSize * 50,
-            "enableVoiceFilter": enableVoiceFilter,
-            "debugMode": debugMode
+            "enableVoiceFilter": enableVoiceFilter
         ]
 
         let configuration: [String: Any] = [
@@ -500,7 +496,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         let enabled = call.getBool("enabled") ?? true
         let windowSize = call.getInt("windowSize") ?? 5
         let enableVoiceFilter = call.getBool("enableVoiceFilter") ?? true
-        let debugMode = call.getBool("debugMode") ?? false
 
         // Validate window size
         let validatedWindowSize = max(3, min(20, windowSize))
@@ -509,18 +504,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         waveformDataManager.configureAdvancedVAD(
             enabled: enabled,
             windowSize: validatedWindowSize,
-            enableVoiceFilter: enableVoiceFilter,
-            debugMode: debugMode
+            enableVoiceFilter: enableVoiceFilter
         )
 
-        log("Advanced VAD configured - enabled: \(enabled), window: \(validatedWindowSize) frames (~\(validatedWindowSize * 50)ms), voiceFilter: \(enableVoiceFilter), debug: \(debugMode)")
+        log("Advanced VAD configured - enabled: \(enabled), window: \(validatedWindowSize) frames (~\(validatedWindowSize * 50)ms), voiceFilter: \(enableVoiceFilter)")
 
         let result: [String: Any] = [
             "success": true,
             "enabled": enabled,
             "windowSize": validatedWindowSize,
             "enableVoiceFilter": enableVoiceFilter,
-            "debugMode": debugMode,
             "estimatedLatency": validatedWindowSize * 50
         ]
         call.resolve(result)

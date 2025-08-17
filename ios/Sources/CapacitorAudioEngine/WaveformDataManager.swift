@@ -58,7 +58,6 @@ class WaveformDataManager {
     private var backgroundCalibrationDuration: Int = 1000 // Default 1 second (matching Android)
     private var vadWindowSize: Int = defaultVadWindowSize // Configurable VAD window size for latency optimization
     private var voiceBandFilterEnabled: Bool = true // Enable human voice band filtering for noise rejection
-    private var debugMode: Bool = false // Add debug mode to bypass speech detection for testing
 
     // Speech detection calculation properties (aligned with Android)
     private var speechDetectionGainFactor: Float = 12.0 // Moderate gain factor for balanced voice representation
@@ -185,15 +184,6 @@ class WaveformDataManager {
     }
 
     /**
-     * Enable debug mode to bypass speech detection for testing
-     * - Parameter enabled: Enable debug mode
-     */
-    func setDebugMode(_ enabled: Bool) {
-        debugMode = enabled
-        log("Debug mode: \(enabled) (speech detection \(enabled ? "BYPASSED" : "active"))")
-    }
-
-    /**
      * Configure VAD window size for latency optimization
      * - Parameter windowSize: Number of frames to analyze (3-20 frames, default: 5)
      */
@@ -285,18 +275,17 @@ class WaveformDataManager {
      * - Parameter windowSize: VAD window size in frames (3-20, smaller = lower latency)
      * - Parameter enableVoiceFilter: Enable human voice band filtering
      */
-    func configureAdvancedVAD(enabled: Bool, windowSize: Int, enableVoiceFilter: Bool, debugMode: Bool = false) {
-        log("Configuring Advanced VAD - enabled: \(enabled), windowSize: \(windowSize), voiceFilter: \(enableVoiceFilter), debug: \(debugMode)")
+    func configureAdvancedVAD(enabled: Bool, windowSize: Int, enableVoiceFilter: Bool) {
+        log("Configuring Advanced VAD - enabled: \(enabled), windowSize: \(windowSize), voiceFilter: \(enableVoiceFilter)")
 
         // Update configuration without triggering excessive VAD resets
-        self.debugMode = debugMode
         setVadEnabled(enabled)
         setVoiceBandFilterEnabled(enableVoiceFilter)
 
         // Update window size last (this handles its own VAD reset if needed)
         setVadWindowSize(windowSize)
 
-        log("Advanced VAD configured - enabled: \(enabled), window: \(vadWindowSize) frames (~\(vadWindowSize * 50)ms), voiceFilter: \(voiceBandFilterEnabled), debug: \(debugMode)")
+        log("Advanced VAD configured - enabled: \(enabled), window: \(vadWindowSize) frames (~\(vadWindowSize * 50)ms), voiceFilter: \(voiceBandFilterEnabled)")
     }
 
     /**
@@ -560,8 +549,8 @@ class WaveformDataManager {
 
         var emitLevel = calculatedLevel
 
-        // Apply speech detection if enabled (unless debug mode bypasses it)
-        if speechOnlyMode && !debugMode {
+        // Apply speech detection if enabled
+        if speechOnlyMode {
             let isSpeech = detectSpeech(
                 level: calculatedLevel,
                 channelData: channelData[0], // Use first channel for speech detection
@@ -575,11 +564,11 @@ class WaveformDataManager {
             if debugFrameCount % 50 == 0 {
                 log("Speech detection: level=\(String(format: "%.3f", calculatedLevel)), threshold=\(String(format: "%.3f", speechThreshold)), isSpeech=\(isSpeech), emitLevel=\(String(format: "%.3f", emitLevel))")
             }
-        } else if debugMode {
-            // In debug mode, return raw levels without speech filtering
+        } else {
+            // Return raw levels without speech filtering
             emitLevel = calculatedLevel
             if debugFrameCount % 50 == 0 {
-                log("Debug mode: returning raw level=\(String(format: "%.3f", emitLevel)) (speech detection bypassed)")
+                log("Raw audio level: \(String(format: "%.3f", emitLevel)) (speech detection disabled)")
             }
         }
 

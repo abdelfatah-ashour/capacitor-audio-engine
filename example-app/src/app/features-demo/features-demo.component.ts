@@ -576,15 +576,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     }
 
     try {
-      // Configure waveform settings before starting recording
+      // Configure waveform settings before starting recording using unified method
       if (this.waveformEnabled()) {
-        await this.configureWaveform();
-        await this.configureSpeechDetection();
-
-        // Configure advanced VAD if enabled
-        if (this.speechDetectionEnabled() && this.useVAD() && this.advancedVADEnabled()) {
-          await this.configureAdvancedVAD();
-        }
+        await this.configureUnifiedWaveform();
       }
 
       const options = this.recordingOptions();
@@ -1363,96 +1357,20 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Waveform configuration methods (legacy)
-  async configureWaveform(): Promise<void> {
-    try {
-      const options = {
-        numberOfBars: this.waveformBarsCount(),
-        emissionInterval: this.waveformEmissionInterval(),
-      };
-
-      const result = await CapacitorAudioEngine.configureWaveform(options);
-
-      // Handle both old and new response formats
-      const numberOfBars = result.configuration?.numberOfBars || (result as any).numberOfBars;
-      const emissionMs =
-        result.configuration?.emissionIntervalMs || (result as any).debounceInSeconds * 1000;
-
-      await this.showToast(
-        `Waveform configured: ${numberOfBars} bars, ${emissionMs}ms interval`,
-        'success'
-      );
-    } catch (error: any) {
-      console.error('Error configuring waveform:', error);
-      await this.showToast(`Error configuring waveform: ${error.message}`, 'danger');
-    }
-  }
-
-  async configureSpeechDetection(): Promise<void> {
-    try {
-      const options = {
-        enabled: this.speechDetectionEnabled(),
-        threshold: this.speechThreshold(),
-        useVAD: this.useVAD(),
-        calibrationDuration: this.calibrationDuration(),
-      };
-
-      await CapacitorAudioEngine.configureWaveformSpeechDetection(options);
-
-      const statusText = options.enabled
-        ? `Speech detection enabled (threshold: ${options.threshold}, VAD: ${options.useVAD ? 'on' : 'off'})`
-        : 'Speech detection disabled';
-
-      await this.showToast(statusText, 'success');
-    } catch (error: any) {
-      console.error('Error configuring speech detection:', error);
-      await this.showToast(`Error configuring speech detection: ${error.message}`, 'danger');
-    }
-  }
-
-  async configureAdvancedVAD(): Promise<void> {
-    try {
-      const options = {
-        enabled: this.advancedVADEnabled(),
-        windowSize: this.vadWindowSize(),
-        enableVoiceFilter: this.voiceBandFilterEnabled(),
-        debugMode: this.vadDebugMode(),
-      };
-
-      // Check if configureAdvancedVAD method is available
-      if (typeof (CapacitorAudioEngine as any).configureAdvancedVAD === 'function') {
-        const result = await (CapacitorAudioEngine as any).configureAdvancedVAD(options);
-        const latencyMs = result.estimatedLatency || options.windowSize * 50;
-        await this.showToast(
-          `Advanced VAD configured: ${options.windowSize} frames (~${latencyMs}ms latency), Voice filter: ${options.enableVoiceFilter ? 'ON' : 'OFF'}, Debug: ${options.debugMode ? 'ON' : 'OFF'}`,
-          'success'
-        );
-      } else {
-        await this.showToast(
-          `Advanced VAD settings saved locally. Feature requires updated plugin version.`,
-          'warning'
-        );
-      }
-    } catch (error: any) {
-      console.error('Error configuring advanced VAD:', error);
-      await this.showToast(`Error configuring advanced VAD: ${error.message}`, 'danger');
-    }
-  }
-
   async toggleWaveformEnabled(): Promise<void> {
     const enabled = !this.waveformEnabled();
     this.waveformEnabled.set(enabled);
-    await this.configureWaveform();
+    await this.configureUnifiedWaveform();
   }
 
   async updateWaveformBars(bars: number): Promise<void> {
     this.waveformBarsCount.set(bars as any);
-    await this.configureWaveform();
+    await this.configureUnifiedWaveform();
   }
 
   async updateWaveformInterval(debounceInSeconds: number): Promise<void> {
     this.waveformEmissionInterval.set(debounceInSeconds as any);
-    await this.configureWaveform();
+    await this.configureUnifiedWaveform();
   }
 
   async destroyWaveform(): Promise<void> {
@@ -1480,20 +1398,20 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   async toggleSpeechDetection(): Promise<void> {
     const enabled = !this.speechDetectionEnabled();
     this.speechDetectionEnabled.set(enabled);
-    await this.configureSpeechDetection();
+    await this.configureUnifiedWaveform();
   }
 
   async toggleAdvancedVAD(): Promise<void> {
     const enabled = !this.vadEnabled();
     this.vadEnabled.set(enabled);
-    await this.configureAdvancedVAD();
+    await this.configureUnifiedWaveform();
   }
 
   updateVadWindowSize(value: any): void {
     const windowSize = typeof value === 'number' ? value : value.detail?.value || 5;
     this.vadWindowSize.set(windowSize as any);
     if (this.vadEnabled()) {
-      this.configureAdvancedVAD();
+      this.configureUnifiedWaveform();
     }
   }
 
@@ -1501,7 +1419,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     const enabled = !this.voiceBandFilterEnabled();
     this.voiceBandFilterEnabled.set(enabled);
     if (this.advancedVADEnabled()) {
-      await this.configureAdvancedVAD();
+      await this.configureUnifiedWaveform();
     }
   }
 
@@ -1509,14 +1427,14 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     const enabled = !this.vadDebugMode();
     this.vadDebugMode.set(enabled);
     if (this.advancedVADEnabled()) {
-      await this.configureAdvancedVAD();
+      await this.configureUnifiedWaveform();
     }
   }
 
   async updateSpeechThreshold(threshold: number): Promise<void> {
     this.speechThreshold.set(threshold as any);
     if (this.speechDetectionEnabled()) {
-      await this.configureSpeechDetection();
+      await this.configureUnifiedWaveform();
     }
   }
 
@@ -1524,14 +1442,14 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     const useVAD = !this.vadEnabled();
     this.vadEnabled.set(useVAD);
     if (this.speechDetectionEnabled()) {
-      await this.configureSpeechDetection();
+      await this.configureUnifiedWaveform();
     }
   }
 
   async updateCalibrationDuration(duration: number): Promise<void> {
     this.speechCalibrationDuration.set(duration as any);
     if (this.speechDetectionEnabled()) {
-      await this.configureSpeechDetection();
+      await this.configureUnifiedWaveform();
     }
   }
 
@@ -1565,7 +1483,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     this.setupWaveformEventListeners();
     // Configure waveform with default settings
     if (this.waveformEnabled()) {
-      await this.configureWaveform();
+      await this.configureUnifiedWaveform();
     }
   }
 

@@ -61,7 +61,7 @@ public class WaveformDataManager {
     private float speechThreshold = DEFAULT_SPEECH_THRESHOLD;
     private boolean vadEnabled = false;
     private int backgroundCalibrationDuration = 1000; // Default 1 second
-    private boolean debugMode = false; // Add debug mode to bypass speech detection for testing
+
     private int vadWindowSize = DEFAULT_VAD_WINDOW_SIZE; // Configurable VAD window size for latency optimization
     private boolean voiceBandFilterEnabled = true; // Enable human voice band filtering for noise rejection
 
@@ -172,14 +172,7 @@ public class WaveformDataManager {
         }
     }
 
-    /**
-     * Enable debug mode to bypass speech detection for testing
-     * @param enabled Enable debug mode
-     */
-    public void setDebugMode(boolean enabled) {
-        this.debugMode = enabled;
-        Log.d(TAG, "Debug mode: " + enabled + " (speech detection " + (enabled ? "BYPASSED" : "active") + ")");
-    }
+
 
     /**
      * Configure VAD window size for latency optimization
@@ -526,7 +519,7 @@ public class WaveformDataManager {
 
             // Determine final emit level for lambda
             final float finalEmitLevel;
-            if (speechOnlyMode && !debugMode) {
+            if (speechOnlyMode) {
                 boolean isSpeech = detectSpeech(calculatedLevel, buffer, samplesRead);
                 finalEmitLevel = isSpeech ? calculatedLevel : 0.0f; // Send level = 0 for silence instead of omitting
 
@@ -537,10 +530,10 @@ public class WaveformDataManager {
                 }
             } else {
                 finalEmitLevel = calculatedLevel;
-                // Log raw levels when not using speech detection or in debug mode
+                // Log raw levels when not using speech detection
                 if (frameCount % 20 == 0) {
-                    Log.d(TAG, String.format("Raw audio level: %.4f, mode=%s, frame=%d",
-                        calculatedLevel, debugMode ? "DEBUG" : "NORMAL", frameCount));
+                    Log.d(TAG, String.format("Raw audio level: %.4f, mode=NORMAL, frame=%d",
+                        calculatedLevel, frameCount));
                 }
             }
 

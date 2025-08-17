@@ -260,7 +260,6 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
           windowSize: typeof options?.vad?.windowSize === 'number' ? options.vad.windowSize : 5,
           estimatedLatencyMs: (typeof options?.vad?.windowSize === 'number' ? options.vad.windowSize : 5) * 50,
           enableVoiceFilter: options?.vad?.enableVoiceFilter !== false,
-          debugMode: options?.vad?.debugMode || false,
         },
       },
     };

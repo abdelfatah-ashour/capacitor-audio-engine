@@ -673,13 +673,11 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             boolean vadEnabled = false;
             int vadWindowSize = 5;
             boolean enableVoiceFilter = true;
-            boolean debugMode = false;
 
             if (vad != null) {
                 vadEnabled = vad.has("enabled") ? vad.getBool("enabled") : false;
                 vadWindowSize = vad.has("windowSize") ? vad.getInt("windowSize") : 5;
                 enableVoiceFilter = vad.has("enableVoiceFilter") ? vad.getBool("enableVoiceFilter") : true;
-                debugMode = vad.has("debugMode") ? vad.getBool("debugMode") : false;
             }
 
             if (waveformDataManager != null) {
@@ -694,7 +692,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 // Configure VAD if provided
                 if (vad != null) {
                     waveformDataManager.configureAdvancedVAD(vadEnabled, vadWindowSize, enableVoiceFilter);
-                    waveformDataManager.setDebugMode(debugMode);
                 }
 
                 Log.d(TAG, "Unified waveform configured - bars: " + numberOfBars +
@@ -721,7 +718,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 vadConfig.put("windowSize", vadWindowSize);
                 vadConfig.put("estimatedLatencyMs", vadWindowSize * 50);
                 vadConfig.put("enableVoiceFilter", enableVoiceFilter);
-                vadConfig.put("debugMode", debugMode);
                 configuration.put("vad", vadConfig);
 
                 result.put("configuration", configuration);
@@ -779,22 +775,15 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             Boolean enabled = call.getBoolean("enabled", true);
             Integer windowSize = call.getInt("windowSize", 5); // Default to 5 frames for low latency
             Boolean enableVoiceFilter = call.getBoolean("enableVoiceFilter", true);
-            Boolean debugMode = call.getBoolean("debugMode", false);
 
             if (waveformDataManager != null) {
                 // Configure advanced VAD settings
                 waveformDataManager.configureAdvancedVAD(Boolean.TRUE.equals(enabled), windowSize, Boolean.TRUE.equals(enableVoiceFilter));
 
-                // Set debug mode if requested
-                if (debugMode != null) {
-                    waveformDataManager.setDebugMode(Boolean.TRUE.equals(debugMode));
-                }
-
                 int latencyMs = windowSize * 50; // Approximate latency
                 Log.d(TAG, "Advanced VAD configured - enabled: " + enabled +
                      ", window: " + windowSize + " frames (~" + latencyMs + "ms)" +
-                     ", voiceFilter: " + enableVoiceFilter +
-                     ", debug: " + debugMode);
+                     ", voiceFilter: " + enableVoiceFilter);
 
                 JSObject result = new JSObject();
                 result.put("success", true);
@@ -802,7 +791,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 result.put("windowSize", windowSize);
                 result.put("latencyMs", latencyMs);
                 result.put("enableVoiceFilter", enableVoiceFilter);
-                result.put("debugMode", debugMode);
                 call.resolve(result);
             } else {
                 call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
