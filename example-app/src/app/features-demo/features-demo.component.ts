@@ -1,4 +1,12 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  inject,
+  signal,
+  OnInit,
+  OnDestroy,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TitleCasePipe, DecimalPipe, JsonPipe } from '@angular/common';
 import {
@@ -23,8 +31,6 @@ import {
   IonGrid,
   IonRow,
   IonCol,
-  IonSegment,
-  IonSegmentButton,
   IonNote,
   IonCheckbox,
   IonRange,
@@ -73,6 +79,7 @@ import type {
   ErrorEventData,
   PreloadedTrackInfo,
   WaveformData,
+  WaveformConfiguration,
 } from 'capacitor-audio-engine';
 import { IntelligentWaveformComponent } from '../components/intelligent-waveform.component';
 
@@ -82,6 +89,49 @@ interface AudioFileInfoWithMetadata extends AudioFileInfo {
   segmentCount?: number;
   maxDurationSeconds?: number;
 }
+
+// Waveform configuration enums and constants
+const WaveformBarsCount = {
+  BARS_16: 16,
+  BARS_32: 32,
+  BARS_64: 64,
+  BARS_128: 128,
+  BARS_256: 256,
+} as const;
+
+const WaveformEmissionInterval = {
+  REALTIME: 0.02, // Real-time visualization (20ms)
+  VERY_FAST: 0.05, // Very fast updates (50ms)
+  FAST: 0.1, // Fast updates (100ms)
+  MEDIUM: 0.25, // Medium updates (250ms)
+  SLOW: 0.5, // Slow updates (500ms)
+  VERY_SLOW: 1.0, // Very slow updates (1000ms)
+} as const;
+
+const SpeechThreshold = {
+  VERY_SENSITIVE: 0.005, // Very sensitive (0.005)
+  SENSITIVE: 0.01, // Sensitive (0.01)
+  NORMAL: 0.02, // Normal (0.02)
+  MODERATE: 0.04, // Moderate (0.04)
+  LESS_SENSITIVE: 0.06, // Less sensitive (0.06)
+  NOT_SENSITIVE: 0.1, // Not sensitive (0.1)
+} as const;
+
+const VADWindowSize = {
+  MINIMAL: 3, // Minimum latency (~150ms)
+  LOW: 4, // Low latency (~200ms)
+  NORMAL: 5, // Normal latency (~250ms)
+  MEDIUM: 8, // Medium latency (~400ms)
+  HIGH: 10, // High accuracy (~500ms)
+  MAXIMUM: 15, // Maximum accuracy (~750ms)
+} as const;
+
+const CalibrationDuration = {
+  QUICK: 500, // Quick calibration (500ms)
+  NORMAL: 1000, // Normal calibration (1000ms)
+  EXTENDED: 2000, // Extended calibration (2000ms)
+  LONG: 3000, // Long calibration (3000ms)
+} as const;
 
 @Component({
   selector: 'app-features-demo',
@@ -124,7 +174,7 @@ interface AudioFileInfoWithMetadata extends AudioFileInfo {
     IntelligentWaveformComponent,
   ],
 })
-export class FeaturesDemoComponent {
+export class FeaturesDemoComponent implements OnInit, OnDestroy {
   private readonly toastController = inject(ToastController);
   private readonly alertController = inject(AlertController);
 
@@ -176,24 +226,75 @@ export class FeaturesDemoComponent {
   protected readonly currentMicrophone = signal<number | null>(null);
   protected readonly microphoneBusy = signal(false);
 
-  // Waveform data signals - growing waveform history
+  // Waveform data signals - growing waveform history with enum support
   protected readonly waveformHistory = signal<number[]>([]);
-  protected readonly waveformBars = signal(32);
+  protected readonly waveformBarsCount = signal(WaveformBarsCount.BARS_32);
+  protected readonly waveformEmissionInterval = signal(WaveformEmissionInterval.VERY_SLOW);
   protected readonly waveformEnabled = signal(true);
   protected readonly maxWaveformLevel = signal(0);
-  protected readonly waveformIntervalSeconds = signal(1.0); // Emission interval in seconds
 
-  // Speech detection configuration signals
+  // Legacy support for existing controls
+  protected readonly waveformBars = computed(() => this.waveformBarsCount());
+  protected readonly waveformIntervalSeconds = computed(() => this.waveformEmissionInterval());
+
+  // Speech detection configuration signals with enum support
   protected readonly speechDetectionEnabled = signal(false);
-  protected readonly speechThreshold = signal(0.04); // Increased from 0.02 to account for higher gain
-  protected readonly useVAD = signal(true);
-  protected readonly calibrationDuration = signal(1000);
+  protected readonly speechThreshold = signal(SpeechThreshold.MODERATE);
+  protected readonly speechCalibrationDuration = signal(CalibrationDuration.NORMAL);
 
-  // Advanced VAD configuration signals
-  protected readonly advancedVADEnabled = signal(true);
-  protected readonly vadWindowSize = signal(5); // VAD window size in frames (3-20)
-  protected readonly voiceBandFilterEnabled = signal(true); // Enable human voice band filtering
-  protected readonly vadDebugMode = signal(false); // Debug mode for VAD troubleshooting
+  // Advanced VAD configuration signals with enum support
+  protected readonly vadEnabled = signal(true);
+  protected readonly vadWindowSize = signal(VADWindowSize.NORMAL);
+  protected readonly voiceBandFilterEnabled = signal(true);
+  protected readonly vadDebugMode = signal(false);
+
+  // Legacy support for existing controls
+  protected readonly useVAD = computed(() => this.vadEnabled());
+  protected readonly advancedVADEnabled = computed(() => this.vadEnabled());
+  protected readonly calibrationDuration = computed(() => this.speechCalibrationDuration());
+
+  // Configuration options for dropdowns
+  protected readonly waveformBarsOptions = [
+    { value: WaveformBarsCount.BARS_16, label: '16 Bars' },
+    { value: WaveformBarsCount.BARS_32, label: '32 Bars (Default)' },
+    { value: WaveformBarsCount.BARS_64, label: '64 Bars' },
+    { value: WaveformBarsCount.BARS_128, label: '128 Bars' },
+    { value: WaveformBarsCount.BARS_256, label: '256 Bars' },
+  ];
+
+  protected readonly emissionIntervalOptions = [
+    { value: WaveformEmissionInterval.REALTIME, label: 'Real-time (20ms)' },
+    { value: WaveformEmissionInterval.VERY_FAST, label: 'Very Fast (50ms)' },
+    { value: WaveformEmissionInterval.FAST, label: 'Fast (100ms)' },
+    { value: WaveformEmissionInterval.MEDIUM, label: 'Medium (250ms)' },
+    { value: WaveformEmissionInterval.SLOW, label: 'Slow (500ms)' },
+    { value: WaveformEmissionInterval.VERY_SLOW, label: 'Very Slow (1000ms)' },
+  ];
+
+  protected readonly speechThresholdOptions = [
+    { value: SpeechThreshold.VERY_SENSITIVE, label: 'Very Sensitive (0.005)' },
+    { value: SpeechThreshold.SENSITIVE, label: 'Sensitive (0.01)' },
+    { value: SpeechThreshold.NORMAL, label: 'Normal (0.02)' },
+    { value: SpeechThreshold.MODERATE, label: 'Moderate (0.04)' },
+    { value: SpeechThreshold.LESS_SENSITIVE, label: 'Less Sensitive (0.06)' },
+    { value: SpeechThreshold.NOT_SENSITIVE, label: 'Not Sensitive (0.1)' },
+  ];
+
+  protected readonly vadWindowSizeOptions = [
+    { value: VADWindowSize.MINIMAL, label: 'Minimal Latency (~150ms)' },
+    { value: VADWindowSize.LOW, label: 'Low Latency (~200ms)' },
+    { value: VADWindowSize.NORMAL, label: 'Normal Latency (~250ms)' },
+    { value: VADWindowSize.MEDIUM, label: 'Medium Latency (~400ms)' },
+    { value: VADWindowSize.HIGH, label: 'High Accuracy (~500ms)' },
+    { value: VADWindowSize.MAXIMUM, label: 'Maximum Accuracy (~750ms)' },
+  ];
+
+  protected readonly calibrationDurationOptions = [
+    { value: CalibrationDuration.QUICK, label: 'Quick (500ms)' },
+    { value: CalibrationDuration.NORMAL, label: 'Normal (1000ms)' },
+    { value: CalibrationDuration.EXTENDED, label: 'Extended (2000ms)' },
+    { value: CalibrationDuration.LONG, label: 'Long (3000ms)' },
+  ];
 
   // Continuous emission tracking
   protected readonly continuousEmissionEnabled = signal(true);
@@ -287,16 +388,6 @@ export class FeaturesDemoComponent {
     { value: 600, label: '10m' },
   ];
 
-  protected readonly waveformBarsOptions = [
-    { value: 16, label: '16' },
-    { value: 24, label: '24' },
-    { value: 32, label: '32' },
-    { value: 48, label: '48' },
-    { value: 64, label: '64' },
-    { value: 96, label: '96' },
-    { value: 128, label: '128' },
-  ];
-
   protected readonly waveformIntervalOptions = [
     { value: 0.05, label: '50ms (20fps - Real-time)' },
     { value: 0.1, label: '100ms (10fps - Smooth)' },
@@ -305,23 +396,6 @@ export class FeaturesDemoComponent {
     { value: 1.0, label: '1s (1fps - Default)' },
     { value: 2.0, label: '2s (0.5fps - Slow)' },
     { value: 5.0, label: '5s (0.2fps - Very Slow)' },
-  ];
-
-  protected readonly speechThresholdOptions = [
-    { value: 0.005, label: '0.005 (Ultra Sensitive)' },
-    { value: 0.01, label: '0.01 (Very Sensitive)' },
-    { value: 0.02, label: '0.02 (Sensitive)' },
-    { value: 0.04, label: '0.04 (Default)' },
-    { value: 0.06, label: '0.06 (Less Sensitive)' },
-    { value: 0.1, label: '0.1 (Low Sensitivity)' },
-  ];
-
-  protected readonly calibrationDurationOptions = [
-    { value: 500, label: '0.5s' },
-    { value: 1000, label: '1s (Default)' },
-    { value: 1500, label: '1.5s' },
-    { value: 2000, label: '2s' },
-    { value: 3000, label: '3s' },
   ];
 
   // Computed signals
@@ -758,7 +832,7 @@ export class FeaturesDemoComponent {
     }
   }
 
-  onSeekChange(event: any, url: string): void {
+  onSeekChange(event: CustomEvent, url: string): void {
     const percentage = event.detail.value;
     const duration = this.getTrackDuration(url);
     const seekTime = (percentage / 100) * duration;
@@ -1088,8 +1162,7 @@ export class FeaturesDemoComponent {
   }
 
   // Utility methods
-  private durationTimer: any;
-  private durationChangeListener: any;
+  private durationChangeListener: any = null;
 
   private setupRecordingEventListeners(): void {
     // Remove any existing listener first
@@ -1138,7 +1211,15 @@ export class FeaturesDemoComponent {
   }
 
   // Tab navigation
-  selectTab(tab: any): void {
+  selectTab(
+    tab:
+      | 'recording'
+      | 'playback'
+      | 'microphones'
+      | 'audio-info'
+      | 'waveform'
+      | 'intelligent-waveform'
+  ): void {
     if (
       tab &&
       [
@@ -1190,17 +1271,63 @@ export class FeaturesDemoComponent {
     this.maxDurationSeconds.set(value);
   }
 
-  // Waveform configuration methods
+  // Unified waveform configuration method
+  async configureUnifiedWaveform(): Promise<void> {
+    try {
+      const configuration: WaveformConfiguration = {
+        numberOfBars: this.waveformBarsCount(),
+        emissionInterval: this.waveformEmissionInterval(),
+      };
+
+      // Add speech detection configuration if enabled
+      if (this.speechDetectionEnabled()) {
+        configuration.speechDetection = {
+          enabled: true,
+          threshold: this.speechThreshold(),
+          calibrationDuration: this.speechCalibrationDuration(),
+        };
+      }
+
+      // Add VAD configuration if enabled
+      if (this.vadEnabled()) {
+        configuration.vad = {
+          enabled: true,
+          windowSize: this.vadWindowSize(),
+          enableVoiceFilter: this.voiceBandFilterEnabled(),
+          debugMode: this.vadDebugMode(),
+        };
+      }
+
+      const result = await CapacitorAudioEngine.configureWaveform(configuration);
+      const config = result.configuration;
+
+      await this.showToast(
+        `Unified waveform configured: ${config.numberOfBars} bars, ${config.emissionIntervalMs}ms interval, Speech: ${config.speechDetection.enabled}, VAD: ${config.vad.enabled}`,
+        'success'
+      );
+    } catch (error: any) {
+      console.error('Error configuring unified waveform:', error);
+      await this.showToast(`Error configuring unified waveform: ${error.message}`, 'danger');
+    }
+  }
+
+  // Waveform configuration methods (legacy)
   async configureWaveform(): Promise<void> {
     try {
       const options = {
-        numberOfBars: this.waveformBars(),
-        debounceInSeconds: this.waveformIntervalSeconds(),
+        numberOfBars: this.waveformBarsCount(),
+        emissionInterval: this.waveformEmissionInterval(),
       };
 
       const result = await CapacitorAudioEngine.configureWaveform(options);
+
+      // Handle both old and new response formats
+      const numberOfBars = result.configuration?.numberOfBars || (result as any).numberOfBars;
+      const emissionMs =
+        result.configuration?.emissionIntervalMs || (result as any).debounceInSeconds * 1000;
+
       await this.showToast(
-        `Waveform configured: ${result.numberOfBars} bars, ${options.debounceInSeconds}s interval`,
+        `Waveform configured: ${numberOfBars} bars, ${emissionMs}ms interval`,
         'success'
       );
     } catch (error: any) {
@@ -1267,12 +1394,12 @@ export class FeaturesDemoComponent {
   }
 
   async updateWaveformBars(bars: number): Promise<void> {
-    this.waveformBars.set(bars);
+    this.waveformBarsCount.set(bars as any);
     await this.configureWaveform();
   }
 
   async updateWaveformInterval(debounceInSeconds: number): Promise<void> {
-    this.waveformIntervalSeconds.set(debounceInSeconds);
+    this.waveformEmissionInterval.set(debounceInSeconds as any);
     await this.configureWaveform();
   }
 
@@ -1305,15 +1432,15 @@ export class FeaturesDemoComponent {
   }
 
   async toggleAdvancedVAD(): Promise<void> {
-    const enabled = !this.advancedVADEnabled();
-    this.advancedVADEnabled.set(enabled);
+    const enabled = !this.vadEnabled();
+    this.vadEnabled.set(enabled);
     await this.configureAdvancedVAD();
   }
 
   updateVadWindowSize(value: any): void {
-    const windowSize = typeof value === 'number' ? value : value.detail?.value || value;
-    this.vadWindowSize.set(windowSize);
-    if (this.advancedVADEnabled()) {
+    const windowSize = typeof value === 'number' ? value : value.detail?.value || 5;
+    this.vadWindowSize.set(windowSize as any);
+    if (this.vadEnabled()) {
       this.configureAdvancedVAD();
     }
   }
@@ -1335,22 +1462,22 @@ export class FeaturesDemoComponent {
   }
 
   async updateSpeechThreshold(threshold: number): Promise<void> {
-    this.speechThreshold.set(threshold);
+    this.speechThreshold.set(threshold as any);
     if (this.speechDetectionEnabled()) {
       await this.configureSpeechDetection();
     }
   }
 
   async toggleVAD(): Promise<void> {
-    const useVAD = !this.useVAD();
-    this.useVAD.set(useVAD);
+    const useVAD = !this.vadEnabled();
+    this.vadEnabled.set(useVAD);
     if (this.speechDetectionEnabled()) {
       await this.configureSpeechDetection();
     }
   }
 
   async updateCalibrationDuration(duration: number): Promise<void> {
-    this.calibrationDuration.set(duration);
+    this.speechCalibrationDuration.set(duration as any);
     if (this.speechDetectionEnabled()) {
       await this.configureSpeechDetection();
     }

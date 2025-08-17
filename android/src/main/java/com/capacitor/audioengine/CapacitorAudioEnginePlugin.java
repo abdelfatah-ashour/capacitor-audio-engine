@@ -615,26 +615,92 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     @PluginMethod
     public void configureWaveform(PluginCall call) {
         try {
-            Integer numberOfBars = call.getInt("numberOfBars");
-            Float debounceInSeconds = call.getFloat("debounceInSeconds");
+            // Waveform visualization settings
+            Integer numberOfBars = call.getInt("numberOfBars", 32);
+            Double emissionInterval = call.getDouble("emissionInterval", 1.0);
 
-            if (numberOfBars == null) {
-                numberOfBars = 32; // Default value
+            // Convert emissionInterval to seconds if it's a preset enum value
+            float debounceInSeconds = emissionInterval.floatValue();
+            if (debounceInSeconds > 10.0f) {
+                // Handle enum values (they will be larger numbers)
+                debounceInSeconds = debounceInSeconds / 1000.0f; // Convert from ms to seconds
             }
 
-            if (debounceInSeconds == null) {
-                debounceInSeconds = 1.0f; // Default value
+            // Speech detection settings
+            JSObject speechDetection = call.getObject("speechDetection");
+            boolean speechEnabled = false;
+            float speechThreshold = 0.02f;
+            int calibrationDuration = 1000;
+
+            if (speechDetection != null) {
+                speechEnabled = speechDetection.has("enabled") ? speechDetection.getBool("enabled") : false;
+                double threshold = speechDetection.has("threshold") ? speechDetection.getDouble("threshold") : 0.02;
+                speechThreshold = (float) threshold;
+                calibrationDuration = speechDetection.has("calibrationDuration") ? speechDetection.getInt("calibrationDuration") : 1000;
+
+                // Handle enum values for threshold
+                if (speechThreshold > 1.0f) {
+                    speechThreshold = speechThreshold / 1000.0f; // Convert from enum to actual value
+                }
+            }
+
+            // VAD settings
+            JSObject vad = call.getObject("vad");
+            boolean vadEnabled = false;
+            int vadWindowSize = 5;
+            boolean enableVoiceFilter = true;
+            boolean debugMode = false;
+
+            if (vad != null) {
+                vadEnabled = vad.has("enabled") ? vad.getBool("enabled") : false;
+                vadWindowSize = vad.has("windowSize") ? vad.getInt("windowSize") : 5;
+                enableVoiceFilter = vad.has("enableVoiceFilter") ? vad.getBool("enableVoiceFilter") : true;
+                debugMode = vad.has("debugMode") ? vad.getBool("debugMode") : false;
             }
 
             if (waveformDataManager != null) {
-                // Configure both bars and emission interval
+                // Configure waveform visualization
                 waveformDataManager.configureWaveform(debounceInSeconds, numberOfBars);
-                Log.d(TAG, "Waveform configured with " + numberOfBars + " bars and " + debounceInSeconds + "s interval");
 
+                // Configure speech detection if provided
+                if (speechDetection != null) {
+                    waveformDataManager.configureSpeechDetection(speechEnabled, speechThreshold, vadEnabled, calibrationDuration);
+                }
+
+                // Configure VAD if provided
+                if (vad != null) {
+                    waveformDataManager.configureAdvancedVAD(vadEnabled, vadWindowSize, enableVoiceFilter);
+                    waveformDataManager.setDebugMode(debugMode);
+                }
+
+                Log.d(TAG, "Unified waveform configured - bars: " + numberOfBars +
+                     ", interval: " + debounceInSeconds + "s" +
+                     ", speech: " + speechEnabled + " (threshold: " + speechThreshold + ")" +
+                     ", VAD: " + vadEnabled + " (window: " + vadWindowSize + ")");
+
+                // Build comprehensive result
                 JSObject result = new JSObject();
                 result.put("success", true);
-                result.put("numberOfBars", numberOfBars);
-                result.put("debounceInSeconds", debounceInSeconds);
+
+                JSObject configuration = new JSObject();
+                configuration.put("numberOfBars", numberOfBars);
+                configuration.put("emissionIntervalMs", (int)(debounceInSeconds * 1000));
+
+                JSObject speechConfig = new JSObject();
+                speechConfig.put("enabled", speechEnabled);
+                speechConfig.put("threshold", speechThreshold);
+                speechConfig.put("calibrationDuration", calibrationDuration);
+                configuration.put("speechDetection", speechConfig);
+
+                JSObject vadConfig = new JSObject();
+                vadConfig.put("enabled", vadEnabled);
+                vadConfig.put("windowSize", vadWindowSize);
+                vadConfig.put("estimatedLatencyMs", vadWindowSize * 50);
+                vadConfig.put("enableVoiceFilter", enableVoiceFilter);
+                vadConfig.put("debugMode", debugMode);
+                configuration.put("vad", vadConfig);
+
+                result.put("configuration", configuration);
                 call.resolve(result);
             } else {
                 call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
@@ -645,6 +711,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         }
     }
 
+    /**
+     * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
+     */
     @PluginMethod
     public void configureWaveformSpeechDetection(PluginCall call) {
         try {
@@ -677,6 +746,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         }
     }
 
+    /**
+     * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
+     */
     @PluginMethod
     public void configureAdvancedVAD(PluginCall call) {
         try {

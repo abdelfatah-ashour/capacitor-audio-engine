@@ -12,8 +12,8 @@ import type {
   AvailableMicrophonesResult,
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
-  ConfigureWaveformResult,
-  WaveformOptions,
+  WaveformConfiguration,
+  WaveformConfigurationResult,
   WaveformSpeechDetectionOptions,
   WaveformSpeechDetectionResult,
   AdvancedVADOptions,
@@ -224,19 +224,45 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
-   * Configure waveform data generation settings.
-   * @param options - Configuration options for waveform data
+   * Configure waveform data generation settings (unified configuration).
+   * @param options - Unified configuration options for waveform data
    * @returns Promise that resolves with configuration result
    * @platform web Not supported
    */
-  async configureWaveform(options?: WaveformOptions): Promise<ConfigureWaveformResult> {
+  async configureWaveform(options?: WaveformConfiguration): Promise<WaveformConfigurationResult> {
     console.warn(
       'configureWaveform is not supported on web platform. Waveform data is not available for web recordings. Consider using MediaRecorder events and manual amplitude analysis.',
     );
+
+    // Extract legacy parameters for backward compatibility
+    const numberOfBars = options?.numberOfBars || 32;
+    const emissionInterval = options?.emissionInterval || 1.0;
+
+    // Convert emission interval to milliseconds
+    const emissionIntervalMs = typeof emissionInterval === 'number' ? emissionInterval * 1000 : emissionInterval;
+
+    // Build unified response structure
     return {
       success: false,
-      numberOfBars: options?.numberOfBars || 32,
-      debounceInSeconds: options?.debounceInSeconds || 1.0,
+      configuration: {
+        numberOfBars: typeof numberOfBars === 'number' ? numberOfBars : 32,
+        emissionIntervalMs: typeof emissionIntervalMs === 'number' ? emissionIntervalMs : 1000,
+        speechDetection: {
+          enabled: options?.speechDetection?.enabled || false,
+          threshold: typeof options?.speechDetection?.threshold === 'number' ? options.speechDetection.threshold : 0.02,
+          calibrationDuration:
+            typeof options?.speechDetection?.calibrationDuration === 'number'
+              ? options.speechDetection.calibrationDuration
+              : 1000,
+        },
+        vad: {
+          enabled: options?.vad?.enabled || false,
+          windowSize: typeof options?.vad?.windowSize === 'number' ? options.vad.windowSize : 5,
+          estimatedLatencyMs: (typeof options?.vad?.windowSize === 'number' ? options.vad.windowSize : 5) * 50,
+          enableVoiceFilter: options?.vad?.enableVoiceFilter !== false,
+          debugMode: options?.vad?.debugMode || false,
+        },
+      },
     };
   }
 

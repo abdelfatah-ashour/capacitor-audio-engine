@@ -363,26 +363,107 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     @objc func configureWaveform(_ call: CAPPluginCall) {
+        // Waveform visualization settings
         let numberOfBars = call.getInt("numberOfBars") ?? 32
-        let debounceInSeconds = call.getDouble("debounceInSeconds")
+        let emissionInterval = call.getDouble("emissionInterval") ?? 1.0
 
-        if let debounceInSeconds = debounceInSeconds {
-            // Configure both emission interval and bars
-            waveformDataManager.configureWaveform(debounceInSeconds: Float(debounceInSeconds), bars: numberOfBars)
-            log("Waveform configured with \(numberOfBars) bars and \(debounceInSeconds) seconds emission interval")
-        } else {
-            // Configure only bars
-            waveformDataManager.setNumberOfBars(numberOfBars)
-            log("Waveform configured with \(numberOfBars) bars")
+        // Convert emissionInterval to seconds if it's a preset enum value
+        var debounceInSeconds = Float(emissionInterval)
+        if debounceInSeconds > 10.0 {
+            // Handle enum values (they will be larger numbers)
+            debounceInSeconds = debounceInSeconds / 1000.0 // Convert from ms to seconds
         }
+
+        // Speech detection settings
+        var speechEnabled = false
+        var speechThreshold: Float = 0.02
+        var calibrationDuration = 1000
+
+        if let speechDetection = call.getObject("speechDetection") {
+            speechEnabled = speechDetection["enabled"] as? Bool ?? false
+            let threshold = speechDetection["threshold"] as? Double ?? 0.02
+            speechThreshold = Float(threshold)
+            calibrationDuration = speechDetection["calibrationDuration"] as? Int ?? 1000
+
+            // Handle enum values for threshold
+            if speechThreshold > 1.0 {
+                speechThreshold = speechThreshold / 1000.0 // Convert from enum to actual value
+            }
+        }
+
+        // VAD settings
+        var vadEnabled = false
+        var vadWindowSize = 5
+        var enableVoiceFilter = true
+        var debugMode = false
+
+        if let vad = call.getObject("vad") {
+            vadEnabled = vad["enabled"] as? Bool ?? false
+            vadWindowSize = vad["windowSize"] as? Int ?? 5
+            enableVoiceFilter = vad["enableVoiceFilter"] as? Bool ?? true
+            debugMode = vad["debugMode"] as? Bool ?? false
+
+            // Validate window size
+            vadWindowSize = max(3, min(20, vadWindowSize))
+        }
+
+        // Configure waveform visualization
+        waveformDataManager.configureWaveform(debounceInSeconds: debounceInSeconds, bars: numberOfBars)
+
+        // Configure speech detection if provided
+        if call.hasOption("speechDetection") {
+            waveformDataManager.configureSpeechDetection(
+                enabled: speechEnabled,
+                threshold: speechThreshold,
+                useVAD: vadEnabled,
+                calibrationDuration: calibrationDuration
+            )
+        }
+
+        // Configure VAD if provided
+        if call.hasOption("vad") {
+            waveformDataManager.configureAdvancedVAD(
+                enabled: vadEnabled,
+                windowSize: vadWindowSize,
+                enableVoiceFilter: enableVoiceFilter,
+                debugMode: debugMode
+            )
+        }
+
+        log("Unified waveform configured - bars: \(numberOfBars), interval: \(debounceInSeconds)s, speech: \(speechEnabled) (threshold: \(speechThreshold)), VAD: \(vadEnabled) (window: \(vadWindowSize))")
+
+        // Build comprehensive result
+        let speechConfig: [String: Any] = [
+            "enabled": speechEnabled,
+            "threshold": speechThreshold,
+            "calibrationDuration": calibrationDuration
+        ]
+
+        let vadConfig: [String: Any] = [
+            "enabled": vadEnabled,
+            "windowSize": vadWindowSize,
+            "estimatedLatencyMs": vadWindowSize * 50,
+            "enableVoiceFilter": enableVoiceFilter,
+            "debugMode": debugMode
+        ]
+
+        let configuration: [String: Any] = [
+            "numberOfBars": numberOfBars,
+            "emissionIntervalMs": Int(debounceInSeconds * 1000),
+            "speechDetection": speechConfig,
+            "vad": vadConfig
+        ]
 
         let result: [String: Any] = [
             "success": true,
-            "numberOfBars": numberOfBars
+            "configuration": configuration
         ]
         call.resolve(result)
     }
 
+    /**
+     * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
+     */
     @objc func configureWaveformSpeechDetection(_ call: CAPPluginCall) {
         let enabled = call.getBool("enabled") ?? false
         let threshold = call.getDouble("threshold") ?? 0.02
@@ -408,6 +489,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         call.resolve(result)
     }
 
+    /**
+     * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
+     */
     @objc func configureAdvancedVAD(_ call: CAPPluginCall) {
         let enabled = call.getBool("enabled") ?? true
         let windowSize = call.getInt("windowSize") ?? 5

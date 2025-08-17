@@ -208,16 +208,140 @@ export interface SwitchMicrophoneResult {
   microphoneId: number;
 }
 
+// Enums for configuration parameters
+export enum WaveformBarsCount {
+  BARS_16 = 16,
+  BARS_32 = 32,
+  BARS_64 = 64,
+  BARS_128 = 128,
+  BARS_256 = 256,
+}
+
+export enum WaveformEmissionInterval {
+  /** Real-time visualization (20ms) */
+  REALTIME = 0.02,
+  /** Very fast updates (50ms) */
+  VERY_FAST = 0.05,
+  /** Fast updates (100ms) */
+  FAST = 0.1,
+  /** Medium updates (250ms) */
+  MEDIUM = 0.25,
+  /** Slow updates (500ms) */
+  SLOW = 0.5,
+  /** Very slow updates (1000ms) */
+  VERY_SLOW = 1.0,
+}
+
+export enum SpeechThreshold {
+  /** Very sensitive (0.005) */
+  VERY_SENSITIVE = 0.005,
+  /** Sensitive (0.01) */
+  SENSITIVE = 0.01,
+  /** Normal (0.02) */
+  NORMAL = 0.02,
+  /** Moderate (0.04) */
+  MODERATE = 0.04,
+  /** Less sensitive (0.06) */
+  LESS_SENSITIVE = 0.06,
+  /** Not sensitive (0.1) */
+  NOT_SENSITIVE = 0.1,
+}
+
+export enum VADWindowSize {
+  /** Minimum latency (~150ms) */
+  MINIMAL = 3,
+  /** Low latency (~200ms) */
+  LOW = 4,
+  /** Normal latency (~250ms) */
+  NORMAL = 5,
+  /** Medium latency (~400ms) */
+  MEDIUM = 8,
+  /** High accuracy (~500ms) */
+  HIGH = 10,
+  /** Maximum accuracy (~750ms) */
+  MAXIMUM = 15,
+}
+
+export enum CalibrationDuration {
+  /** Quick calibration (500ms) */
+  QUICK = 500,
+  /** Normal calibration (1000ms) */
+  NORMAL = 1000,
+  /** Extended calibration (2000ms) */
+  EXTENDED = 2000,
+  /** Long calibration (3000ms) */
+  LONG = 3000,
+}
+
+/**
+ * Unified waveform configuration options combining all waveform features
+ */
+export interface WaveformConfiguration {
+  /** Number of bars in the waveform visualization */
+  numberOfBars?: WaveformBarsCount | number;
+  /** Emission interval for waveform data */
+  emissionInterval?: WaveformEmissionInterval | number;
+
+  /** Speech detection configuration */
+  speechDetection?: {
+    /** Enable speech-only detection */
+    enabled: boolean;
+    /** Speech detection sensitivity threshold */
+    threshold?: SpeechThreshold | number;
+    /** Background noise calibration duration */
+    calibrationDuration?: CalibrationDuration | number;
+  };
+
+  /** Voice Activity Detection (VAD) configuration */
+  vad?: {
+    /** Enable VAD for improved speech detection */
+    enabled: boolean;
+    /** VAD analysis window size (affects latency vs accuracy) */
+    windowSize?: VADWindowSize | number;
+    /** Enable human voice band filtering (85Hz-3400Hz) */
+    enableVoiceFilter?: boolean;
+    /** Enable debug mode to bypass speech detection */
+    debugMode?: boolean;
+  };
+}
+
+/**
+ * Result of waveform configuration
+ */
+export interface WaveformConfigurationResult {
+  success: boolean;
+  configuration: {
+    numberOfBars: number;
+    emissionIntervalMs: number;
+    speechDetection: {
+      enabled: boolean;
+      threshold: number;
+      calibrationDuration: number;
+    };
+    vad: {
+      enabled: boolean;
+      windowSize: number;
+      estimatedLatencyMs: number;
+      enableVoiceFilter: boolean;
+      debugMode: boolean;
+    };
+  };
+}
+
+// Legacy interfaces for backward compatibility (deprecated)
+/** @deprecated Use WaveformConfiguration instead */
 export interface WaveformOptions {
   numberOfBars?: number;
   debounceInSeconds?: number;
 }
 
+/** @deprecated Use WaveformConfiguration instead */
 export interface WaveformConfigurationOptions {
   numberOfBars?: number;
   debounceInSeconds?: number;
 }
 
+/** @deprecated Use WaveformConfiguration instead */
 export interface WaveformSpeechDetectionOptions {
   enabled?: boolean;
   threshold?: number;
@@ -225,6 +349,7 @@ export interface WaveformSpeechDetectionOptions {
   calibrationDuration?: number;
 }
 
+/** @deprecated Use WaveformConfigurationResult instead */
 export interface WaveformSpeechDetectionResult {
   success: boolean;
   enabled: boolean;
@@ -233,6 +358,7 @@ export interface WaveformSpeechDetectionResult {
   calibrationDuration: number;
 }
 
+/** @deprecated Use WaveformConfiguration instead */
 export interface AdvancedVADOptions {
   /** Enable VAD for speech detection */
   enabled?: boolean;
@@ -244,6 +370,7 @@ export interface AdvancedVADOptions {
   debugMode?: boolean;
 }
 
+/** @deprecated Use WaveformConfigurationResult instead */
 export interface AdvancedVADResult {
   success: boolean;
   enabled: boolean;
@@ -254,6 +381,7 @@ export interface AdvancedVADResult {
   debugMode: boolean;
 }
 
+/** @deprecated Use WaveformConfigurationResult instead */
 export interface ConfigureWaveformResult {
   success: boolean;
   numberOfBars: number;
@@ -507,27 +635,39 @@ export interface CapacitorAudioEnginePlugin {
   switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
 
   /**
-   * Configure waveform data generation settings.
-   * @param options - Configuration options for waveform data
-   * @param options.numberOfBars - Number of amplitude bars in the waveform data (default: 32)
-   * @param options.debounceInSeconds - Emission interval in seconds (0.01 to 10.0 seconds, default: 1.0)
-   * @returns Promise that resolves with configuration result
+   * Configure all waveform settings in one unified call.
+   * This method combines waveform visualization, speech detection, and VAD configuration.
+   *
+   * @param options - Unified waveform configuration options
+   * @returns Promise that resolves with complete configuration result
    * @throws {Error} If configuration fails
    * @platform web Not supported
-   * @platform android Configures real-time PCM audio processing for amplitude levels
-   * @platform ios Configures AVAudioEngine audio tap for amplitude levels
+   * @platform android Configures real-time PCM audio processing with speech detection and VAD
+   * @platform ios Configures AVAudioEngine audio tap with speech detection and VAD
    *
    * @example
    * ```typescript
-   * // Configure waveform with 64 bars and 0.5 second intervals
+   * // Basic waveform configuration
    * await CapacitorAudioEngine.configureWaveform({
-   *   numberOfBars: 64,
-   *   debounceInSeconds: 0.5
+   *   numberOfBars: WaveformBarsCount.BARS_64,
+   *   emissionInterval: WaveformEmissionInterval.FAST
    * });
    *
-   * // Configure for real-time visualization (50ms intervals)
+   * // Advanced configuration with speech detection and VAD
    * await CapacitorAudioEngine.configureWaveform({
-   *   debounceInSeconds: 0.05
+   *   numberOfBars: WaveformBarsCount.BARS_32,
+   *   emissionInterval: WaveformEmissionInterval.REALTIME,
+   *   speechDetection: {
+   *     enabled: true,
+   *     threshold: SpeechThreshold.NORMAL,
+   *     calibrationDuration: CalibrationDuration.NORMAL
+   *   },
+   *   vad: {
+   *     enabled: true,
+   *     windowSize: VADWindowSize.LOW,
+   *     enableVoiceFilter: true,
+   *     debugMode: false
+   *   }
    * });
    *
    * // Listen for waveform data events during recording
@@ -536,7 +676,7 @@ export interface CapacitorAudioEnginePlugin {
    * });
    * ```
    */
-  configureWaveform(options?: WaveformOptions): Promise<ConfigureWaveformResult>;
+  configureWaveform(options?: WaveformConfiguration): Promise<WaveformConfigurationResult>;
 
   /**
    * Destroy waveform configuration and clean up resources.
@@ -555,72 +695,14 @@ export interface CapacitorAudioEnginePlugin {
   destroyWaveform(): Promise<void>;
 
   /**
+   * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
    * Configure speech detection for waveform levels
-   * Enable speech-only detection with threshold filtering and optional Voice Activity Detection (VAD)
-   *
-   * @param options Configuration options for speech detection
-   * @returns Promise that resolves with configuration result
-   * @throws {Error} If configuration fails
-   * @platform web Not supported
-   * @platform android Uses RMS calculation with energy-based VAD and zero-crossing rate analysis
-   * @platform ios Uses energy-based VAD with spectral analysis and background noise calibration
-   *
-   * @example
-   * ```typescript
-   * // Enable speech detection with basic threshold filtering
-   * await CapacitorAudioEngine.configureWaveformSpeechDetection({
-   *   enabled: true,
-   *   threshold: 0.02,
-   *   useVAD: false
-   * });
-   *
-   * // Enable advanced speech detection with VAD
-   * await CapacitorAudioEngine.configureWaveformSpeechDetection({
-   *   enabled: true,
-   *   threshold: 0.02,
-   *   useVAD: true,
-   *   calibrationDuration: 2000
-   * });
-   * ```
    */
   configureWaveformSpeechDetection(options?: WaveformSpeechDetectionOptions): Promise<WaveformSpeechDetectionResult>;
 
   /**
+   * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
    * Configure advanced Voice Activity Detection (VAD) for optimized latency and noise rejection.
-   *
-   * This method provides fine-grained control over VAD parameters for production applications.
-   * Use this for low-latency requirements or noisy environments.
-   *
-   * @param options - Advanced VAD configuration options
-   * @returns Promise resolving to the configuration result
-   *
-   * @platform android Supports configurable window size and human voice band filtering
-   * @platform ios Supports configurable window size with AVAudioEngine processing
-   *
-   * @example
-   * ```typescript
-   * // Low-latency configuration (faster response)
-   * await CapacitorAudioEngine.configureAdvancedVAD({
-   *   enabled: true,
-   *   windowSize: 3,        // ~150ms latency
-   *   enableVoiceFilter: true,
-   *   debugMode: false
-   * });
-   *
-   * // High-accuracy configuration (better noise rejection)
-   * await CapacitorAudioEngine.configureAdvancedVAD({
-   *   enabled: true,
-   *   windowSize: 10,       // ~500ms latency
-   *   enableVoiceFilter: true,
-   *   debugMode: false
-   * });
-   *
-   * // Debug mode (bypass speech detection for testing)
-   * await CapacitorAudioEngine.configureAdvancedVAD({
-   *   enabled: false,
-   *   debugMode: true
-   * });
-   * ```
    */
   configureAdvancedVAD(options?: AdvancedVADOptions): Promise<AdvancedVADResult>;
 
