@@ -678,6 +678,46 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
     @PluginMethod
+    public void configureAdvancedVAD(PluginCall call) {
+        try {
+            Boolean enabled = call.getBoolean("enabled", true);
+            Integer windowSize = call.getInt("windowSize", 5); // Default to 5 frames for low latency
+            Boolean enableVoiceFilter = call.getBoolean("enableVoiceFilter", true);
+            Boolean debugMode = call.getBoolean("debugMode", false);
+
+            if (waveformDataManager != null) {
+                // Configure advanced VAD settings
+                waveformDataManager.configureAdvancedVAD(Boolean.TRUE.equals(enabled), windowSize, Boolean.TRUE.equals(enableVoiceFilter));
+
+                // Set debug mode if requested
+                if (debugMode != null) {
+                    waveformDataManager.setDebugMode(Boolean.TRUE.equals(debugMode));
+                }
+
+                int latencyMs = windowSize * 50; // Approximate latency
+                Log.d(TAG, "Advanced VAD configured - enabled: " + enabled +
+                     ", window: " + windowSize + " frames (~" + latencyMs + "ms)" +
+                     ", voiceFilter: " + enableVoiceFilter +
+                     ", debug: " + debugMode);
+
+                JSObject result = new JSObject();
+                result.put("success", true);
+                result.put("enabled", enabled);
+                result.put("windowSize", windowSize);
+                result.put("latencyMs", latencyMs);
+                result.put("enableVoiceFilter", enableVoiceFilter);
+                result.put("debugMode", debugMode);
+                call.resolve(result);
+            } else {
+                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to configure advanced VAD", e);
+            call.reject("CONFIGURE_ERROR", "Failed to configure advanced VAD: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void destroyWaveform(PluginCall call) {
         try {
             if (waveformDataManager != null) {

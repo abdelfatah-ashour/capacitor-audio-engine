@@ -16,6 +16,8 @@ import type {
   WaveformOptions,
   WaveformSpeechDetectionOptions,
   WaveformSpeechDetectionResult,
+  AdvancedVADOptions,
+  AdvancedVADResult,
   PreloadTracksOptions,
   PreloadTracksResult,
   PlaybackInfo,
@@ -261,6 +263,21 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
       `configureWaveformSpeechDetection is not supported on web platform. Attempted to configure speech detection enabled: ${enabled}.`,
     );
     throw new Error('configureWaveformSpeechDetection is not supported on web platform');
+  }
+
+  /**
+   * Configure advanced VAD for optimized latency and noise rejection.
+   * @param options - Advanced VAD configuration options
+   * @returns Promise that resolves with configuration result
+   * @platform web Not supported
+   */
+  async configureAdvancedVAD(options?: AdvancedVADOptions): Promise<AdvancedVADResult> {
+    const enabled = options?.enabled ?? false;
+    const windowSize = options?.windowSize ?? 5;
+    console.warn(
+      `configureAdvancedVAD is not supported on web platform. Attempted to configure VAD enabled: ${enabled}, windowSize: ${windowSize}.`,
+    );
+    throw new Error('configureAdvancedVAD is not supported on web platform');
   }
 
   // ==================== AUDIO PLAYBACK METHODS ====================

@@ -189,6 +189,12 @@ export class FeaturesDemoComponent {
   protected readonly useVAD = signal(true);
   protected readonly calibrationDuration = signal(1000);
 
+  // Advanced VAD configuration signals
+  protected readonly advancedVADEnabled = signal(true);
+  protected readonly vadWindowSize = signal(5); // VAD window size in frames (3-20)
+  protected readonly voiceBandFilterEnabled = signal(true); // Enable human voice band filtering
+  protected readonly vadDebugMode = signal(false); // Debug mode for VAD troubleshooting
+
   // Continuous emission tracking
   protected readonly continuousEmissionEnabled = signal(true);
   protected readonly silenceDetected = signal(false);
@@ -483,6 +489,11 @@ export class FeaturesDemoComponent {
       if (this.waveformEnabled()) {
         await this.configureWaveform();
         await this.configureSpeechDetection();
+
+        // Configure advanced VAD if enabled
+        if (this.speechDetectionEnabled() && this.useVAD() && this.advancedVADEnabled()) {
+          await this.configureAdvancedVAD();
+        }
       }
 
       const options = this.recordingOptions();
@@ -1220,6 +1231,35 @@ export class FeaturesDemoComponent {
     }
   }
 
+  async configureAdvancedVAD(): Promise<void> {
+    try {
+      const options = {
+        enabled: this.advancedVADEnabled(),
+        windowSize: this.vadWindowSize(),
+        enableVoiceFilter: this.voiceBandFilterEnabled(),
+        debugMode: this.vadDebugMode(),
+      };
+
+      // Check if configureAdvancedVAD method is available
+      if (typeof (CapacitorAudioEngine as any).configureAdvancedVAD === 'function') {
+        const result = await (CapacitorAudioEngine as any).configureAdvancedVAD(options);
+        const latencyMs = result.estimatedLatency || options.windowSize * 50;
+        await this.showToast(
+          `Advanced VAD configured: ${options.windowSize} frames (~${latencyMs}ms latency), Voice filter: ${options.enableVoiceFilter ? 'ON' : 'OFF'}, Debug: ${options.debugMode ? 'ON' : 'OFF'}`,
+          'success'
+        );
+      } else {
+        await this.showToast(
+          `Advanced VAD settings saved locally. Feature requires updated plugin version.`,
+          'warning'
+        );
+      }
+    } catch (error: any) {
+      console.error('Error configuring advanced VAD:', error);
+      await this.showToast(`Error configuring advanced VAD: ${error.message}`, 'danger');
+    }
+  }
+
   async toggleWaveformEnabled(): Promise<void> {
     const enabled = !this.waveformEnabled();
     this.waveformEnabled.set(enabled);
@@ -1262,6 +1302,36 @@ export class FeaturesDemoComponent {
     const enabled = !this.speechDetectionEnabled();
     this.speechDetectionEnabled.set(enabled);
     await this.configureSpeechDetection();
+  }
+
+  async toggleAdvancedVAD(): Promise<void> {
+    const enabled = !this.advancedVADEnabled();
+    this.advancedVADEnabled.set(enabled);
+    await this.configureAdvancedVAD();
+  }
+
+  updateVadWindowSize(value: any): void {
+    const windowSize = typeof value === 'number' ? value : value.detail?.value || value;
+    this.vadWindowSize.set(windowSize);
+    if (this.advancedVADEnabled()) {
+      this.configureAdvancedVAD();
+    }
+  }
+
+  async toggleVoiceBandFilter(): Promise<void> {
+    const enabled = !this.voiceBandFilterEnabled();
+    this.voiceBandFilterEnabled.set(enabled);
+    if (this.advancedVADEnabled()) {
+      await this.configureAdvancedVAD();
+    }
+  }
+
+  async toggleVadDebugMode(): Promise<void> {
+    const enabled = !this.vadDebugMode();
+    this.vadDebugMode.set(enabled);
+    if (this.advancedVADEnabled()) {
+      await this.configureAdvancedVAD();
+    }
   }
 
   async updateSpeechThreshold(threshold: number): Promise<void> {

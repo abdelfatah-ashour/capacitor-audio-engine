@@ -233,6 +233,27 @@ export interface WaveformSpeechDetectionResult {
   calibrationDuration: number;
 }
 
+export interface AdvancedVADOptions {
+  /** Enable VAD for speech detection */
+  enabled?: boolean;
+  /** VAD window size in frames (3-20). Smaller = lower latency, larger = more accuracy. Default: 5 */
+  windowSize?: number;
+  /** Enable human voice band filtering (85Hz-3400Hz) for noise rejection. Default: true */
+  enableVoiceFilter?: boolean;
+  /** Enable debug mode to bypass speech detection for testing. Default: false */
+  debugMode?: boolean;
+}
+
+export interface AdvancedVADResult {
+  success: boolean;
+  enabled: boolean;
+  windowSize: number;
+  /** Approximate VAD latency in milliseconds */
+  latencyMs: number;
+  enableVoiceFilter: boolean;
+  debugMode: boolean;
+}
+
 export interface ConfigureWaveformResult {
   success: boolean;
   numberOfBars: number;
@@ -563,6 +584,45 @@ export interface CapacitorAudioEnginePlugin {
    * ```
    */
   configureWaveformSpeechDetection(options?: WaveformSpeechDetectionOptions): Promise<WaveformSpeechDetectionResult>;
+
+  /**
+   * Configure advanced Voice Activity Detection (VAD) for optimized latency and noise rejection.
+   *
+   * This method provides fine-grained control over VAD parameters for production applications.
+   * Use this for low-latency requirements or noisy environments.
+   *
+   * @param options - Advanced VAD configuration options
+   * @returns Promise resolving to the configuration result
+   *
+   * @platform android Supports configurable window size and human voice band filtering
+   * @platform ios Supports configurable window size with AVAudioEngine processing
+   *
+   * @example
+   * ```typescript
+   * // Low-latency configuration (faster response)
+   * await CapacitorAudioEngine.configureAdvancedVAD({
+   *   enabled: true,
+   *   windowSize: 3,        // ~150ms latency
+   *   enableVoiceFilter: true,
+   *   debugMode: false
+   * });
+   *
+   * // High-accuracy configuration (better noise rejection)
+   * await CapacitorAudioEngine.configureAdvancedVAD({
+   *   enabled: true,
+   *   windowSize: 10,       // ~500ms latency
+   *   enableVoiceFilter: true,
+   *   debugMode: false
+   * });
+   *
+   * // Debug mode (bypass speech detection for testing)
+   * await CapacitorAudioEngine.configureAdvancedVAD({
+   *   enabled: false,
+   *   debugMode: true
+   * });
+   * ```
+   */
+  configureAdvancedVAD(options?: AdvancedVADOptions): Promise<AdvancedVADResult>;
 
   // ==================== AUDIO PLAYBACK METHODS ====================
 

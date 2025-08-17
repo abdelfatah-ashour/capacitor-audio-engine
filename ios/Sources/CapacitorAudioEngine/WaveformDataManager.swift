@@ -26,10 +26,15 @@ class WaveformDataManager {
     private static let bufferSize: AVAudioFrameCount = 1024
 
     // Speech detection constants
-    private static let defaultSpeechThreshold: Float = 0.005 // Lowered threshold for better iOS sensitivity
-    private static let vadWindowSize = 10 // Number of frames to analyze for VAD
+    private static let defaultSpeechThreshold: Float = 0.01 // Aligned with Android threshold
+    private static let defaultVadWindowSize = 5 // Reduced for lower latency (~250ms at 20fps)
+    private static let maxVadWindowSize = 20 // Maximum window size for high-latency scenarios
     private static let vadSpeechRatio: Float = 0.3 // Minimum ratio of speech frames in window
     private static let energyThresholdMultiplier: Float = 2.0 // Energy threshold multiplier for VAD
+
+    // Human voice frequency band constants for noise rejection
+    private static let minVoiceFreq: Float = 85.0 // Hz - Lowest fundamental frequency for human voice
+    private static let maxVoiceFreq: Float = 3400.0 // Hz - Highest frequency for speech intelligibility
 
     // Non-VAD speech detection constants
     private static let adaptiveThresholdFrames = 20 // Frames to calculate adaptive threshold
@@ -51,19 +56,35 @@ class WaveformDataManager {
     private var speechThreshold: Float = defaultSpeechThreshold
     private var vadEnabled: Bool = false
     private var backgroundCalibrationDuration: Int = 1000 // Default 1 second (matching Android)
+    private var vadWindowSize: Int = defaultVadWindowSize // Configurable VAD window size for latency optimization
+    private var voiceBandFilterEnabled: Bool = true // Enable human voice band filtering for noise rejection
+    private var debugMode: Bool = false // Add debug mode to bypass speech detection for testing
 
-    // VAD state tracking
-    private var recentEnergyLevels: [Float] = Array(repeating: 0.0, count: vadWindowSize)
+    // Speech detection calculation properties (aligned with Android)
+    private var speechDetectionGainFactor: Float = 12.0 // Moderate gain factor for balanced voice representation
+    private var adjustedSpeechThreshold: Float = defaultSpeechThreshold // Dynamic threshold based on background noise
+    private var backgroundNoiseMultiplier: Float = 1.2 // Background noise calibration multiplier (aligned with Android)
+    private var vadSpeechRatio: Float = 0.3 // Minimum ratio of speech frames in VAD window
+
+    // VAD state tracking (now with configurable window size)
+    private var recentEnergyLevels: [Float] = []
     private var energyIndex: Int = 0
     private var backgroundEnergyLevel: Float = 0.0
     private var backgroundCalibrated: Bool = false
     private var frameCount: Int = 0
+    private var vadFrameCount: Int = 0 // Separate counter for simplified VAD
 
     // Non-VAD adaptive threshold tracking
     private var recentLevels: [Float] = Array(repeating: 0.0, count: adaptiveThresholdFrames)
     private var levelIndex: Int = 0
     private var adaptiveThreshold: Float = defaultSpeechThreshold
     private var adaptiveFrameCount: Int = 0
+
+    // Background noise tracking for non-VAD speech detection (similar to Android)
+    private var backgroundNoiseLevel: Float = 0.0
+    private var backgroundNoiseCalibrated: Bool = false
+    private var noiseCalibrationFrames: Int = 0
+    private static let noiseCalibrationDuration = 30 // Frames for background noise calibration
 
     // Debug tracking
     private var debugFrameCount: Int = 0
@@ -88,6 +109,10 @@ class WaveformDataManager {
      */
     init(eventCallback: WaveformEventCallback?) {
         self.eventCallback = eventCallback
+
+        // Initialize VAD energy levels array with default size
+        self.recentEnergyLevels = Array(repeating: 0.0, count: vadWindowSize)
+
         log("WaveformDataManager initialized")
     }
 
@@ -160,6 +185,44 @@ class WaveformDataManager {
     }
 
     /**
+     * Enable debug mode to bypass speech detection for testing
+     * - Parameter enabled: Enable debug mode
+     */
+    func setDebugMode(_ enabled: Bool) {
+        debugMode = enabled
+        log("Debug mode: \(enabled) (speech detection \(enabled ? "BYPASSED" : "active"))")
+    }
+
+    /**
+     * Configure VAD window size for latency optimization
+     * - Parameter windowSize: Number of frames to analyze (3-20 frames, default: 5)
+     */
+    func setVadWindowSize(_ windowSize: Int) {
+        let newSize = max(3, min(Self.maxVadWindowSize, windowSize))
+        if newSize != vadWindowSize {
+            vadWindowSize = newSize
+            // Reinitialize the energy levels array
+            recentEnergyLevels = Array(repeating: 0.0, count: vadWindowSize)
+            energyIndex = 0
+            log("VAD window size set to: \(vadWindowSize) frames (~\(vadWindowSize * 50)ms latency)")
+
+            // Only reset VAD state if currently enabled and not during initial configuration
+            if vadEnabled && isActive {
+                resetVadState()
+            }
+        }
+    }
+
+    /**
+     * Enable or disable human voice band filtering for noise rejection
+     * - Parameter enabled: Enable band-pass filtering for human voice frequencies (85Hz-3400Hz)
+     */
+    func setVoiceBandFilterEnabled(_ enabled: Bool) {
+        voiceBandFilterEnabled = enabled
+        log("Voice band filter: \(enabled ? "ENABLED" : "disabled") (filtering \(Self.minVoiceFreq)Hz-\(Self.maxVoiceFreq)Hz)")
+    }
+
+    /**
      * Enable or disable Voice Activity Detection (VAD)
      * - Parameter enabled: Enable VAD for more accurate speech detection
      */
@@ -199,10 +262,77 @@ class WaveformDataManager {
         vadEnabled = useVAD
         backgroundCalibrationDuration = calibrationDuration
 
-        log("Speech detection configured - enabled: \(enabled), threshold: \(speechThreshold), VAD: \(useVAD), calibration: \(calibrationDuration)ms")
+        log("Speech detection configured - enabled: \(enabled), threshold: \(speechThreshold), VAD: \(useVAD), calibration: \(calibrationDuration)ms, window: \(vadWindowSize) frames, voiceFilter: \(voiceBandFilterEnabled)")
 
         // Reset state for both VAD and non-VAD modes when speech detection is enabled
         if enabled {
+            resetVadState()
+        }
+    }
+
+    /**
+     * Configure gain factor for better voice level representation
+     * - Parameter gainFactor: Gain factor to apply to RMS values (5.0-30.0, default: 12.0)
+     */
+    func setGainFactor(_ gainFactor: Float) {
+        speechDetectionGainFactor = max(5.0, min(30.0, gainFactor))
+        log("Speech detection gain factor set to: \(speechDetectionGainFactor)")
+    }
+
+    /**
+     * Configure advanced VAD settings for optimal performance
+     * - Parameter enabled: Enable VAD
+     * - Parameter windowSize: VAD window size in frames (3-20, smaller = lower latency)
+     * - Parameter enableVoiceFilter: Enable human voice band filtering
+     */
+    func configureAdvancedVAD(enabled: Bool, windowSize: Int, enableVoiceFilter: Bool, debugMode: Bool = false) {
+        log("Configuring Advanced VAD - enabled: \(enabled), windowSize: \(windowSize), voiceFilter: \(enableVoiceFilter), debug: \(debugMode)")
+
+        // Update configuration without triggering excessive VAD resets
+        self.debugMode = debugMode
+        setVadEnabled(enabled)
+        setVoiceBandFilterEnabled(enableVoiceFilter)
+
+        // Update window size last (this handles its own VAD reset if needed)
+        setVadWindowSize(windowSize)
+
+        log("Advanced VAD configured - enabled: \(enabled), window: \(vadWindowSize) frames (~\(vadWindowSize * 50)ms), voiceFilter: \(voiceBandFilterEnabled), debug: \(debugMode)")
+    }
+
+    /**
+     * Configure waveform manager with recording parameters for optimal performance
+     * - Parameter sampleRate: Recording sample rate (e.g., 48000)
+     * - Parameter channels: Number of recording channels (e.g., 2 for stereo)
+     * - Parameter speechThreshold: Speech detection threshold (0.0-1.0)
+     */
+    func configureForRecording(sampleRate: Int, channels: Int, speechThreshold: Float) {
+        // Adjust speech threshold based on recording quality
+        // Higher sample rates and stereo recording tend to have better SNR
+        var adjustedThreshold = speechThreshold
+        if sampleRate >= 48000 {
+            // For high-quality recordings, we can use a slightly lower threshold
+            adjustedThreshold = max(0.01, speechThreshold * 0.8)
+        }
+
+        self.speechThreshold = adjustedThreshold
+
+        // Adjust gain factor based on sample rate and channel count for optimal voice levels
+        var optimalGain: Float = 12.0 // Moderate base gain
+
+        if sampleRate >= 48000 {
+            optimalGain = 15.0 // Moderate gain increase for 48kHz+ recording
+        }
+
+        if channels >= 2 {
+            optimalGain *= 1.15 // Slight gain boost for stereo recording
+        }
+
+        speechDetectionGainFactor = optimalGain
+
+        log("Configured for recording - sampleRate: \(sampleRate), channels: \(channels), adjustedThreshold: \(adjustedThreshold), gainFactor: \(speechDetectionGainFactor)")
+
+        // Reset calibration with new settings
+        if speechOnlyMode {
             resetVadState()
         }
     }
@@ -212,16 +342,25 @@ class WaveformDataManager {
      */
     private func resetVadState() {
         frameCount = 0
+        vadFrameCount = 0
         energyIndex = 0
         backgroundEnergyLevel = 0.0
         backgroundCalibrated = false
-        recentEnergyLevels = Array(repeating: 0.0, count: Self.vadWindowSize)
+        recentEnergyLevels = Array(repeating: 0.0, count: vadWindowSize) // Use configurable window size
 
         // Reset adaptive threshold state
         levelIndex = 0
         adaptiveThreshold = speechThreshold
         adaptiveFrameCount = 0
         recentLevels = Array(repeating: 0.0, count: Self.adaptiveThresholdFrames)
+
+        // Reset background noise calibration (similar to Android)
+        backgroundNoiseLevel = 0.0
+        backgroundNoiseCalibrated = false
+        noiseCalibrationFrames = 0
+
+        // Reset adjusted threshold
+        adjustedSpeechThreshold = speechThreshold
 
         // Reset debug counter
         debugFrameCount = 0
@@ -421,8 +560,8 @@ class WaveformDataManager {
 
         var emitLevel = calculatedLevel
 
-        // Apply speech detection if enabled
-        if speechOnlyMode {
+        // Apply speech detection if enabled (unless debug mode bypasses it)
+        if speechOnlyMode && !debugMode {
             let isSpeech = detectSpeech(
                 level: calculatedLevel,
                 channelData: channelData[0], // Use first channel for speech detection
@@ -432,9 +571,15 @@ class WaveformDataManager {
                 emitLevel = 0.0 // Send level = 0 for silence instead of omitting
             }
 
-            // Debug logging for speech detection (every 25 frames)
-            if debugFrameCount % 25 == 0 {
-                log("Audio level: \(String(format: "%.4f", calculatedLevel)), speech: \(isSpeech), threshold: \(String(format: "%.4f", speechThreshold)), VAD: \(vadEnabled)")
+            // Debug logging for speech detection (every 50 frames, similar to Android)
+            if debugFrameCount % 50 == 0 {
+                log("Speech detection: level=\(String(format: "%.3f", calculatedLevel)), threshold=\(String(format: "%.3f", speechThreshold)), isSpeech=\(isSpeech), emitLevel=\(String(format: "%.3f", emitLevel))")
+            }
+        } else if debugMode {
+            // In debug mode, return raw levels without speech filtering
+            emitLevel = calculatedLevel
+            if debugFrameCount % 50 == 0 {
+                log("Debug mode: returning raw level=\(String(format: "%.3f", emitLevel)) (speech detection bypassed)")
             }
         }
 
@@ -442,6 +587,37 @@ class WaveformDataManager {
         DispatchQueue.main.async { [weak self] in
             self?.emitWaveformLevel(level: emitLevel)
         }
+    }
+
+    /**
+     * Filter audio data to human voice frequency band (85Hz - 3400Hz)
+     * Uses optimized filtering for higher sample rates
+     */
+    private func applyVoiceBandFilter(samples: UnsafePointer<Float>, frameLength: Int) -> [Float] {
+        guard voiceBandFilterEnabled else {
+            return Array(UnsafeBufferPointer(start: samples, count: frameLength))
+        }
+
+        var filtered = [Float]()
+
+        // Lighter filtering approach for better voice preservation
+        let windowSize = 2 // Reduced window size for less aggressive filtering
+
+        for i in 0..<frameLength {
+            var sum: Float = 0
+            var count = 0
+
+            // Apply a lighter smoothing filter
+            for j in max(0, i - windowSize/2)...min(frameLength - 1, i + windowSize/2) {
+                let weight: Float = j == i ? 0.6 : 0.2 // Give more weight to center sample
+                sum += samples[j] * weight
+                count += 1
+            }
+
+            filtered.append(sum)
+        }
+
+        return filtered
     }
 
     /**
@@ -459,8 +635,11 @@ class WaveformDataManager {
         // Process all channels and average them
         for channel in 0..<channelCount {
             let samples = channelData[channel]
-            for i in 0..<frameLength {
-                let sample = samples[i]
+
+            // Apply voice band filtering if enabled
+            let processedSamples = applyVoiceBandFilter(samples: samples, frameLength: frameLength)
+
+            for sample in processedSamples {
                 sum += sample * sample
                 totalSamples += 1
             }
@@ -468,13 +647,9 @@ class WaveformDataManager {
 
         guard totalSamples > 0 else { return 0.0 }
 
-        // Calculate RMS
+        // Calculate RMS with updated gain factor
         let rms = sqrt(sum / Float(totalSamples))
-
-        // Apply automatic gain for iOS audio to match recorded audio levels
-        // iOS AVAudioRecorder applies AGC and normalization, so we boost raw levels to compensate
-        let gainFactor: Float = 8.0 // Increased from 4.0 to better match final recording levels
-        let adjustedRms = rms * gainFactor
+        let adjustedRms = rms * speechDetectionGainFactor
 
         // Ensure it's in 0-1 range
         return min(1.0, max(0.0, adjustedRms))
@@ -489,13 +664,51 @@ class WaveformDataManager {
      */
     private func detectSpeech(level: Float, channelData: UnsafePointer<Float>, frameLength: Int) -> Bool {
         guard vadEnabled else {
-            // Use adaptive threshold for better speech detection without VAD
-            return performAdaptiveThresholdDetection(level: level)
+            // Use background noise calibration similar to Android for non-VAD mode
+            return performBackgroundNoiseDetection(level: level)
         }
 
         // Enhanced VAD (Voice Activity Detection) with static threshold
         let aboveThreshold = level > speechThreshold
         return performVAD(currentLevel: level, channelData: channelData, frameLength: frameLength) && aboveThreshold
+    }
+
+    /**
+     * Perform background noise calibration and speech detection for non-VAD mode
+     * - Parameter level: Current RMS level
+     * - Returns: true if speech is detected
+     */
+    private func performBackgroundNoiseDetection(level: Float) -> Bool {
+        // Calibrate background noise level for the first few frames (similar to Android)
+        if !backgroundNoiseCalibrated && noiseCalibrationFrames < Self.noiseCalibrationDuration {
+            backgroundNoiseLevel += level
+            noiseCalibrationFrames += 1
+
+            if noiseCalibrationFrames == Self.noiseCalibrationDuration {
+                backgroundNoiseLevel = backgroundNoiseLevel / Float(Self.noiseCalibrationDuration)
+                // Add a safety margin to the background noise level
+                backgroundNoiseLevel = backgroundNoiseLevel * 1.5
+                backgroundNoiseCalibrated = true
+                log("Background noise calibrated: \(backgroundNoiseLevel)")
+            }
+            return false // Don't detect speech during calibration
+        }
+
+        // Use adaptive threshold based on background noise if calibrated
+        var effectiveThreshold = speechThreshold
+        if backgroundNoiseCalibrated {
+            // Use the higher of configured threshold or background noise + margin
+            effectiveThreshold = max(speechThreshold, backgroundNoiseLevel + 0.01)
+        }
+
+        let isSpeech = level > effectiveThreshold
+
+        // Debug logging for speech detection (every 50 frames)
+        if noiseCalibrationFrames % 50 == 0 && backgroundNoiseCalibrated {
+            log("Speech detection: level=\(String(format: "%.3f", level)), threshold=\(String(format: "%.3f", effectiveThreshold)), backgroundNoise=\(String(format: "%.3f", backgroundNoiseLevel)), isSpeech=\(isSpeech)")
+        }
+
+        return isSpeech
     }
 
     /**
@@ -548,7 +761,7 @@ class WaveformDataManager {
 
         // Update energy level history
         recentEnergyLevels[energyIndex] = currentLevel
-        energyIndex = (energyIndex + 1) % Self.vadWindowSize
+        energyIndex = (energyIndex + 1) % vadWindowSize
 
         // Calculate calibration frames based on configurable duration
         // At current emission interval, calculate how many frames needed for calibration duration
@@ -579,8 +792,8 @@ class WaveformDataManager {
 
         // Count recent frames above energy threshold
         let speechFrames = recentEnergyLevels.filter { $0 > backgroundEnergyLevel }.count
-        let speechRatio = Float(speechFrames) / Float(Self.vadWindowSize)
-        let continuityCheck = speechRatio >= Self.vadSpeechRatio
+        let speechRatio = Float(speechFrames) / Float(vadWindowSize)
+        let continuityCheck = speechRatio >= vadSpeechRatio
 
         // Combined VAD decision
         let isSpeech = energyCheck && zcrCheck && continuityCheck
@@ -590,6 +803,52 @@ class WaveformDataManager {
         }
 
         return isSpeech
+    }
+
+    /**
+     * Simplified VAD that works with RMS level only (matching Android implementation)
+     * - Parameter rmsLevel: Current RMS energy level
+     * - Returns: Speech level (0.0 if no speech detected, rmsLevel if speech detected)
+     */
+    private func performVAD(rmsLevel: Float) -> Float {
+        vadFrameCount += 1
+
+        // Update energy level history
+        recentEnergyLevels[energyIndex] = rmsLevel
+        energyIndex = (energyIndex + 1) % vadWindowSize
+
+        // Calculate calibration frames based on configurable duration
+        let intervalMs = Int(emissionIntervalMs * 1000)
+        let calibrationFrames = max(2, backgroundCalibrationDuration / intervalMs) // Minimum 2 frames
+
+        // Calibrate background noise level using configurable duration
+        if !backgroundCalibrated && vadFrameCount <= calibrationFrames {
+            backgroundEnergyLevel += rmsLevel
+            if vadFrameCount == calibrationFrames {
+                backgroundEnergyLevel = (backgroundEnergyLevel / Float(calibrationFrames)) * backgroundNoiseMultiplier
+                backgroundCalibrated = true
+                adjustedSpeechThreshold = max(speechThreshold, backgroundEnergyLevel)
+                log("VAD background energy calibrated after \(calibrationFrames) frames (\(backgroundCalibrationDuration)ms): \(backgroundEnergyLevel), adjusted threshold: \(adjustedSpeechThreshold)")
+            }
+            return 0.0 // Don't emit during calibration
+        }
+
+        guard backgroundCalibrated else {
+            return 0.0
+        }
+
+        // Energy-based detection
+        let energyCheck = rmsLevel > adjustedSpeechThreshold
+
+        // Count recent frames above energy threshold
+        let speechFrames = recentEnergyLevels.filter { $0 > adjustedSpeechThreshold }.count
+        let speechRatio = Float(speechFrames) / Float(vadWindowSize)
+        let continuityCheck = speechRatio >= vadSpeechRatio
+
+        // Combined VAD decision
+        let isSpeech = energyCheck && continuityCheck
+
+        return isSpeech ? rmsLevel : 0.0
     }
 
     /**

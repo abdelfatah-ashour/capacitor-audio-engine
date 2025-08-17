@@ -1051,6 +1051,91 @@
                     }
                   </ion-select>
                 </ion-item>
+
+                <!-- Advanced VAD Controls -->
+                <ion-item-divider color="light">
+                  <ion-label>Advanced VAD Optimization</ion-label>
+                </ion-item-divider>
+
+                <ion-item>
+                  <ion-note color="medium">
+                    Configure VAD for optimal latency and noise rejection. Lower window sizes reduce
+                    latency but may increase false positives.
+                  </ion-note>
+                </ion-item>
+
+                <ion-card color="light">
+                  <ion-card-content>
+                    <h4>Advanced VAD Features</h4>
+                    <ul>
+                      <li><strong>Window Size:</strong> 3-20 frames (150ms-1000ms latency)</li>
+                      <li>
+                        <strong>Voice Filter:</strong> Isolates human voice frequencies
+                        (85Hz-3400Hz)
+                      </li>
+                      <li>
+                        <strong>Debug Mode:</strong> Enables detailed logging for troubleshooting
+                      </li>
+                    </ul>
+                  </ion-card-content>
+                </ion-card>
+
+                <ion-item>
+                  <ion-checkbox [checked]="advancedVADEnabled()" (ionChange)="toggleAdvancedVAD()">
+                  </ion-checkbox>
+                  <ion-label class="ion-margin-start">Enable Advanced VAD</ion-label>
+                </ion-item>
+
+                @if (advancedVADEnabled()) {
+                  <ion-item>
+                    <ion-label>
+                      VAD Window: {{ vadWindowSize() }} frames (~{{ vadWindowSize() * 50 }}ms
+                      latency)
+                    </ion-label>
+                    <ion-range
+                      min="3"
+                      max="20"
+                      step="1"
+                      [value]="vadWindowSize()"
+                      (ionInput)="updateVadWindowSize($event.detail.value)"
+                      pin="true"
+                      snaps="true"
+                    >
+                      <ion-label slot="start">3</ion-label>
+                      <ion-label slot="end">20</ion-label>
+                    </ion-range>
+                  </ion-item>
+
+                  <ion-item>
+                    <ion-checkbox
+                      [checked]="voiceBandFilterEnabled()"
+                      (ionChange)="toggleVoiceBandFilter()"
+                    >
+                    </ion-checkbox>
+                    <ion-label class="ion-margin-start">
+                      Voice Band Filter (85Hz-3400Hz)
+                      <ion-note>Reduces background noise outside human voice range</ion-note>
+                    </ion-label>
+                  </ion-item>
+
+                  <ion-item>
+                    <ion-checkbox [checked]="vadDebugMode()" (ionChange)="toggleVadDebugMode()">
+                    </ion-checkbox>
+                    <ion-label class="ion-margin-start">
+                      Debug Mode
+                      <ion-note>Enables detailed VAD logging for troubleshooting</ion-note>
+                    </ion-label>
+                  </ion-item>
+
+                  <ion-button
+                    expand="block"
+                    fill="outline"
+                    color="tertiary"
+                    (click)="configureAdvancedVAD()"
+                  >
+                    Apply Advanced VAD Settings
+                  </ion-button>
+                }
               }
             }
           </div>

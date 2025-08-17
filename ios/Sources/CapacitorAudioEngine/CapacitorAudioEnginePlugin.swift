@@ -27,6 +27,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "switchMicrophone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "configureWaveform", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "configureWaveformSpeechDetection", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "configureAdvancedVAD", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setGainFactor", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "destroyWaveform", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
         CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise),
@@ -263,6 +265,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
         recordingManager.startRecording(with: settings)
 
+        // Configure waveform manager for optimal performance with current recording settings
+        let sampleRateInt = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
+        let channelsInt = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
+        waveformDataManager.configureForRecording(sampleRate: sampleRateInt, channels: channelsInt, speechThreshold: 0.01)
+
         // Start waveform data monitoring for real-time audio levels
         waveformDataManager.startMonitoring()
 
@@ -397,6 +404,54 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             "threshold": threshold,
             "useVAD": useVAD,
             "calibrationDuration": calibrationDuration
+        ]
+        call.resolve(result)
+    }
+
+    @objc func configureAdvancedVAD(_ call: CAPPluginCall) {
+        let enabled = call.getBool("enabled") ?? true
+        let windowSize = call.getInt("windowSize") ?? 5
+        let enableVoiceFilter = call.getBool("enableVoiceFilter") ?? true
+        let debugMode = call.getBool("debugMode") ?? false
+
+        // Validate window size
+        let validatedWindowSize = max(3, min(20, windowSize))
+
+        // Configure advanced VAD settings
+        waveformDataManager.configureAdvancedVAD(
+            enabled: enabled,
+            windowSize: validatedWindowSize,
+            enableVoiceFilter: enableVoiceFilter,
+            debugMode: debugMode
+        )
+
+        log("Advanced VAD configured - enabled: \(enabled), window: \(validatedWindowSize) frames (~\(validatedWindowSize * 50)ms), voiceFilter: \(enableVoiceFilter), debug: \(debugMode)")
+
+        let result: [String: Any] = [
+            "success": true,
+            "enabled": enabled,
+            "windowSize": validatedWindowSize,
+            "enableVoiceFilter": enableVoiceFilter,
+            "debugMode": debugMode,
+            "estimatedLatency": validatedWindowSize * 50
+        ]
+        call.resolve(result)
+    }
+
+    @objc func setGainFactor(_ call: CAPPluginCall) {
+        let gainFactor = call.getFloat("gainFactor") ?? 12.0
+
+        // Validate gain factor range
+        let validatedGain = max(5.0, min(30.0, gainFactor))
+
+        // Set gain factor
+        waveformDataManager.setGainFactor(validatedGain)
+
+        log("Gain factor set to: \(validatedGain)")
+
+        let result: [String: Any] = [
+            "success": true,
+            "gainFactor": validatedGain
         ]
         call.resolve(result)
     }

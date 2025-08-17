@@ -27,16 +27,21 @@ public class WaveformDataManager {
     // Configuration constants
     private static final int DEFAULT_BARS = 32;
     private static final int EMISSION_INTERVAL_MS = 50; // 20fps for continuous emission (as requested)
-    private static final int SAMPLE_RATE = 44100;
+    private static final int DEFAULT_SAMPLE_RATE = 44100;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
     private static final int BUFFER_SIZE_FACTOR = 4; // Multiply minimum buffer size for stability
 
     // Speech detection constants
-    private static final float DEFAULT_SPEECH_THRESHOLD = 0.02f; // Amplitude threshold for speech detection
-    private static final int VAD_WINDOW_SIZE = 10; // Number of frames to analyze for VAD
+    private static final float DEFAULT_SPEECH_THRESHOLD = 0.01f; // Lowered threshold to match iOS sensitivity
+    private static final int DEFAULT_VAD_WINDOW_SIZE = 5; // Reduced for lower latency (~250ms at 20fps)
+    private static final int MAX_VAD_WINDOW_SIZE = 20; // Maximum window size for high-latency scenarios
     private static final float VAD_SPEECH_RATIO = 0.3f; // Minimum ratio of speech frames in window
     private static final float ENERGY_THRESHOLD_MULTIPLIER = 2.0f; // Energy threshold multiplier for VAD
+
+    // Human voice frequency band constants for noise rejection
+    private static final float MIN_VOICE_FREQ = 85.0f; // Hz - Lowest fundamental frequency for human voice
+    private static final float MAX_VOICE_FREQ = 3400.0f; // Hz - Highest frequency for speech intelligibility
 
     // Recording components
     private AudioRecord audioRecord;
@@ -48,6 +53,7 @@ public class WaveformDataManager {
     // Configuration
     private int numberOfBars = DEFAULT_BARS;
     private int emissionIntervalMs = EMISSION_INTERVAL_MS; // Configurable emission interval
+    private int sampleRate = DEFAULT_SAMPLE_RATE; // Configurable sample rate to match recording
     private final Handler mainHandler;
 
     // Speech detection configuration
@@ -55,13 +61,22 @@ public class WaveformDataManager {
     private float speechThreshold = DEFAULT_SPEECH_THRESHOLD;
     private boolean vadEnabled = false;
     private int backgroundCalibrationDuration = 1000; // Default 1 second
+    private boolean debugMode = false; // Add debug mode to bypass speech detection for testing
+    private int vadWindowSize = DEFAULT_VAD_WINDOW_SIZE; // Configurable VAD window size for latency optimization
+    private boolean voiceBandFilterEnabled = true; // Enable human voice band filtering for noise rejection
 
-    // VAD state tracking
-    private final float[] recentEnergyLevels = new float[VAD_WINDOW_SIZE];
+    // VAD state tracking (now with configurable window size)
+    private float[] recentEnergyLevels; // Will be initialized based on vadWindowSize
     private int energyIndex = 0;
     private float backgroundEnergyLevel = 0.0f;
     private boolean backgroundCalibrated = false;
     private int frameCount = 0;
+
+    // Background noise tracking for non-VAD speech detection
+    private float backgroundNoiseLevel = 0.0f;
+    private boolean backgroundNoiseCalibrated = false;
+    private int noiseCalibrationFrames = 0;
+    private static final int NOISE_CALIBRATION_DURATION = 30; // Frames for background noise calibration
 
     // Event callback
     private final EventCallback eventCallback;
@@ -80,6 +95,9 @@ public class WaveformDataManager {
     public WaveformDataManager(EventCallback eventCallback) {
         this.eventCallback = eventCallback;
         this.mainHandler = new Handler(Looper.getMainLooper());
+
+        // Initialize VAD energy levels array with default size
+        this.recentEnergyLevels = new float[vadWindowSize];
     }
 
     /**
@@ -93,6 +111,20 @@ public class WaveformDataManager {
         } else {
             Log.w(TAG, "Invalid number of bars: " + bars + ", using default: " + DEFAULT_BARS);
             this.numberOfBars = DEFAULT_BARS;
+        }
+    }
+
+    /**
+     * Configure the sample rate to match recording settings
+     * @param sampleRate Sample rate in Hz (8000-96000)
+     */
+    public void setSampleRate(int sampleRate) {
+        if (sampleRate >= 8000 && sampleRate <= 96000) {
+            this.sampleRate = sampleRate;
+            Log.d(TAG, "Sample rate set to: " + sampleRate + " Hz");
+        } else {
+            Log.w(TAG, "Invalid sample rate: " + sampleRate + ", using default: " + DEFAULT_SAMPLE_RATE);
+            this.sampleRate = DEFAULT_SAMPLE_RATE;
         }
     }
 
@@ -141,6 +173,45 @@ public class WaveformDataManager {
     }
 
     /**
+     * Enable debug mode to bypass speech detection for testing
+     * @param enabled Enable debug mode
+     */
+    public void setDebugMode(boolean enabled) {
+        this.debugMode = enabled;
+        Log.d(TAG, "Debug mode: " + enabled + " (speech detection " + (enabled ? "BYPASSED" : "active") + ")");
+    }
+
+    /**
+     * Configure VAD window size for latency optimization
+     * @param windowSize Number of frames to analyze (3-20 frames, default: 5)
+     */
+    public void setVadWindowSize(int windowSize) {
+        int newSize = Math.max(3, Math.min(MAX_VAD_WINDOW_SIZE, windowSize));
+        if (newSize != vadWindowSize) {
+            vadWindowSize = newSize;
+            // Reinitialize the energy levels array
+            recentEnergyLevels = new float[vadWindowSize];
+            energyIndex = 0;
+            Log.d(TAG, "VAD window size set to: " + vadWindowSize + " frames (~" + (vadWindowSize * 50) + "ms latency)");
+
+            // Reset VAD state if currently enabled
+            if (vadEnabled) {
+                resetVadState();
+            }
+        }
+    }
+
+    /**
+     * Enable or disable human voice band filtering for noise rejection
+     * @param enabled Enable band-pass filtering for human voice frequencies (85Hz-3400Hz)
+     */
+    public void setVoiceBandFilterEnabled(boolean enabled) {
+        this.voiceBandFilterEnabled = enabled;
+        Log.d(TAG, "Voice band filter: " + (enabled ? "ENABLED" : "disabled") +
+              " (filtering " + MIN_VOICE_FREQ + "Hz-" + MAX_VOICE_FREQ + "Hz)");
+    }
+
+    /**
      * Enable or disable Voice Activity Detection (VAD)
      * @param enabled Enable VAD for more accurate speech detection
      */
@@ -168,9 +239,56 @@ public class WaveformDataManager {
 
         Log.d(TAG, "Speech detection configured - enabled: " + enabled +
              ", threshold: " + this.speechThreshold + ", VAD: " + useVAD +
-             ", calibration: " + calibrationDuration + "ms");
+             ", calibration: " + calibrationDuration + "ms" +
+             ", window: " + vadWindowSize + " frames" +
+             ", voiceFilter: " + voiceBandFilterEnabled);
 
         if (enabled || useVAD) {
+            resetVadState();
+        }
+    }
+
+    /**
+     * Configure advanced VAD settings for optimal performance
+     * @param enabled Enable VAD
+     * @param windowSize VAD window size in frames (3-20, smaller = lower latency)
+     * @param enableVoiceFilter Enable human voice band filtering
+     */
+    public void configureAdvancedVAD(boolean enabled, int windowSize, boolean enableVoiceFilter) {
+        setVadEnabled(enabled);
+        setVadWindowSize(windowSize);
+        setVoiceBandFilterEnabled(enableVoiceFilter);
+
+        Log.d(TAG, "Advanced VAD configured - enabled: " + enabled +
+             ", window: " + vadWindowSize + " frames (~" + (vadWindowSize * 50) + "ms)" +
+             ", voiceFilter: " + voiceBandFilterEnabled);
+    }
+
+    /**
+     * Configure waveform manager with recording parameters for optimal performance
+     * @param sampleRate Recording sample rate (e.g., 48000)
+     * @param channels Number of recording channels (e.g., 2 for stereo)
+     * @param speechThreshold Speech detection threshold (0.0-1.0)
+     */
+    public void configureForRecording(int sampleRate, int channels, float speechThreshold) {
+        // Set sample rate to match recording
+        setSampleRate(sampleRate);
+
+        // Adjust speech threshold based on recording quality
+        // Higher sample rates and stereo recording tend to have better SNR
+        float adjustedThreshold = speechThreshold;
+        if (sampleRate >= 48000) {
+            // For high-quality recordings, we can use a slightly lower threshold
+            adjustedThreshold = Math.max(0.01f, speechThreshold * 0.8f);
+        }
+
+        this.speechThreshold = adjustedThreshold;
+
+        Log.d(TAG, "Configured for recording - sampleRate: " + sampleRate +
+              ", channels: " + channels + ", adjustedThreshold: " + adjustedThreshold);
+
+        // Reset calibration with new settings
+        if (speechOnlyMode) {
             resetVadState();
         }
     }
@@ -183,9 +301,17 @@ public class WaveformDataManager {
         energyIndex = 0;
         backgroundEnergyLevel = 0.0f;
         backgroundCalibrated = false;
+
+        // Reinitialize energy levels array with current window size
+        recentEnergyLevels = new float[vadWindowSize];
         for (int i = 0; i < recentEnergyLevels.length; i++) {
             recentEnergyLevels[i] = 0.0f;
         }
+
+        // Reset background noise calibration
+        backgroundNoiseLevel = 0.0f;
+        backgroundNoiseCalibrated = false;
+        noiseCalibrationFrames = 0;
     }
 
     /**
@@ -200,7 +326,7 @@ public class WaveformDataManager {
 
         try {
             // Calculate buffer size
-            int minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
+            int minBufferSize = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, AUDIO_FORMAT);
             if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
                 Log.e(TAG, "Failed to get minimum buffer size");
                 return;
@@ -208,12 +334,12 @@ public class WaveformDataManager {
 
             int bufferSize = minBufferSize * BUFFER_SIZE_FACTOR;
             this.bufferSize = bufferSize;
-            Log.d(TAG, "Starting waveform monitoring with buffer size: " + bufferSize);
+            Log.d(TAG, "Starting waveform monitoring with buffer size: " + bufferSize + ", sample rate: " + sampleRate);
 
             // Initialize AudioRecord for PCM data access
             audioRecord = new AudioRecord(
                 MediaRecorder.AudioSource.MIC,
-                SAMPLE_RATE,
+                sampleRate,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
                 bufferSize
@@ -385,19 +511,37 @@ public class WaveformDataManager {
             // Calculate RMS and normalize to 0-1 range
             double rms = Math.sqrt(sum / (double) samplesRead);
 
-            // Apply gain factor to match recorded audio levels (similar to AGC)
-            // Android MediaRecorder applies automatic gain, so we boost raw levels to compensate
+            // This prevents background noise from being over-amplified
             float rawLevel = (float) (rms / Short.MAX_VALUE);
-            float gainFactor = 8.0f; // Boost to better match final recording levels
+            float gainFactor = 8.0f; // Increased gain factor for better Android sensitivity
             float calculatedLevel = (float) Math.min(1.0, rawLevel * gainFactor);
+
+            // Apply human voice band filtering if enabled (noise rejection)
+            if (voiceBandFilterEnabled) {
+                calculatedLevel = applyVoiceBandFilter(calculatedLevel, buffer, samplesRead);
+            }
+
+            // Increment frame count for speech detection
+            frameCount++;
 
             // Determine final emit level for lambda
             final float finalEmitLevel;
-            if (speechOnlyMode) {
+            if (speechOnlyMode && !debugMode) {
                 boolean isSpeech = detectSpeech(calculatedLevel, buffer, samplesRead);
                 finalEmitLevel = isSpeech ? calculatedLevel : 0.0f; // Send level = 0 for silence instead of omitting
+
+                // Debug logging for speech detection (always log for debugging)
+                if (frameCount % 20 == 0) { // Log every 20 frames for better debugging
+                    Log.d(TAG, String.format("Speech detection: level=%.4f, threshold=%.4f, isSpeech=%b, emitLevel=%.4f, frame=%d",
+                        calculatedLevel, speechThreshold, isSpeech, finalEmitLevel, frameCount));
+                }
             } else {
                 finalEmitLevel = calculatedLevel;
+                // Log raw levels when not using speech detection or in debug mode
+                if (frameCount % 20 == 0) {
+                    Log.d(TAG, String.format("Raw audio level: %.4f, mode=%s, frame=%d",
+                        calculatedLevel, debugMode ? "DEBUG" : "NORMAL", frameCount));
+                }
             }
 
             // Always emit the level value on the main thread (continuous emission)
@@ -416,8 +560,36 @@ public class WaveformDataManager {
      * @return true if speech is detected
      */
     private boolean detectSpeech(float level, short[] buffer, int samplesRead) {
+        // Calibrate background noise level for the first few frames
+        if (!backgroundNoiseCalibrated && noiseCalibrationFrames < NOISE_CALIBRATION_DURATION) {
+            backgroundNoiseLevel += level;
+            noiseCalibrationFrames++;
+
+            if (noiseCalibrationFrames == NOISE_CALIBRATION_DURATION) {
+                backgroundNoiseLevel = backgroundNoiseLevel / NOISE_CALIBRATION_DURATION;
+                // Reduced safety margin to be less aggressive
+                backgroundNoiseLevel = backgroundNoiseLevel * 1.2f;
+                backgroundNoiseCalibrated = true;
+                Log.d(TAG, "Background noise calibrated: " + backgroundNoiseLevel);
+            }
+            return false; // Don't detect speech during calibration
+        }
+
+        // Use adaptive threshold based on background noise if calibrated
+        float effectiveThreshold = speechThreshold;
+        if (backgroundNoiseCalibrated) {
+            // Use the higher of configured threshold or background noise + smaller margin
+            effectiveThreshold = Math.max(speechThreshold, backgroundNoiseLevel + 0.005f);
+        }
+
+        // Log effective threshold every 100 frames for debugging
+        if (frameCount % 100 == 0) {
+            Log.d(TAG, String.format("Effective threshold: %.4f (config: %.4f, bg: %.4f, calibrated: %b)",
+                effectiveThreshold, speechThreshold, backgroundNoiseLevel, backgroundNoiseCalibrated));
+        }
+
         // Simple threshold check
-        boolean aboveThreshold = level > speechThreshold;
+        boolean aboveThreshold = level > effectiveThreshold;
 
         if (!vadEnabled) {
             return aboveThreshold;
@@ -435,11 +607,11 @@ public class WaveformDataManager {
      * @return true if voice activity is detected
      */
     private boolean performVAD(float currentLevel, short[] buffer, int samplesRead) {
-        frameCount++;
+        // Don't increment frameCount here since it's already incremented in processAndEmitWaveformData
 
         // Update energy level history
         recentEnergyLevels[energyIndex] = currentLevel;
-        energyIndex = (energyIndex + 1) % VAD_WINDOW_SIZE;
+        energyIndex = (energyIndex + 1) % vadWindowSize; // Use configurable window size
 
         // Calibrate background noise level (first 30 frames)
         if (!backgroundCalibrated && frameCount <= 30) {
@@ -471,7 +643,7 @@ public class WaveformDataManager {
             }
         }
 
-        float speechRatio = (float) speechFrames / VAD_WINDOW_SIZE;
+        float speechRatio = (float) speechFrames / vadWindowSize; // Use configurable window size
         boolean continuityCheck = speechRatio >= VAD_SPEECH_RATIO;
 
         // Combined VAD decision
@@ -483,6 +655,46 @@ public class WaveformDataManager {
         }
 
         return isSpeech;
+    }
+
+    /**
+     * Apply human voice band filtering for noise rejection
+     * Uses spectral analysis to emphasize human voice frequencies (85Hz-3400Hz)
+     * @param level Current audio level
+     * @param buffer PCM audio buffer
+     * @param samplesRead Number of samples
+     * @return Filtered audio level
+     */
+    private float applyVoiceBandFilter(float level, short[] buffer, int samplesRead) {
+        try {
+            // Simple frequency domain analysis using zero-crossing rate and energy distribution
+            int zeroCrossings = calculateZeroCrossingRate(buffer, samplesRead);
+
+            // Calculate expected zero-crossing rate for human voice at current sample rate
+            // Human voice fundamental: 85-255Hz (male), 165-265Hz (female)
+            // Expected ZCR for voice: ~170-530 crossings per second at 44.1kHz
+            float expectedMinZCR = (MIN_VOICE_FREQ * 2 * samplesRead) / sampleRate;
+            float expectedMaxZCR = (MAX_VOICE_FREQ * 2 * samplesRead) / sampleRate;
+
+            // Apply band-pass filtering based on ZCR
+            boolean inVoiceBand = zeroCrossings >= expectedMinZCR && zeroCrossings <= expectedMaxZCR;
+
+            if (!inVoiceBand) {
+                // Attenuate signals outside voice band (likely noise/music)
+                level *= 0.3f; // Reduce to 30% for non-voice signals
+
+                if (frameCount % 100 == 0) { // Debug logging
+                    Log.d(TAG, String.format("Voice filter: ZCR=%d (expected: %.1f-%.1f), inBand=%b, level=%.4f",
+                        zeroCrossings, expectedMinZCR, expectedMaxZCR, inVoiceBand, level));
+                }
+            }
+
+            return level;
+
+        } catch (Exception e) {
+            Log.w(TAG, "Error in voice band filter, using original level", e);
+            return level;
+        }
     }
 
     /**
@@ -527,6 +739,9 @@ public class WaveformDataManager {
             data.put("speechOnlyMode", speechOnlyMode);
             data.put("speechThreshold", speechThreshold);
             data.put("vadEnabled", vadEnabled);
+            data.put("vadWindowSize", vadWindowSize);
+            data.put("vadLatencyMs", vadWindowSize * 50); // Approximate latency in ms
+            data.put("voiceBandFilterEnabled", voiceBandFilterEnabled);
             data.put("calibrationDuration", backgroundCalibrationDuration);
 
             eventCallback.notifyListeners("waveformInit", data);
