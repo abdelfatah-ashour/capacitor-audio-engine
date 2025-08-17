@@ -49,6 +49,9 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 🎙️ **Microphone management** - Detect and switch between available microphones
 - 🔍 **Microphone status** - Check if microphone is busy/in use by other apps
 - 📊 **Real-time waveform data** - Get amplitude levels during recording for UI visualizations
+- ⚙️ **Enum-based configuration** - Type-safe recording options with quality presets
+- 🎚️ **Quality presets** - Low/Medium/High presets for common use cases
+- 🔧 **Custom settings** - Fine-grained control with sample rate, bitrate, and channel options
 
 ### 🎵 Audio Playback
 
@@ -68,9 +71,10 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 - 📡 **Real-time monitoring** - Track playback progress and status changes
 - 🌐 Cross-platform support (Web coming soon!)
 - 🎚️ Consistent audio quality:
-  - Sample Rate: 44.1kHz
-  - Channels: 1 (mono)
-  - Bitrate: 128kbps
+  - Default: Medium preset (22.05kHz, 64kbps, mono) - optimized for smaller files
+  - Low preset: 16kHz, 32kbps, mono - perfect for voice notes
+  - High preset: 44.1kHz, 128kbps, mono - excellent quality for music
+  - Custom values: Full control over sample rate, bitrate, and channels
 
 ## 📱 Platform Support
 
@@ -180,20 +184,88 @@ export interface AudioFileInfo {
 ```typescript
 export interface RecordingOptions {
   /**
-   * Audio sample rate (Hz). Default: 44100
+   * Audio sample rate (Hz). Default: AudioSampleRate.STANDARD_22K (optimized for smaller file sizes)
    */
-  sampleRate?: number;
+  sampleRate?: AudioSampleRate | number;
   /**
-   * Number of audio channels. Default: 1 (mono)
+   * Number of audio channels. Default: AudioChannels.MONO
    */
-  channels?: number;
+  channels?: AudioChannels | number;
   /**
-   * Audio bitrate (bps). Default: 128000
+   * Audio bitrate (bps). Default: AudioBitrate.MEDIUM (optimized for smaller file sizes)
    */
-  bitrate?: number;
+  bitrate?: AudioBitrate | number;
+  /**
+   * Audio quality preset. If specified, overrides individual sampleRate and bitrate settings.
+   * - AudioQuality.LOW: 16kHz, 32kbps - smallest files, suitable for voice notes
+   * - AudioQuality.MEDIUM: 22.05kHz, 64kbps - balanced quality/size (default)
+   * - AudioQuality.HIGH: 44.1kHz, 128kbps - higher quality, larger files
+   */
+  quality?: AudioQuality;
+  /**
+   * Maximum recording duration in seconds.
+   * When set, enables segment rolling mode:
+   * - Records in 30-second segments
+   * - Maintains rolling buffer of last 10 minutes (20 segments)
+   * - Automatically merges segments when recording stops
+   * If not set, uses linear recording mode.
+   */
+  maxDuration?: number;
   /**
    * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
+   *
+   * Enhanced Recording Features:
+   * - Automatic segment rolling (30-second segments) for improved reliability
+   * - Rolling window retention (10 minutes max) for efficient memory usage
+   * - Automatic segment merging when recording stops
+   * - Better handling of long recording sessions and interruptions
    */
+}
+```
+
+#### Recording Configuration Enums
+
+```typescript
+export enum AudioSampleRate {
+  /** Low quality - 8kHz for voice recording */
+  VOICE_8K = 8000,
+  /** Voice quality - 16kHz for speech */
+  VOICE_16K = 16000,
+  /** Standard quality - 22.05kHz (default optimized) */
+  STANDARD_22K = 22050,
+  /** CD quality - 44.1kHz */
+  CD_44K = 44100,
+  /** High quality - 48kHz */
+  HIGH_48K = 48000,
+}
+
+export enum AudioChannels {
+  /** Mono - single channel */
+  MONO = 1,
+  /** Stereo - two channels */
+  STEREO = 2,
+}
+
+export enum AudioBitrate {
+  /** Very low bitrate - 16kbps for voice notes */
+  VERY_LOW = 16000,
+  /** Low bitrate - 32kbps for voice recording */
+  LOW = 32000,
+  /** Medium bitrate - 64kbps (default optimized) */
+  MEDIUM = 64000,
+  /** High bitrate - 128kbps for music */
+  HIGH = 128000,
+  /** Very high bitrate - 256kbps for high quality */
+  VERY_HIGH = 256000,
+}
+
+export enum AudioQuality {
+  /** Low quality: 16kHz, 32kbps - smallest files, suitable for voice notes */
+  LOW = 'low',
+  /** Medium quality: 22.05kHz, 64kbps - balanced quality/size (default) */
+  MEDIUM = 'medium',
+  /** High quality: 44.1kHz, 128kbps - higher quality, larger files */
+  HIGH = 'high',
 }
 ```
 
@@ -831,6 +903,7 @@ Here's a complete example of how to use the plugin with microphone management:
 
 ```typescript
 import { CapacitorAudioEngine } from 'capacitor-audio-engine';
+import { AudioSampleRate, AudioChannels, AudioBitrate, AudioQuality } from 'capacitor-audio-engine';
 
 class AudioRecorder {
   private isRecording = false;
@@ -886,11 +959,23 @@ class AudioRecorder {
         });
       }
 
-      // Start recording
+      // Start recording with enum-based configuration (recommended)
       await CapacitorAudioEngine.startRecording({
-        sampleRate: 44100,
-        channels: 1,
-        bitrate: 128000,
+        sampleRate: AudioSampleRate.CD_44K,
+        channels: AudioChannels.MONO,
+        bitrate: AudioBitrate.HIGH,
+      });
+
+      // Or use quality presets for quick configuration
+      await CapacitorAudioEngine.startRecording({
+        quality: AudioQuality.HIGH, // Automatically sets 44.1kHz, 128kbps
+      });
+
+      // Or use custom values (still supported)
+      await CapacitorAudioEngine.startRecording({
+        sampleRate: 32000, // Custom sample rate
+        channels: 1, // Custom channel count
+        bitrate: 96000, // Custom bitrate
       });
 
       this.isRecording = true;
@@ -1042,6 +1127,107 @@ class AudioRecorder {
 // Usage
 const recorder = new AudioRecorder();
 await recorder.initialize();
+```
+
+### 📝 Recording Configuration Options
+
+The plugin now supports enum-based configuration options for better type safety and developer experience. Here are all the ways you can configure recording options:
+
+#### Using Quality Presets (Easiest)
+
+Quality presets provide pre-configured settings optimized for common use cases:
+
+```typescript
+// Low quality - Perfect for voice notes (smallest file size)
+await CapacitorAudioEngine.startRecording({
+  quality: AudioQuality.LOW, // 16kHz, 32kbps, mono
+});
+
+// Medium quality - Balanced quality and file size (default)
+await CapacitorAudioEngine.startRecording({
+  quality: AudioQuality.MEDIUM, // 22.05kHz, 64kbps, mono
+});
+
+// High quality - Best quality for music recording
+await CapacitorAudioEngine.startRecording({
+  quality: AudioQuality.HIGH, // 44.1kHz, 128kbps, mono
+});
+```
+
+#### Using Enums (Recommended for Custom Settings)
+
+For more control while maintaining type safety:
+
+```typescript
+await CapacitorAudioEngine.startRecording({
+  sampleRate: AudioSampleRate.CD_44K, // 44100 Hz
+  channels: AudioChannels.STEREO, // 2 channels
+  bitrate: AudioBitrate.VERY_HIGH, // 256000 bps
+});
+
+// Mix and match different quality levels
+await CapacitorAudioEngine.startRecording({
+  sampleRate: AudioSampleRate.VOICE_16K, // 16000 Hz - good for voice
+  channels: AudioChannels.MONO, // 1 channel - saves space
+  bitrate: AudioBitrate.MEDIUM, // 64000 bps - balanced
+});
+```
+
+#### Available Enum Values
+
+**Sample Rates (`AudioSampleRate`):**
+
+- `VOICE_8K` = 8000 Hz - Basic voice recording
+- `VOICE_16K` = 16000 Hz - Good voice quality
+- `STANDARD_22K` = 22050 Hz - Standard quality (default)
+- `CD_44K` = 44100 Hz - CD quality
+- `HIGH_48K` = 48000 Hz - High quality
+
+**Channels (`AudioChannels`):**
+
+- `MONO` = 1 - Single channel (smaller files)
+- `STEREO` = 2 - Two channels (stereo recording)
+
+**Bitrates (`AudioBitrate`):**
+
+- `VERY_LOW` = 16000 bps - Minimal quality
+- `LOW` = 32000 bps - Voice recording
+- `MEDIUM` = 64000 bps - Balanced (default)
+- `HIGH` = 128000 bps - Good quality
+- `VERY_HIGH` = 256000 bps - Excellent quality
+
+#### Using Custom Values (Still Supported)
+
+You can still use raw numeric values for complete customization:
+
+```typescript
+await CapacitorAudioEngine.startRecording({
+  sampleRate: 32000, // Custom sample rate
+  channels: 1, // Custom channel count
+  bitrate: 96000, // Custom bitrate
+  maxDuration: 300, // 5 minutes max
+});
+```
+
+#### Advanced Features
+
+**Segment Rolling Mode:**
+
+```typescript
+await CapacitorAudioEngine.startRecording({
+  quality: AudioQuality.MEDIUM,
+  maxDuration: 600, // Enable segment rolling for long recordings
+});
+```
+
+When `maxDuration` is set:
+
+- Records in 30-second segments
+- Maintains a rolling buffer of the last 10 minutes
+- Automatically merges segments when recording stops
+- Improves reliability for long recording sessions
+
+```
 await recorder.startRecording();
 // ... record audio ...
 const audioFile = await recorder.stopRecording();
@@ -1097,6 +1283,11 @@ const audioFile = await recorder.stopRecording();
 - Format: M4A container with AAC codec (MPEG-4/AAC, always .m4a)
 - MIME Type: 'audio/m4a' or 'audio/m4a'
 - Audio Source: MIC
+- **Default Quality**: Medium preset (22.05kHz, 64kbps, mono) - optimized for smaller file sizes
+- **Quality Presets**:
+  - Low: 16kHz, 32kbps, mono (voice notes)
+  - Medium: 22.05kHz, 64kbps, mono (balanced - default)
+  - High: 44.1kHz, 128kbps, mono (high quality)
 - Storage: App's external files directory under "Recordings" folder
 - Filename Format: "recording\_[timestamp].m4a"
 - **Background Recording**: Full support via foreground service with microphone type
@@ -1114,7 +1305,11 @@ const audioFile = await recorder.stopRecording();
 - Uses AVAudioRecorder
 - Format: M4A container with AAC codec (MPEG-4/AAC, always .m4a)
 - MIME Type: 'audio/m4a'
-- Quality: High
+- **Default Quality**: Medium preset (22.05kHz, 64kbps, mono) - optimized for smaller file sizes
+- **Quality Presets**:
+  - Low: 16kHz, 32kbps, mono (voice notes)
+  - Medium: 22.05kHz, 64kbps, mono (balanced - default)
+  - High: 44.1kHz, 128kbps, mono (high quality)
 - Uses AVAssetExportSession for audio trimming
 - **Background Recording**: Supports continuous recording when app is backgrounded (requires 'audio' background mode)
 - **Required Permission**: NSMicrophoneUsageDescription in Info.plist
