@@ -230,6 +230,30 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         int channels = getIntegerSafely(call, "channels", AudioEngineConfig.Recording.DEFAULT_CHANNELS);
         int bitrate = getIntegerSafely(call, "bitrate", AudioEngineConfig.Recording.DEFAULT_BITRATE);
 
+        // Apply quality preset if specified (overrides individual settings)
+        if (quality != null) {
+            switch (quality.toLowerCase()) {
+                case "low":
+                    sampleRate = 16000;  // AudioSampleRate.VOICE_16K
+                    bitrate = 32000;     // AudioBitrate.LOW
+                    Log.d(TAG, "Applied LOW quality preset: 16kHz, 32kbps");
+                    break;
+                case "medium":
+                    sampleRate = 22050;  // AudioSampleRate.STANDARD_22K
+                    bitrate = 64000;     // AudioBitrate.MEDIUM
+                    Log.d(TAG, "Applied MEDIUM quality preset: 22.05kHz, 64kbps");
+                    break;
+                case "high":
+                    sampleRate = 44100;  // AudioSampleRate.CD_44K
+                    bitrate = 128000;    // AudioBitrate.HIGH
+                    Log.d(TAG, "Applied HIGH quality preset: 44.1kHz, 128kbps");
+                    break;
+                default:
+                    Log.w(TAG, "Unknown quality preset: " + quality + ", using individual settings");
+                    break;
+            }
+        }
+
         // Create recording configuration
         recordingConfig = new AudioRecordingConfig.Builder()
             .sampleRate(sampleRate)

@@ -240,18 +240,22 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         var bitrate = call.getInt("bitrate") ?? AudioEngineConstants.defaultBitrate
 
         if let quality = call.getString("quality") {
-            switch quality {
+            switch quality.lowercased() {
             case "low":
-                sampleRate = Int(AudioEngineConstants.QualityPresets.Low.sampleRate)
-                bitrate = AudioEngineConstants.QualityPresets.Low.bitrate
+                sampleRate = 16000   // AudioSampleRate.VOICE_16K
+                bitrate = 32000      // AudioBitrate.LOW
+                log("Applied LOW quality preset: 16kHz, 32kbps")
             case "medium":
-                sampleRate = Int(AudioEngineConstants.QualityPresets.Medium.sampleRate)
-                bitrate = AudioEngineConstants.QualityPresets.Medium.bitrate
+                sampleRate = 22050   // AudioSampleRate.STANDARD_22K
+                bitrate = 64000      // AudioBitrate.MEDIUM
+                log("Applied MEDIUM quality preset: 22.05kHz, 64kbps")
             case "high":
-                sampleRate = Int(AudioEngineConstants.QualityPresets.High.sampleRate)
-                bitrate = AudioEngineConstants.QualityPresets.High.bitrate
+                sampleRate = 44100   // AudioSampleRate.CD_44K
+                bitrate = 128000     // AudioBitrate.HIGH
+                log("Applied HIGH quality preset: 44.1kHz, 128kbps")
             default:
                 // Keep user-specified or default values
+                log("Unknown quality preset: \(quality), using individual settings")
                 break
             }
         }

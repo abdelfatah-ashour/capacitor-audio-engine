@@ -116,26 +116,69 @@ export interface PlaybackStatusChangedData {
   isPlaying: boolean;
 }
 
+// Recording Configuration Enums
+export enum AudioSampleRate {
+  /** Low quality - 8kHz for voice recording */
+  VOICE_8K = 8000,
+  /** Voice quality - 16kHz for speech */
+  VOICE_16K = 16000,
+  /** Standard quality - 22.05kHz (default optimized) */
+  STANDARD_22K = 22050,
+  /** CD quality - 44.1kHz */
+  CD_44K = 44100,
+  /** High quality - 48kHz */
+  HIGH_48K = 48000,
+}
+
+export enum AudioChannels {
+  /** Mono - single channel */
+  MONO = 1,
+  /** Stereo - two channels */
+  STEREO = 2,
+}
+
+export enum AudioBitrate {
+  /** Very low bitrate - 16kbps for voice notes */
+  VERY_LOW = 16000,
+  /** Low bitrate - 32kbps for voice recording */
+  LOW = 32000,
+  /** Medium bitrate - 64kbps (default optimized) */
+  MEDIUM = 64000,
+  /** High bitrate - 128kbps for music */
+  HIGH = 128000,
+  /** Very high bitrate - 256kbps for high quality */
+  VERY_HIGH = 256000,
+}
+
+export enum AudioQuality {
+  /** Low quality: 16kHz, 32kbps - smallest files, suitable for voice notes */
+  LOW = 'low',
+  /** Medium quality: 22.05kHz, 64kbps - balanced quality/size (default) */
+  MEDIUM = 'medium',
+  /** High quality: 44.1kHz, 128kbps - higher quality, larger files */
+  HIGH = 'high',
+}
+
 export interface RecordingOptions {
   /**
-   * Audio sample rate (Hz). Default: 22050 (optimized for smaller file sizes)
+   * Audio sample rate (Hz). Default: AudioSampleRate.STANDARD_22K (optimized for smaller file sizes)
    */
-  sampleRate?: number;
+  sampleRate?: AudioSampleRate | number;
   /**
-   * Number of audio channels. Default: 1 (mono)
+   * Number of audio channels. Default: AudioChannels.MONO
    */
-  channels?: number;
+  channels?: AudioChannels | number;
   /**
-   * Audio bitrate (bps). Default: 64000 (optimized for smaller file sizes)
+   * Audio bitrate (bps). Default: AudioBitrate.MEDIUM (optimized for smaller file sizes)
    */
-  bitrate?: number;
+  bitrate?: AudioBitrate | number;
   /**
    * Audio quality preset. If specified, overrides individual sampleRate and bitrate settings.
-   * - 'low': 16kHz, 32kbps - smallest files, suitable for voice notes
-   * - 'medium': 22.05kHz, 64kbps - balanced quality/size (default)
-   * - 'high': 44.1kHz, 128kbps - higher quality, larger files
+   * - AudioQuality.LOW: 16kHz, 32kbps - smallest files, suitable for voice notes
+   * - AudioQuality.MEDIUM: 22.05kHz, 64kbps - balanced quality/size (default)
+   * - AudioQuality.HIGH: 44.1kHz, 128kbps - higher quality, larger files
    */
-  quality?: 'low' | 'medium' | 'high';
+  quality?: AudioQuality;
   /**
    * Maximum recording duration in seconds.
    * When set, enables segment rolling mode:
