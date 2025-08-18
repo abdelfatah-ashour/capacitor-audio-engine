@@ -20,8 +20,8 @@ class WaveformDataManager {
 
     // MARK: - Configuration Constants
 
-    private static let defaultBars = 32
-    private static let emissionIntervalMs: TimeInterval = 0.05 // 20fps for continuous emission (50ms as requested)
+    private static let defaultBars = 128 // Default is 128 bars for higher resolution
+    private static let debounceTime: TimeInterval = 1.0 // Default debounce time of 1 second
     private static let sampleRate: Double = 44100.0
     private static let bufferSize: AVAudioFrameCount = 1024
 
@@ -46,7 +46,7 @@ class WaveformDataManager {
     private var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
     private var numberOfBars: Int = defaultBars
-    private var emissionIntervalMs: TimeInterval = 0.05 // Configurable emission interval, initialized with default value
+    private var debounceTime: TimeInterval = debounceTime // Configurable debounce time, initialized with default value
     private var isActive: Bool = false
     private var isRecording: Bool = false
     private var lastEmissionTime: TimeInterval = 0
@@ -137,21 +137,21 @@ class WaveformDataManager {
     }
 
     /**
-     * Configure waveform settings including emission interval
-     * - Parameter debounceInSeconds: Emission interval in seconds (0.01 to 3600.0 seconds)
+     * Configure waveform settings including debounce time
+     * - Parameter debounceInSeconds: Debounce time in seconds (0.01 to 3600.0 seconds)
      * - Parameter bars: Number of bars in the waveform (1 to 256, optional, default: current value)
      */
     func configureWaveform(debounceInSeconds: Float, bars: Int = -1) {
         log("configureWaveform called with debounceInSeconds: \(debounceInSeconds), bars: \(bars)")
-        log("Current emissionIntervalMs before update: \(emissionIntervalMs)")
+        log("Current debounceTime before update: \(debounceTime)")
 
-        // Validate and set emission interval
+        // Validate and set debounce time
         if debounceInSeconds >= 0.01 && debounceInSeconds <= 3600.0 {
-            emissionIntervalMs = TimeInterval(debounceInSeconds)
-            log("Emission interval set to: \(debounceInSeconds) seconds (\(emissionIntervalMs * 1000)ms)")
-            log("Updated emissionIntervalMs: \(emissionIntervalMs)")
+            debounceTime = TimeInterval(debounceInSeconds)
+            log("Debounce time set to: \(debounceInSeconds) seconds (\(debounceTime * 1000)ms)")
+            log("Updated debounceTime: \(debounceTime)")
         } else {
-            log("Invalid emission interval: \(debounceInSeconds) seconds, keeping current: \(emissionIntervalMs) seconds")
+            log("Invalid debounce time: \(debounceInSeconds) seconds, keeping current: \(debounceTime) seconds")
         }
 
         // Validate and set number of bars if provided
@@ -161,8 +161,8 @@ class WaveformDataManager {
     }
 
     /**
-     * Configure waveform settings with emission interval only
-     * - Parameter debounceInSeconds: Emission interval in seconds (0.01 to 3600.0 seconds)
+     * Configure waveform settings with debounce time only
+     * - Parameter debounceInSeconds: Debounce time in seconds (0.01 to 3600.0 seconds)
      */
     func configureWaveform(debounceInSeconds: Float) {
         configureWaveform(debounceInSeconds: debounceInSeconds, bars: -1) // -1 means don't change bars
@@ -246,7 +246,7 @@ class WaveformDataManager {
      * - Parameter useVAD: Enable Voice Activity Detection for more accurate speech detection
      * - Parameter calibrationDuration: Background noise calibration duration in milliseconds
      */
-    func configureSpeechDetection(enabled: Bool, threshold: Float, useVAD: Bool, calibrationDuration: Int) {
+    func configureSpeechDetection(enabled: Bool, threshold: Float, useVAD: Bool = false, calibrationDuration: Int = 1000) {
         speechOnlyMode = enabled
         speechThreshold = max(0.0, min(1.0, threshold))
         vadEnabled = useVAD
@@ -275,7 +275,7 @@ class WaveformDataManager {
      * - Parameter windowSize: VAD window size in frames (3-20, smaller = lower latency)
      * - Parameter enableVoiceFilter: Enable human voice band filtering
      */
-    func configureAdvancedVAD(enabled: Bool, windowSize: Int, enableVoiceFilter: Bool) {
+    func configureAdvancedVAD(enabled: Bool = false, windowSize: Int = 5, enableVoiceFilter: Bool = true) {
         log("Configuring Advanced VAD - enabled: \(enabled), windowSize: \(windowSize), voiceFilter: \(enableVoiceFilter)")
 
         // Update configuration without triggering excessive VAD resets
@@ -468,7 +468,7 @@ class WaveformDataManager {
             isRecording = true
             lastEmissionTime = 0
 
-            log("Waveform monitoring started with emissionIntervalMs: \(emissionIntervalMs) seconds (\(emissionIntervalMs * 1000)ms)")
+            log("Waveform monitoring started with debounceTime: \(debounceTime) seconds (\(debounceTime * 1000)ms)")
 
             // Emit waveform init event
             emitWaveformInit()
@@ -526,10 +526,10 @@ class WaveformDataManager {
         // Debug logging every 100 calls to avoid spam
         debugFrameCount += 1
         if debugFrameCount % 100 == 0 {
-            log("processAudioBuffer: currentTime=\(currentTime), lastEmissionTime=\(lastEmissionTime), timeSinceLastEmission=\(timeSinceLastEmission), emissionIntervalMs=\(emissionIntervalMs), shouldEmit=\(timeSinceLastEmission >= emissionIntervalMs)")
+            log("processAudioBuffer: currentTime=\(currentTime), lastEmissionTime=\(lastEmissionTime), timeSinceLastEmission=\(timeSinceLastEmission), debounceTime=\(debounceTime), shouldEmit=\(timeSinceLastEmission >= debounceTime)")
         }
 
-        guard timeSinceLastEmission >= emissionIntervalMs else { return }
+        guard timeSinceLastEmission >= debounceTime else { return }
 
         lastEmissionTime = currentTime
 
@@ -754,7 +754,7 @@ class WaveformDataManager {
 
         // Calculate calibration frames based on configurable duration
         // At current emission interval, calculate how many frames needed for calibration duration
-        let intervalMs = Int(emissionIntervalMs * 1000)
+        let intervalMs = Int(debounceTime * 1000)
         let calibrationFrames = max(2, backgroundCalibrationDuration / intervalMs) // Minimum 2 frames
 
         // Calibrate background noise level using configurable duration
@@ -807,7 +807,7 @@ class WaveformDataManager {
         energyIndex = (energyIndex + 1) % vadWindowSize
 
         // Calculate calibration frames based on configurable duration
-        let intervalMs = Int(emissionIntervalMs * 1000)
+        let intervalMs = Int(debounceTime * 1000)
         let calibrationFrames = max(2, backgroundCalibrationDuration / intervalMs) // Minimum 2 frames
 
         // Calibrate background noise level using configurable duration

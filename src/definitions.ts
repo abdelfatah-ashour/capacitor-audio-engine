@@ -260,7 +260,7 @@ export enum WaveformBarsCount {
   BARS_256 = 256,
 }
 
-export enum WaveformEmissionInterval {
+export enum WaveformDebounceTime {
   /** Real-time visualization (20ms) */
   REALTIME = 0.02,
   /** Very fast updates (50ms) */
@@ -271,7 +271,7 @@ export enum WaveformEmissionInterval {
   MEDIUM = 0.25,
   /** Slow updates (500ms) */
   SLOW = 0.5,
-  /** Very slow updates (1000ms) */
+  /** Very slow updates (1000ms) - Default */
   VERY_SLOW = 1.0,
 }
 
@@ -320,10 +320,10 @@ export enum CalibrationDuration {
  * Unified waveform configuration options combining all waveform features
  */
 export interface WaveformConfiguration {
-  /** Number of bars in the waveform visualization */
+  /** Number of bars in the waveform visualization (default: 128) */
   numberOfBars?: WaveformBarsCount | number;
-  /** Emission interval for waveform data */
-  emissionInterval?: WaveformEmissionInterval | number;
+  /** Debounce time in seconds between waveform data emissions (default: 1.0) */
+  debounceTime?: WaveformDebounceTime | number;
 
   /** Speech detection configuration */
   speechDetection?: {
@@ -353,7 +353,7 @@ export interface WaveformConfigurationResult {
   success: boolean;
   configuration: {
     numberOfBars: number;
-    emissionIntervalMs: number;
+    debounceTimeMs: number;
     speechDetection: {
       enabled: boolean;
       threshold: number;
@@ -372,13 +372,13 @@ export interface WaveformConfigurationResult {
 /** @deprecated Use WaveformConfiguration instead */
 export interface WaveformOptions {
   numberOfBars?: number;
-  debounceInSeconds?: number;
+  debounceInSeconds?: number; // Maintained for backward compatibility
 }
 
 /** @deprecated Use WaveformConfiguration instead */
 export interface WaveformConfigurationOptions {
   numberOfBars?: number;
-  debounceInSeconds?: number;
+  debounceInSeconds?: number; // Maintained for backward compatibility
 }
 
 /** @deprecated Use WaveformConfiguration instead */
@@ -422,7 +422,7 @@ export interface AdvancedVADResult {
 export interface ConfigureWaveformResult {
   success: boolean;
   numberOfBars: number;
-  debounceInSeconds: number;
+  debounceInSeconds: number; // Maintained for backward compatibility
 }
 
 export interface PreloadTracksOptions {
@@ -687,13 +687,13 @@ export interface CapacitorAudioEnginePlugin {
    * // Basic waveform configuration
    * await CapacitorAudioEngine.configureWaveform({
    *   numberOfBars: WaveformBarsCount.BARS_64,
-   *   emissionInterval: WaveformEmissionInterval.FAST
+   *   debounceTime: WaveformDebounceTime.FAST
    * });
    *
    * // Advanced configuration with speech detection and VAD
    * await CapacitorAudioEngine.configureWaveform({
    *   numberOfBars: WaveformBarsCount.BARS_32,
-   *   emissionInterval: WaveformEmissionInterval.REALTIME,
+   *   debounceTime: WaveformDebounceTime.REALTIME,
    *   speechDetection: {
    *     enabled: true,
    *     threshold: SpeechThreshold.NORMAL,

@@ -1055,17 +1055,6 @@
 
                   <ion-item>
                     <ion-label>Emission Interval: {{ waveformIntervalSeconds() }}s</ion-label>
-                    <ion-select
-                      [value]="waveformIntervalSeconds()"
-                      (ionChange)="updateWaveformInterval($event.detail.value)"
-                      interface="popover"
-                    >
-                      @for (option of waveformIntervalOptions; track option) {
-                        <ion-select-option [value]="option.value">{{
-                          option.label
-                        }}</ion-select-option>
-                      }
-                    </ion-select>
                   </ion-item>
 
                   <ion-button expand="block" fill="outline" (click)="resetWaveformLevels()">

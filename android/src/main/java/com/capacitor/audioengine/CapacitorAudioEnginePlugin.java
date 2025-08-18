@@ -686,12 +686,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
                 // Configure speech detection if provided
                 if (speechDetection != null) {
+                    // Explicitly use the boolean/int version to avoid ambiguity
                     waveformDataManager.configureSpeechDetection(speechEnabled, speechThreshold, vadEnabled, calibrationDuration);
                 }
 
                 // Configure VAD if provided
                 if (vad != null) {
-                    waveformDataManager.configureAdvancedVAD(vadEnabled, vadWindowSize, enableVoiceFilter);
+                    // Explicitly use the wrapper types version to avoid ambiguity
+                    Boolean vadEnabledObj = Boolean.valueOf(vadEnabled);
+                    Integer vadWindowSizeObj = Integer.valueOf(vadWindowSize);
+                    Boolean enableVoiceFilterObj = Boolean.valueOf(enableVoiceFilter);
+                    waveformDataManager.configureAdvancedVAD(vadEnabledObj, vadWindowSizeObj, enableVoiceFilterObj);
                 }
 
                 Log.d(TAG, "Unified waveform configured - bars: " + numberOfBars +
@@ -744,7 +749,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
             if (waveformDataManager != null) {
                 assert threshold != null;
-                waveformDataManager.configureSpeechDetection(Boolean.TRUE.equals(enabled), threshold.floatValue(), Boolean.TRUE.equals(useVAD), calibrationDuration);
+                // Explicitly use the Boolean/Integer version to resolve ambiguity
+                waveformDataManager.configureSpeechDetection(Boolean.TRUE.equals(enabled), threshold.floatValue(), useVAD, calibrationDuration);
 
                 Log.d(TAG, "Speech detection configured - enabled: " + enabled +
                      ", threshold: " + threshold + ", VAD: " + useVAD +
@@ -778,7 +784,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
             if (waveformDataManager != null) {
                 // Configure advanced VAD settings
-                waveformDataManager.configureAdvancedVAD(Boolean.TRUE.equals(enabled), windowSize, Boolean.TRUE.equals(enableVoiceFilter));
+                waveformDataManager.configureAdvancedVAD(enabled, windowSize, enableVoiceFilter);
 
                 int latencyMs = windowSize * 50; // Approximate latency
                 Log.d(TAG, "Advanced VAD configured - enabled: " + enabled +

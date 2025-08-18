@@ -235,18 +235,18 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     );
 
     // Extract legacy parameters for backward compatibility
-    const numberOfBars = options?.numberOfBars || 32;
-    const emissionInterval = options?.emissionInterval || 1.0;
+    const numberOfBars = options?.numberOfBars || 128;
+    const debounceTime = options?.debounceTime || 1.0;
 
-    // Convert emission interval to milliseconds
-    const emissionIntervalMs = typeof emissionInterval === 'number' ? emissionInterval * 1000 : emissionInterval;
+    // Convert debounce time to milliseconds
+    const debounceTimeMs = typeof debounceTime === 'number' ? debounceTime * 1000 : debounceTime;
 
     // Build unified response structure
     return {
       success: false,
       configuration: {
-        numberOfBars: typeof numberOfBars === 'number' ? numberOfBars : 32,
-        emissionIntervalMs: typeof emissionIntervalMs === 'number' ? emissionIntervalMs : 1000,
+        numberOfBars: typeof numberOfBars === 'number' ? numberOfBars : 128,
+        debounceTimeMs: typeof debounceTimeMs === 'number' ? debounceTimeMs : 1000,
         speechDetection: {
           enabled: options?.speechDetection?.enabled || false,
           threshold: typeof options?.speechDetection?.threshold === 'number' ? options.speechDetection.threshold : 0.02,

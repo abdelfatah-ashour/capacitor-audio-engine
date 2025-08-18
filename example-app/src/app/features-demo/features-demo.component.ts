@@ -99,13 +99,13 @@ const WaveformBarsCount = {
   BARS_256: 256,
 } as const;
 
-const WaveformEmissionInterval = {
+const WaveformDebounceTime = {
   REALTIME: 0.02, // Real-time visualization (20ms)
   VERY_FAST: 0.05, // Very fast updates (50ms)
   FAST: 0.1, // Fast updates (100ms)
   MEDIUM: 0.25, // Medium updates (250ms)
   SLOW: 0.5, // Slow updates (500ms)
-  VERY_SLOW: 1.0, // Very slow updates (1000ms)
+  VERY_SLOW: 1.0, // Very slow updates (1000ms) - Default
 } as const;
 
 const SpeechThreshold = {
@@ -238,14 +238,14 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   // Waveform data signals - growing waveform history with enum support
   protected readonly waveformHistory = signal<number[]>([]);
-  protected readonly waveformBarsCount = signal(WaveformBarsCount.BARS_32);
-  protected readonly waveformEmissionInterval = signal(WaveformEmissionInterval.VERY_SLOW);
+  protected readonly waveformBarsCount = signal(WaveformBarsCount.BARS_128);
+  protected readonly waveformDebounceTime = signal(WaveformDebounceTime.VERY_SLOW);
   protected readonly waveformEnabled = signal(true);
   protected readonly maxWaveformLevel = signal(0);
 
   // Legacy support for existing controls
   protected readonly waveformBars = computed(() => this.waveformBarsCount());
-  protected readonly waveformIntervalSeconds = computed(() => this.waveformEmissionInterval());
+  protected readonly waveformIntervalSeconds = computed(() => this.waveformDebounceTime());
 
   // Speech detection configuration signals with enum support
   protected readonly speechDetectionEnabled = signal(false);
@@ -266,19 +266,19 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Configuration options for dropdowns
   protected readonly waveformBarsOptions = [
     { value: WaveformBarsCount.BARS_16, label: '16 Bars' },
-    { value: WaveformBarsCount.BARS_32, label: '32 Bars (Default)' },
+    { value: WaveformBarsCount.BARS_32, label: '32 Bars' },
     { value: WaveformBarsCount.BARS_64, label: '64 Bars' },
-    { value: WaveformBarsCount.BARS_128, label: '128 Bars' },
+    { value: WaveformBarsCount.BARS_128, label: '128 Bars (Default)' },
     { value: WaveformBarsCount.BARS_256, label: '256 Bars' },
   ];
 
-  protected readonly emissionIntervalOptions = [
-    { value: WaveformEmissionInterval.REALTIME, label: 'Real-time (20ms)' },
-    { value: WaveformEmissionInterval.VERY_FAST, label: 'Very Fast (50ms)' },
-    { value: WaveformEmissionInterval.FAST, label: 'Fast (100ms)' },
-    { value: WaveformEmissionInterval.MEDIUM, label: 'Medium (250ms)' },
-    { value: WaveformEmissionInterval.SLOW, label: 'Slow (500ms)' },
-    { value: WaveformEmissionInterval.VERY_SLOW, label: 'Very Slow (1000ms)' },
+  protected readonly debounceTimeOptions = [
+    { value: WaveformDebounceTime.REALTIME, label: 'Real-time (20ms)' },
+    { value: WaveformDebounceTime.VERY_FAST, label: 'Very Fast (50ms)' },
+    { value: WaveformDebounceTime.FAST, label: 'Fast (100ms)' },
+    { value: WaveformDebounceTime.MEDIUM, label: 'Medium (250ms)' },
+    { value: WaveformDebounceTime.SLOW, label: 'Slow (500ms)' },
+    { value: WaveformDebounceTime.VERY_SLOW, label: 'Very Slow (1000ms) - Default' },
   ];
 
   protected readonly speechThresholdOptions = [
@@ -405,7 +405,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     { value: 600, label: '10m' },
   ];
 
-  protected readonly waveformIntervalOptions = [
+  protected readonly waveformDebounceOptions = [
     { value: 0.05, label: '50ms (20fps - Real-time)' },
     { value: 0.1, label: '100ms (10fps - Smooth)' },
     { value: 0.2, label: '200ms (5fps - Responsive)' },
@@ -1322,7 +1322,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       const configuration: WaveformConfiguration = {
         numberOfBars: this.waveformBarsCount(),
-        emissionInterval: this.waveformEmissionInterval(),
+        debounceTime: this.waveformDebounceTime(),
       };
 
       // Add speech detection configuration if enabled
@@ -1340,7 +1340,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
           enabled: true,
           windowSize: this.vadWindowSize(),
           enableVoiceFilter: this.voiceBandFilterEnabled(),
-          debugMode: this.vadDebugMode(),
         };
       }
 
@@ -1348,7 +1347,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       const config = result.configuration;
 
       await this.showToast(
-        `Unified waveform configured: ${config.numberOfBars} bars, ${config.emissionIntervalMs}ms interval, Speech: ${config.speechDetection.enabled}, VAD: ${config.vad.enabled}`,
+        `Unified waveform configured: ${config.numberOfBars} bars, ${config.debounceTimeMs}ms debounce, Speech: ${config.speechDetection.enabled}, VAD: ${config.vad.enabled}`,
         'success'
       );
     } catch (error: any) {
@@ -1368,8 +1367,8 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     await this.configureUnifiedWaveform();
   }
 
-  async updateWaveformInterval(debounceInSeconds: number): Promise<void> {
-    this.waveformEmissionInterval.set(debounceInSeconds as any);
+  async updateWaveformDebounceTime(debounceInSeconds: number): Promise<void> {
+    this.waveformDebounceTime.set(debounceInSeconds as any);
     await this.configureUnifiedWaveform();
   }
 

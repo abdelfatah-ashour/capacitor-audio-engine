@@ -25,8 +25,8 @@ public class WaveformDataManager {
     private static final String TAG = "WaveformDataManager";
 
     // Configuration constants
-    private static final int DEFAULT_BARS = 32;
-    private static final int EMISSION_INTERVAL_MS = 50; // 20fps for continuous emission (as requested)
+    private static final int DEFAULT_BARS = 128; // Default is 128 bars for higher resolution
+    private static final int DEBOUNCE_TIME_MS = 1000; // Default debounce time of 1 second
     private static final int DEFAULT_SAMPLE_RATE = 44100;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
@@ -52,7 +52,7 @@ public class WaveformDataManager {
 
     // Configuration
     private int numberOfBars = DEFAULT_BARS;
-    private int emissionIntervalMs = EMISSION_INTERVAL_MS; // Configurable emission interval
+    private int debounceTimeMs = DEBOUNCE_TIME_MS; // Configurable debounce time
     private int sampleRate = DEFAULT_SAMPLE_RATE; // Configurable sample rate to match recording
     private final Handler mainHandler;
 
@@ -129,17 +129,17 @@ public class WaveformDataManager {
     }
 
     /**
-     * Configure waveform settings including emission interval
-     * @param debounceInSeconds Emission interval in seconds (0.01 to 3600.0 seconds)
+     * Configure waveform settings including debounce time
+     * @param debounceInSeconds Debounce time in seconds (0.01 to 3600.0 seconds)
      * @param bars Number of bars in the waveform (1 to 256, optional, default: current value)
      */
     public void configureWaveform(float debounceInSeconds, int bars) {
-        // Validate and set emission interval
+        // Validate and set debounce time
         if (debounceInSeconds >= 0.01f && debounceInSeconds <= 3600.0f) {
-            this.emissionIntervalMs = Math.round(debounceInSeconds * 1000);
-            Log.d(TAG, "Emission interval set to: " + debounceInSeconds + " seconds (" + this.emissionIntervalMs + "ms)");
+            this.debounceTimeMs = Math.round(debounceInSeconds * 1000);
+            Log.d(TAG, "Debounce time set to: " + debounceInSeconds + " seconds (" + this.debounceTimeMs + "ms)");
         } else {
-            Log.w(TAG, "Invalid emission interval: " + debounceInSeconds + " seconds, keeping current: " + (this.emissionIntervalMs / 1000.0f) + " seconds");
+            Log.w(TAG, "Invalid debounce time: " + debounceInSeconds + " seconds, keeping current: " + (this.debounceTimeMs / 1000.0f) + " seconds");
         }
 
         // Validate and set number of bars if provided
@@ -149,8 +149,8 @@ public class WaveformDataManager {
     }
 
     /**
-     * Configure waveform settings with emission interval only
-     * @param debounceInSeconds Emission interval in seconds (0.01 to 3600.0 seconds)
+     * Configure waveform settings with debounce time only
+     * @param debounceInSeconds Debounce time in seconds (0.01 to 3600.0 seconds)
      */
     public void configureWaveform(float debounceInSeconds) {
         configureWaveform(debounceInSeconds, -1); // -1 means don't change bars
@@ -221,40 +221,68 @@ public class WaveformDataManager {
      * Configure speech detection with all parameters in one call
      * @param enabled Enable speech-only detection
      * @param threshold Amplitude threshold for speech detection (0.0-1.0)
-     * @param useVAD Enable Voice Activity Detection for more accurate speech detection
-     * @param calibrationDuration Background noise calibration duration in milliseconds
+     * @param useVAD Enable Voice Activity Detection for more accurate speech detection (default: false)
+     * @param calibrationDuration Background noise calibration duration in milliseconds (default: 1000)
      */
-    public void configureSpeechDetection(boolean enabled, float threshold, boolean useVAD, int calibrationDuration) {
+    public void configureSpeechDetection(boolean enabled, float threshold, Boolean useVAD, Integer calibrationDuration) {
         this.speechOnlyMode = enabled;
         this.speechThreshold = Math.max(0.0f, Math.min(1.0f, threshold));
-        this.vadEnabled = useVAD;
-        this.backgroundCalibrationDuration = calibrationDuration;
+
+        // Handle null values with defaults
+        this.vadEnabled = useVAD != null ? useVAD : false;
+        this.backgroundCalibrationDuration = calibrationDuration != null ? calibrationDuration : 1000;
 
         Log.d(TAG, "Speech detection configured - enabled: " + enabled +
-             ", threshold: " + this.speechThreshold + ", VAD: " + useVAD +
-             ", calibration: " + calibrationDuration + "ms" +
+             ", threshold: " + this.speechThreshold + ", VAD: " + this.vadEnabled +
+             ", calibration: " + this.backgroundCalibrationDuration + "ms" +
              ", window: " + vadWindowSize + " frames" +
              ", voiceFilter: " + voiceBandFilterEnabled);
 
-        if (enabled || useVAD) {
+        if (enabled || this.vadEnabled) {
             resetVadState();
         }
     }
 
     /**
+     * Configure speech detection with all parameters in one call - overload for primitive types
+     * @param enabled Enable speech-only detection
+     * @param threshold Amplitude threshold for speech detection (0.0-1.0)
+     * @param useVAD Enable Voice Activity Detection for more accurate speech detection
+     * @param calibrationDuration Background noise calibration duration in milliseconds
+     */
+    public void configureSpeechDetection(boolean enabled, float threshold, boolean useVAD, int calibrationDuration) {
+        configureSpeechDetection(enabled, threshold, Boolean.valueOf(useVAD), Integer.valueOf(calibrationDuration));
+    }
+
+    /**
      * Configure advanced VAD settings for optimal performance
+     * @param enabled Enable VAD (default: false)
+     * @param windowSize VAD window size in frames (3-20, smaller = lower latency) (default: 5)
+     * @param enableVoiceFilter Enable human voice band filtering (default: true)
+     */
+    public void configureAdvancedVAD(Boolean enabled, Integer windowSize, Boolean enableVoiceFilter) {
+        // Handle null values with defaults
+        boolean vadEnabled = enabled != null ? enabled : false;
+        int vadWindowSize = windowSize != null ? windowSize : 5;
+        boolean voiceFilter = enableVoiceFilter != null ? enableVoiceFilter : true;
+
+        setVadEnabled(vadEnabled);
+        setVadWindowSize(vadWindowSize);
+        setVoiceBandFilterEnabled(voiceFilter);
+
+        Log.d(TAG, "Advanced VAD configured - enabled: " + vadEnabled +
+             ", window: " + this.vadWindowSize + " frames (~" + (this.vadWindowSize * 50) + "ms)" +
+             ", voiceFilter: " + voiceBandFilterEnabled);
+    }
+
+    /**
+     * Configure advanced VAD settings for optimal performance - overload for primitive types
      * @param enabled Enable VAD
      * @param windowSize VAD window size in frames (3-20, smaller = lower latency)
      * @param enableVoiceFilter Enable human voice band filtering
      */
     public void configureAdvancedVAD(boolean enabled, int windowSize, boolean enableVoiceFilter) {
-        setVadEnabled(enabled);
-        setVadWindowSize(windowSize);
-        setVoiceBandFilterEnabled(enableVoiceFilter);
-
-        Log.d(TAG, "Advanced VAD configured - enabled: " + enabled +
-             ", window: " + vadWindowSize + " frames (~" + (vadWindowSize * 50) + "ms)" +
-             ", voiceFilter: " + voiceBandFilterEnabled);
+        configureAdvancedVAD(Boolean.valueOf(enabled), Integer.valueOf(windowSize), Boolean.valueOf(enableVoiceFilter));
     }
 
     /**
@@ -455,8 +483,8 @@ public class WaveformDataManager {
                     if (samplesRead > 0) {
                         long currentTime = System.currentTimeMillis();
 
-                        // Emit waveform data at the specified interval
-                        if (currentTime - lastEmissionTime >= emissionIntervalMs) {
+                        // Emit waveform data at the specified debounce interval
+                        if (currentTime - lastEmissionTime >= debounceTimeMs) {
                             processAndEmitWaveformData(buffer, samplesRead);
                             lastEmissionTime = currentTime;
                         }

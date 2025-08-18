@@ -1167,7 +1167,8 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                     bufferInfo.offset = 0;
                     bufferInfo.size = sampleSize;
                     bufferInfo.presentationTimeUs = globalPresentationTimeUs;
-                    bufferInfo.flags = extractor.getSampleFlags();
+
+                    bufferInfo.flags = getCodecFlags(extractor);
 
                     muxer.writeSampleData(muxerTrackIndex, buffer, bufferInfo);
 
@@ -1278,6 +1279,20 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 }
             }
         }
+    }
+
+    private static int getCodecFlags(MediaExtractor extractor) {
+        int extractorFlags = extractor.getSampleFlags();
+        int codecFlags = 0;
+
+        // Map MediaExtractor flags to MediaCodec flags
+        if ((extractorFlags & MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+            codecFlags |= MediaCodec.BUFFER_FLAG_KEY_FRAME;
+        }
+        if ((extractorFlags & MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME) != 0) {
+            codecFlags |= MediaCodec.BUFFER_FLAG_PARTIAL_FRAME;
+        }
+        return codecFlags;
     }
 
     /**
