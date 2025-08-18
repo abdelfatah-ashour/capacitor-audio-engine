@@ -808,6 +808,32 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
     @PluginMethod
+    public void setGainFactor(PluginCall call) {
+        try {
+            Float gainFactor = call.getFloat("gainFactor", 20.0f); // Default higher than iOS (20.0 vs 12.0)
+
+            // Validate gain factor range - increased upper bound to allow more amplification
+            float validatedGain = Math.max(5.0f, Math.min(50.0f, gainFactor));
+
+            if (waveformDataManager != null) {
+                // Set gain factor
+                waveformDataManager.setGainFactor(validatedGain);
+                Log.d(TAG, "Gain factor set to: " + validatedGain);
+
+                JSObject result = new JSObject();
+                result.put("success", true);
+                result.put("gainFactor", validatedGain);
+                call.resolve(result);
+            } else {
+                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to set gain factor", e);
+            call.reject("GAIN_FACTOR_ERROR", "Failed to set gain factor: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void destroyWaveform(PluginCall call) {
         try {
             if (waveformDataManager != null) {

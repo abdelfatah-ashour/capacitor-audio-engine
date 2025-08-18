@@ -1002,6 +1002,22 @@
               </ion-card-subtitle>
             </ion-card-header>
             <ion-card-content>
+              <!-- Gain Factor Control -->
+              <ion-item>
+                <ion-label>Gain Factor</ion-label>
+                <ion-select
+                  [value]="gainFactor()"
+                  (ionChange)="updateGainFactor($event.detail.value)"
+                  interface="popover"
+                >
+                  @for (option of gainFactorOptions; track option) {
+                    <ion-select-option [value]="option.value">{{
+                      option.label
+                    }}</ion-select-option>
+                  }
+                </ion-select>
+              </ion-item>
+
               <ion-button
                 expand="block"
                 fill="solid"
@@ -1013,8 +1029,8 @@
               </ion-button>
               <ion-note color="medium">
                 <small>
-                  This uses the new unified API that combines waveform, speech detection, and VAD
-                  settings.
+                  This uses the new unified API that combines waveform, speech detection, VAD
+                  settings, and gain factor for better visualization.
                 </small>
               </ion-note>
             </ion-card-content>
@@ -1053,14 +1069,35 @@
                     </ion-select>
                   </ion-item>
 
-                  <ion-item>
-                    <ion-label>Emission Interval: {{ waveformIntervalSeconds() }}s</ion-label>
-                  </ion-item>
+                                  <ion-item>
+                  <ion-label>Emission Interval: {{ waveformIntervalSeconds() }}s</ion-label>
+                </ion-item>
 
-                  <ion-button expand="block" fill="outline" (click)="resetWaveformLevels()">
-                    <ion-icon name="refresh" slot="start"></ion-icon>
-                    Reset Levels
-                  </ion-button>
+                <!-- Gain Factor Control -->
+                <ion-item>
+                  <ion-label>Gain Factor: {{ gainFactor() }}</ion-label>
+                  <ion-select
+                    [value]="gainFactor()"
+                    (ionChange)="updateGainFactor($event.detail.value)"
+                    interface="popover"
+                  >
+                    @for (option of gainFactorOptions; track option) {
+                      <ion-select-option [value]="option.value">{{
+                        option.label
+                      }}</ion-select-option>
+                    }
+                  </ion-select>
+                </ion-item>
+
+                <ion-button expand="block" color="tertiary" (click)="applyGainFactor()">
+                  <ion-icon name="pulse" slot="start"></ion-icon>
+                  Apply Gain Factor
+                </ion-button>
+
+                <ion-button expand="block" fill="outline" (click)="resetWaveformLevels()">
+                  <ion-icon name="refresh" slot="start"></ion-icon>
+                  Reset Levels
+                </ion-button>
 
                   <ion-button
                     expand="block"

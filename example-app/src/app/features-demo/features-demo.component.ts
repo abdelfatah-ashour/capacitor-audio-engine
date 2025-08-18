@@ -99,6 +99,15 @@ const WaveformBarsCount = {
   BARS_256: 256,
 } as const;
 
+const GainFactor = {
+  MINIMAL: 5.0,
+  LOW: 10.0,
+  STANDARD: 15.0,
+  MEDIUM: 20.0,
+  HIGH: 30.0,
+  MAXIMUM: 50.0,
+} as const;
+
 const WaveformDebounceTime = {
   REALTIME: 0.02, // Real-time visualization (20ms)
   VERY_FAST: 0.05, // Very fast updates (50ms)
@@ -239,8 +248,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Waveform data signals - growing waveform history with enum support
   protected readonly waveformHistory = signal<number[]>([]);
   protected readonly waveformBarsCount = signal(WaveformBarsCount.BARS_128);
-  protected readonly waveformDebounceTime = signal(WaveformDebounceTime.VERY_SLOW);
+  protected readonly waveformDebounceTime = signal(WaveformDebounceTime.MEDIUM);
   protected readonly waveformEnabled = signal(true);
+  protected readonly gainFactor = signal(GainFactor.MEDIUM); // Default to MEDIUM (20.0)
   protected readonly maxWaveformLevel = signal(0);
 
   // Legacy support for existing controls
@@ -270,6 +280,15 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     { value: WaveformBarsCount.BARS_64, label: '64 Bars' },
     { value: WaveformBarsCount.BARS_128, label: '128 Bars (Default)' },
     { value: WaveformBarsCount.BARS_256, label: '256 Bars' },
+  ];
+
+  protected readonly gainFactorOptions = [
+    { value: GainFactor.MINIMAL, label: 'Minimal (5.0)' },
+    { value: GainFactor.LOW, label: 'Low (10.0)' },
+    { value: GainFactor.STANDARD, label: 'Standard (15.0)' },
+    { value: GainFactor.MEDIUM, label: 'Medium (20.0) - Default' },
+    { value: GainFactor.HIGH, label: 'High (30.0)' },
+    { value: GainFactor.MAXIMUM, label: 'Maximum (50.0)' },
   ];
 
   protected readonly debounceTimeOptions = [
@@ -1325,6 +1344,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         debounceTime: this.waveformDebounceTime(),
       };
 
+      // Also apply the gain factor when configuring waveform
+      await this.applyGainFactor();
+
       // Add speech detection configuration if enabled
       if (this.speechDetectionEnabled()) {
         configuration.speechDetection = {
@@ -1459,6 +1481,37 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     this.silenceEmissions.set(0);
     this.silenceDetected.set(false);
     this.lastEmissionTime.set(0);
+  }
+
+  // Set gain factor for waveform visualization
+  async applyGainFactor(): Promise<void> {
+    try {
+      const result = await CapacitorAudioEngine.setGainFactor({
+        gainFactor: this.gainFactor()
+      });
+
+      await this.showToast(
+        `Gain factor set to: ${result.gainFactor} (${this.getGainFactorLabel(result.gainFactor)})`,
+        'success'
+      );
+    } catch (error: any) {
+      console.error('Error setting gain factor:', error);
+      await this.showToast(`Error setting gain factor: ${error.message}`, 'danger');
+    }
+  }
+
+  // Update the gain factor value
+  updateGainFactor(value: any): void {
+    this.gainFactor.set(value);
+  }
+
+  // Get label for a gain factor value
+  getGainFactorLabel(value: number): string {
+    const option = this.gainFactorOptions.find(opt => opt.value === value);
+    if (option) {
+      return option.label.split(' ')[0]; // Just return the name part
+    }
+    return 'Custom';
   }
 
   // Toast helper

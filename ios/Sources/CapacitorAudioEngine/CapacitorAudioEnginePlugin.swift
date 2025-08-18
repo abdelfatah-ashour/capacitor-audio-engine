@@ -520,10 +520,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     @objc func setGainFactor(_ call: CAPPluginCall) {
-        let gainFactor = call.getFloat("gainFactor") ?? 12.0
+        let gainFactor = call.getFloat("gainFactor") ?? 20.0 // Increased default from 12.0 to 20.0 (67% increase)
 
-        // Validate gain factor range
-        let validatedGain = max(5.0, min(30.0, gainFactor))
+        // Validate gain factor range - increased upper bound to allow more amplification
+        let validatedGain = max(5.0, min(50.0, gainFactor))
 
         // Set gain factor
         waveformDataManager.setGainFactor(validatedGain)

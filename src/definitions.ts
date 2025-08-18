@@ -316,6 +316,40 @@ export enum CalibrationDuration {
   LONG = 3000,
 }
 
+export enum GainFactor {
+  /** Minimal gain (5.0) */
+  MINIMAL = 5.0,
+  /** Low gain (10.0) */
+  LOW = 10.0,
+  /** Standard gain (15.0) */
+  STANDARD = 15.0,
+  /** Medium gain (20.0) - Default */
+  MEDIUM = 20.0,
+  /** High gain (30.0) */
+  HIGH = 30.0,
+  /** Maximum gain (50.0) */
+  MAXIMUM = 50.0,
+}
+
+/**
+ * Options for setting gain factor for audio levels
+ */
+export interface SetGainFactorOptions {
+  /**
+   * Gain factor value (5.0-50.0)
+   * Higher values amplify audio levels more, especially useful for quiet recordings
+   */
+  gainFactor: GainFactor | number;
+}
+
+/**
+ * Result of setting gain factor
+ */
+export interface SetGainFactorResult {
+  success: boolean;
+  gainFactor: number;
+}
+
 /**
  * Unified waveform configuration options combining all waveform features
  */
@@ -729,6 +763,24 @@ export interface CapacitorAudioEnginePlugin {
    * ```
    */
   destroyWaveform(): Promise<void>;
+
+  /**
+   * Set gain factor for waveform visualization levels
+   * @param options - Gain factor options
+   * @returns Promise that resolves with gain factor result
+   * @platform web Not supported
+   * @platform android Amplifies audio levels by applying gain factor to RMS values
+   * @platform ios Amplifies audio levels by applying gain factor to RMS values
+   *
+   * @example
+   * ```typescript
+   * // Set gain factor to boost waveform visualization levels
+   * await CapacitorAudioEngine.setGainFactor({
+   *   gainFactor: GainFactor.HIGH // or a custom value like 25.0
+   * });
+   * ```
+   */
+  setGainFactor(options: SetGainFactorOptions): Promise<SetGainFactorResult>;
 
   /**
    * @deprecated Use configureWaveform() instead. This method will be removed in a future version.

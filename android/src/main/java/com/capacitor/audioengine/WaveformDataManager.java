@@ -65,6 +65,9 @@ public class WaveformDataManager {
     private int vadWindowSize = DEFAULT_VAD_WINDOW_SIZE; // Configurable VAD window size for latency optimization
     private boolean voiceBandFilterEnabled = true; // Enable human voice band filtering for noise rejection
 
+    // Gain factor for audio level amplification
+    private float gainFactor = 20.0f; // Increased from 8.0 to 20.0 for better sensitivity with low levels (0.1-0.3)
+
     // VAD state tracking (now with configurable window size)
     private float[] recentEnergyLevels; // Will be initialized based on vadWindowSize
     private int energyIndex = 0;
@@ -305,13 +308,37 @@ public class WaveformDataManager {
 
         this.speechThreshold = adjustedThreshold;
 
+        // Also adjust gain factor based on sample rate and channel count
+        float optimalGain = 20.0f; // Higher base gain than iOS (20 vs 15)
+
+        if (sampleRate >= 48000) {
+            optimalGain = 25.0f; // Higher gain for 48kHz+ recording
+        }
+
+        if (channels >= 2) {
+            optimalGain *= 1.15; // Slight gain boost for stereo recording
+        }
+
+        this.gainFactor = optimalGain;
+
         Log.d(TAG, "Configured for recording - sampleRate: " + sampleRate +
-              ", channels: " + channels + ", adjustedThreshold: " + adjustedThreshold);
+              ", channels: " + channels + ", adjustedThreshold: " + adjustedThreshold +
+              ", gainFactor: " + gainFactor);
 
         // Reset calibration with new settings
         if (speechOnlyMode) {
             resetVadState();
         }
+    }
+
+    /**
+     * Set gain factor for audio level amplification
+     * @param gainFactor Gain factor (5.0-50.0)
+     */
+    public void setGainFactor(float gainFactor) {
+        // Validate gain factor range
+        this.gainFactor = Math.max(5.0f, Math.min(50.0f, gainFactor));
+        Log.d(TAG, "Gain factor set to: " + this.gainFactor);
     }
 
     /**
@@ -534,7 +561,7 @@ public class WaveformDataManager {
 
             // This prevents background noise from being over-amplified
             float rawLevel = (float) (rms / Short.MAX_VALUE);
-            float gainFactor = 8.0f; // Increased gain factor for better Android sensitivity
+            // Using the configurable gain factor instead of hardcoded value
             float calculatedLevel = (float) Math.min(1.0, rawLevel * gainFactor);
 
             // Apply human voice band filtering if enabled (noise rejection)
