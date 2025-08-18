@@ -1004,7 +1004,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
             info.put("filename", file.getName());
             info.put("size", file.length());
-            info.put("mimeType", "audio/mp4"); // Default for M4A files
+            info.put("mimeType", "audio/m4a"); // Default for M4A files
             info.put("createdAt", file.lastModified());
 
             // Calculate duration
@@ -1034,7 +1034,15 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 info.put("bitrate", 64000);
             }
 
-            info.put("base64", ""); // Android doesn't include base64 by default for performance
+            // Generate base64 data for the file
+            try {
+                String base64 = AudioFileProcessor.generateBase64FromFile(file);
+                info.put("base64", base64);
+                Log.d(TAG, "Generated base64 data for: " + file.getName());
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to generate base64 for file", e);
+                info.put("base64", ""); // Fallback to empty string on error
+            }
 
             Log.d(TAG, "Created file info with duration: " + actualDuration + "s for: " + file.getName() +
                   " (size: " + file.length() + " bytes)");

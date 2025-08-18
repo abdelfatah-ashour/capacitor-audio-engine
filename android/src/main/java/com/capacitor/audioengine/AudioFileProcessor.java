@@ -162,7 +162,8 @@ public class AudioFileProcessor {
                     String mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
                     String bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
 
-                    info.put("mimeType", mimeType != null ? mimeType : "audio/mp4");
+                    // Always use audio/m4a for consistent MIME type across platforms
+                    info.put("mimeType", "audio/m4a");
                     info.put("bitrate", bitrate != null ? Integer.parseInt(bitrate) : 0);
 
                     // Get number of channels using compatibility method
@@ -204,7 +205,7 @@ public class AudioFileProcessor {
     /**
      * Generate base64 data URI from audio file
      */
-    private static String generateBase64FromFile(File file) throws Exception {
+    public static String generateBase64FromFile(File file) throws Exception {
         try (FileInputStream fis = new FileInputStream(file)) {
             byte[] audioBytes = new byte[(int) file.length()];
             int bytesRead = fis.read(audioBytes);
@@ -214,7 +215,7 @@ public class AudioFileProcessor {
             }
 
             String base64Data = android.util.Base64.encodeToString(audioBytes, android.util.Base64.NO_WRAP);
-            return "data:audio/mp4;base64," + base64Data;
+            return "data:audio/m4a;base64," + base64Data;
         }
     }
 
