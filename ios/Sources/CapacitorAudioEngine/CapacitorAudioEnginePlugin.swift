@@ -369,10 +369,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     @objc func configureWaveform(_ call: CAPPluginCall) {
         // Waveform visualization settings
         let numberOfBars = call.getInt("numberOfBars") ?? 32
-        let emissionInterval = call.getDouble("emissionInterval") ?? 1.0
+        let debounceTime = call.getDouble("debounceTime") ?? 1.0
 
-        // Convert emissionInterval to seconds if it's a preset enum value
-        var debounceInSeconds = Float(emissionInterval)
+        // Convert debounceTime to seconds if it's a preset enum value
+        var debounceInSeconds = Float(debounceTime)
         if debounceInSeconds > 10.0 {
             // Handle enum values (they will be larger numbers)
             debounceInSeconds = debounceInSeconds / 1000.0 // Convert from ms to seconds
@@ -449,7 +449,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
         let configuration: [String: Any] = [
             "numberOfBars": numberOfBars,
-            "emissionIntervalMs": Int(debounceInSeconds * 1000),
+            "debounceTimeMs": Int(debounceInSeconds * 1000),
             "speechDetection": speechConfig,
             "vad": vadConfig
         ]

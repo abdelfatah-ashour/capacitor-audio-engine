@@ -641,10 +641,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         try {
             // Waveform visualization settings
             Integer numberOfBars = call.getInt("numberOfBars", 32);
-            Double emissionInterval = call.getDouble("emissionInterval", 1.0);
+            Double debounceTime = call.getDouble("debounceTime", 1.0);
 
-            // Convert emissionInterval to seconds if it's a preset enum value
-            float debounceInSeconds = emissionInterval.floatValue();
+            // Convert debounceTime to seconds if it's a preset enum value
+            float debounceInSeconds = debounceTime.floatValue();
             if (debounceInSeconds > 10.0f) {
                 // Handle enum values (they will be larger numbers)
                 debounceInSeconds = debounceInSeconds / 1000.0f; // Convert from ms to seconds
@@ -710,7 +710,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
                 JSObject configuration = new JSObject();
                 configuration.put("numberOfBars", numberOfBars);
-                configuration.put("emissionIntervalMs", (int)(debounceInSeconds * 1000));
+                configuration.put("debounceTimeMs", (int)(debounceInSeconds * 1000));
 
                 JSObject speechConfig = new JSObject();
                 speechConfig.put("enabled", speechEnabled);
