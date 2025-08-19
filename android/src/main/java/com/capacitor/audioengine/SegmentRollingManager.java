@@ -5,6 +5,9 @@ import android.media.MediaMuxer;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.AudioRecord;
+import android.media.AudioFormat;
 import android.media.MediaRecorder;
 import android.util.Log;
 
@@ -49,6 +52,11 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
     // Recording components
     private MediaRecorder currentSegmentRecorder;
+    // Continuous recording for 0s merge final file
+    private MediaRecorder continuousRecorder;
+    private File continuousOutputFile;
+    private boolean isContinuousActive = false;
+
     private Timer segmentTimer;
     private Timer durationUpdateTimer;
     private final AtomicBoolean isActive = new AtomicBoolean(false);
@@ -168,7 +176,10 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             manualPausedDurationOffset = 0;
             manualPauseStartTime = 0;
 
-            // Start first segment
+            // Start continuous full-session recorder for 0s merge
+            startContinuousRecorder();
+
+            // Start first rolling segment
             startNewSegment();
 
             // Schedule segment rotation timer
@@ -226,6 +237,15 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 }
             }
 
+            // Pause continuous recorder
+            if (continuousRecorder != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                try {
+                    continuousRecorder.pause();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error pausing continuous recording", e);
+                }
+            }
+
             // Cancel segment timer
             if (segmentTimer != null) {
                 segmentTimer.cancel();
@@ -270,6 +290,15 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 }
             } else {
                 startNewSegment();
+            }
+
+            // Resume continuous recorder if supported
+            if (continuousRecorder != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                try {
+                    continuousRecorder.resume();
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to resume continuous recorder", e);
+                }
             }
 
             // Restart segment timer - calculate remaining time to next rotation
@@ -427,28 +456,55 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 Log.d(TAG, "No current segment recorder to stop (this is normal after reset)");
             }
 
-            // Log segment buffer info before merge
-            int segmentCountBeforeMerge = segmentBuffer.size();
-            Log.d(TAG, "Starting merge with " + segmentCountBeforeMerge + " segments in buffer");
+            // First, stop the continuous recorder to obtain final continuous .m4a instantly (0s merge)
+            File mergedFile = stopContinuousRecorderAndReturnFile();
+            if (mergedFile != null) {
+                Log.d(TAG, "Continuous recording file ready: " + mergedFile.getAbsolutePath());
 
-            // Handle empty segments case (can happen after reset)
-            File mergedFile;
-            if (segmentCountBeforeMerge == 0) {
-                Log.w(TAG, "No segments to merge - creating minimal empty file (this can happen after reset)");
-                mergedFile = createMinimalEmptyAudioFile();
+                // If a max rolling duration is set, trim the continuous file to the last window
+                if (maxDurationMs != null && maxDurationMs > 0) {
+                    try {
+                        long actualDurationMs = getAudioFileDuration(mergedFile);
+                        double actualDurationSec = actualDurationMs / 1000.0;
+                        double targetDurationSec = maxDurationMs / 1000.0;
+
+                        if (actualDurationSec > targetDurationSec) {
+                            double startTrimSec = Math.max(0.0, actualDurationSec - targetDurationSec);
+                            File trimmed = new File(mergedFile.getParent(),
+                                    "trimmed_continuous_" + System.currentTimeMillis() + ".m4a");
+
+                            // Precision trim to keep the last maxDuration window
+                            AudioFileProcessor.trimAudioFile(mergedFile, trimmed, startTrimSec, actualDurationSec);
+
+                            // Replace original with trimmed result
+                            boolean deleted = mergedFile.delete();
+                            if (!deleted) {
+                                Log.w(TAG, "Failed to delete original continuous file after trimming: " + mergedFile.getAbsolutePath());
+                            }
+                            mergedFile = trimmed;
+                            Log.d(TAG, "Continuous file trimmed to last " + String.format("%.3f", targetDurationSec) + "s: " + mergedFile.getAbsolutePath());
+                        } else {
+                            Log.d(TAG, "Continuous duration <= maxDuration; no trim needed (" + String.format("%.3f", actualDurationSec) + "s <= " + String.format("%.3f", targetDurationSec) + "s)");
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to trim continuous file to rolling window; returning untrimmed continuous file", e);
+                    }
+                }
             } else {
-                // Merge all segments (smart merging handles duration limits internally)
-                mergedFile = mergeSegments();
+                // Fallback: If continuous recording failed or produced invalid file, merge segments
+                int segmentCountBeforeMerge = segmentBuffer.size();
+                Log.d(TAG, "Falling back to merge. Segments in buffer: " + segmentCountBeforeMerge);
+                if (segmentCountBeforeMerge == 0) {
+                    Log.w(TAG, "No segments to merge - creating minimal empty file");
+                    mergedFile = createMinimalEmptyAudioFile();
+                } else {
+                    mergedFile = mergeSegments();
+                }
+                Log.d(TAG, "Merge completed. Output file: " + mergedFile.getName() +
+                        " (size: " + mergedFile.length() + " bytes)");
             }
 
-            // Log merge completion
-            Log.d(TAG, "Merge completed. Output file: " + mergedFile.getName() +
-                  " (size: " + mergedFile.length() + " bytes)");
-
-            // The mergeSegments method now handles smart trimming based on maxDuration
-            // No additional trimming needed here
-
-            // Cleanup segments AFTER merging
+            // Cleanup segments AFTER finishing
             isActive.set(false);
 
             // Reset pause tracking state
@@ -461,7 +517,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
             cleanupSegments();
 
-            Log.d(TAG, "Stopped segment rolling and merged " + segmentCountBeforeMerge + " segments");
+            Log.d(TAG, "Stopped segment rolling and merged " + segmentBuffer.size() + " segments");
 
             return mergedFile;
         }
@@ -628,6 +684,81 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     public void setPersistentIndexingEnabled(boolean enabled) {
         this.enablePersistentIndexing = enabled;
         Log.d(TAG, "Persistent indexing " + (enabled ? "enabled" : "disabled"));
+    }
+
+    /**
+     * Start the continuous full-session recorder to enable 0s merge at stop
+     */
+    private void startContinuousRecorder() throws IOException {
+        // If already active, do nothing
+        if (isContinuousActive && continuousRecorder != null) {
+            return;
+        }
+
+        // Build output file in parent directory of segments
+        File parentDir = segmentsDirectory != null ? segmentsDirectory.getParentFile() : null;
+        if (parentDir == null) {
+            parentDir = segmentsDirectory; // fallback, should not be null normally
+        }
+        if (parentDir != null && !parentDir.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            parentDir.mkdirs();
+        }
+
+        continuousOutputFile = new File(parentDir,
+                "continuous_" + System.currentTimeMillis() + ".m4a");
+
+        // Release previous if any
+        if (continuousRecorder != null) {
+            try { continuousRecorder.release(); } catch (Exception ignored) {}
+        }
+        continuousRecorder = new MediaRecorder();
+
+        try {
+            continuousRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            continuousRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            continuousRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            continuousRecorder.setOutputFile(continuousOutputFile.getAbsolutePath());
+            continuousRecorder.setAudioSamplingRate(recordingConfig.getSampleRate());
+            continuousRecorder.setAudioChannels(recordingConfig.getChannels());
+            continuousRecorder.setAudioEncodingBitRate(recordingConfig.getBitrate());
+
+            continuousRecorder.prepare();
+            continuousRecorder.start();
+            isContinuousActive = true;
+            Log.d(TAG, "Started continuous recorder: " + continuousOutputFile.getAbsolutePath());
+        } catch (Exception e) {
+            isContinuousActive = false;
+            try { continuousRecorder.release(); } catch (Exception ignored) {}
+            continuousRecorder = null;
+            // Propagate as IO to allow caller to decide fallback (merge)
+            throw new IOException("Failed to start continuous recorder", e);
+        }
+    }
+
+    /**
+     * Stop the continuous recorder and return its file if valid
+     */
+    private File stopContinuousRecorderAndReturnFile() {
+        File out = continuousOutputFile;
+        if (continuousRecorder != null) {
+            try {
+                if (isContinuousActive) {
+                    // If paused, resume briefly to avoid stop errors
+                    if (isManuallyPaused.get() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                        try { continuousRecorder.resume(); } catch (Exception ignored) {}
+                    }
+                    continuousRecorder.stop();
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Error stopping continuous recorder", e);
+            } finally {
+                try { continuousRecorder.release(); } catch (Exception ignored) {}
+                continuousRecorder = null;
+                isContinuousActive = false;
+            }
+        }
+        return (out != null && out.exists() && out.length() > 1024) ? out : null;
     }
 
     /**
@@ -1361,6 +1492,24 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                     Log.w(TAG, "Error releasing recorder", e);
                 }
                 currentSegmentRecorder = null;
+            }
+
+            // Release continuous recorder as well
+            if (continuousRecorder != null) {
+                try {
+                    if (isContinuousActive) {
+                        continuousRecorder.stop();
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping continuous recorder during release", e);
+                }
+                try {
+                    continuousRecorder.release();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error releasing continuous recorder", e);
+                }
+                continuousRecorder = null;
+                isContinuousActive = false;
             }
 
             isActive.set(false);

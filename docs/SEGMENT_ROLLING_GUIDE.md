@@ -426,3 +426,123 @@ Both iOS and Android now provide identical behavior:
 - **Exact duration output** - if you set `maxDuration: 120`, you get exactly 120 seconds of audio (or less if recording was shorter)
 
 The segment rolling system is backward compatible - if `maxDuration` is not provided, the system uses traditional linear recording. When `maxDuration` is provided, you get enhanced segment rolling with intelligent buffer management, automatic storage cleanup during recording, and precise duration control.
+
+
+## Rolling Window Behavior: Common maxDuration Cases
+
+Below are concrete, easy-to-scan breakdowns of how the rolling window behaves for common maxDuration values. Remember:
+- Segments are 30 seconds each.
+- The rolling buffer keeps ceil(maxDuration / 30) most recent segments on disk; older segments are deleted during recording.
+- When you stop, the output is trimmed precisely so its duration is at most maxDuration seconds (or less if you recorded for a shorter time).
+- maxDuration does not auto-stop the recording; it defines the rolling window size and final output length.
+- The implementation uses a continuous full-session file for instant availability at stop, then precision-trims to the last maxDuration window.
+
+1) maxDuration = 5 seconds
+- Segments kept: ceil(5 / 30) = 1 segment.
+- On-disk buffer while recording: up to ~30 seconds (one segment). Older audio beyond that single segment is deleted as the next segment starts.
+- At stop: you get exactly the last 5 seconds (precision-trimmed) if you recorded longer than 5 seconds; otherwise you get the full recorded duration.
+- Notes: Using a 1-segment buffer is valid but not ideal for segment boundaries. For smoother rotation and redundancy, 60s+ (≥2 segments) is recommended.
+
+2) maxDuration = 60 seconds
+- Segments kept: ceil(60 / 30) = 2 segments.
+- On-disk buffer while recording: ~60 seconds across two segments; the oldest segment is deleted when a new one begins.
+- At stop: output is trimmed to the last 60 seconds (or less if total recording time is shorter). This is a good minimal rolling window for most apps.
+
+3) maxDuration = 300 seconds (5 minutes)
+- Segments kept: ceil(300 / 30) = 10 segments.
+- On-disk buffer while recording: last 5 minutes only; older segments continuously deleted.
+- At stop: precise 5-minute clip (or less if recorded for <5 minutes). This is a common choice for meeting highlights, voice notes, or crash-recovery buffers.
+- Storage note: With 64 kbps AAC, 5 minutes is roughly ~2.4 MB of audio data plus container overhead (rough estimate; varies by content and encoder implementation).
+
+4) maxDuration = 1200 seconds (20 minutes)
+- Segments kept: ceil(1200 / 30) = 40 segments.
+- On-disk buffer while recording: last 20 minutes maintained; older segments removed to cap storage.
+- At stop: output trimmed to last 20 minutes. Suitable for extended sessions where you only need the recent context.
+
+5) maxDuration = 14400 seconds (4 hours)
+- Segments kept: ceil(14400 / 30) = 480 segments.
+- On-disk buffer while recording: last 4 hours retained; segments older than that are deleted on rotation.
+- At stop: output trimmed to last 4 hours. This is a very large window. Consider the following:
+  - Performance and storage: While segments are cleaned up continuously, 4 hours implies a large number of segment files being created/rotated. Ensure sufficient storage headroom.
+  - Device warnings: The Android implementation logs a warning for very large maxDuration (> 2 hours). Evaluate whether traditional linear recording is more suitable if you really need the entire session.
+  - Crash recovery: You still benefit from finalized 30-second segments, but the number of in-scope segments is high.
+
+Additional Notes
+- Pause/Resume: The reported duration event excludes paused time; rolling buffer continues to manage segment retention based on actual captured audio time.
+- Exactness: After stop, a precision trim ensures the final file duration matches maxDuration (when recorded time exceeds it), giving consistent outputs across platforms.
+- Auto-stop: maxDuration does not auto-stop; you can record for hours and only the last maxDuration seconds are retained/returned.
+
+
+
+## Scenario Examples: maxDuration vs. Actual Recording Time
+
+These concrete scenarios pair a chosen maxDuration with an approximate total time you actually record. They clarify:
+- How many 30s segments get created vs. retained during recording
+- What remains on disk at any given time (rolling buffer)
+- What you get when you stop (final output duration and source)
+
+Remember:
+- Segments are 30 seconds each.
+- Rolling buffer keeps ceil(maxDuration / 30) most-recent segments during recording.
+- On stop, Android uses the continuous full-session file for 0s availability, then precision-trims to return only the last maxDuration seconds (or less if you recorded for a shorter time).
+- maxDuration does not auto-stop the session; it defines window size and final output length.
+
+1) maxDuration = 5s, recorded ≈ 23s
+- Segments created: ceil(23 / 30) = 1 segment (a single partial segment of ~23s, no rotation yet).
+- Segments retained during recording: ceil(5 / 30) = 1 (only that single active segment).
+- Buffer behavior: Nothing to delete (never reached a second segment). Disk usage ≈ 1 partial segment.
+- On stop: Final file is ~23.0 seconds (no trimming needed because recorded time < maxDuration). Source is the continuous file, returned instantly and equal to the full captured time.
+
+2) maxDuration = 60s, recorded ≈ 110s
+- Segments created: ceil(110 / 30) = 4 (0–30, 30–60, 60–90, 90–110).
+- Segments retained during recording: ceil(60 / 30) = 2 (only the last two are kept on disk; older ones are deleted on rotation).
+- Buffer behavior: As the 3rd segment starts, the 1st gets deleted; as the 4th starts, the 2nd gets deleted. At the end, you keep segments ~60–90 and ~90–110.
+- On stop: Final file is trimmed to the last 60.000 seconds of the session (from ~50s to ~110s in absolute timeline) using precision trim on the continuous file. Returned instantly, duration ≈ 60.0s.
+
+3) maxDuration = 300s (5 min), recorded ≈ 400s
+- Segments created: ceil(400 / 30) = 14.
+- Segments retained during recording: ceil(300 / 30) = 10 (only the last 10 segments are kept).
+- Buffer behavior: Disk retains only the most recent ~300s; anything older is deleted at each rotation.
+- On stop: Final file is exactly the last 300 seconds (precision-trimmed). Returned instantly, duration ≈ 300.0s.
+
+4) maxDuration = 1200s (20 min), recorded ≈ 1300s
+- Segments created: ceil(1300 / 30) = 44.
+- Segments retained during recording: ceil(1200 / 30) = 40.
+- Buffer behavior: Only the most recent 40 segments (~20 minutes) remain on disk. Older segments continuously deleted.
+- On stop: Final file is exactly the last 1200 seconds (precision-trimmed). Returned instantly, duration ≈ 1200.0s.
+
+5) maxDuration = 14400s (4 hours), recorded ≈ 20000s (~5.56 hours)
+- Segments created: ceil(20000 / 30) = 667.
+- Segments retained during recording: ceil(14400 / 30) = 480.
+- Buffer behavior: Only the most recent 4 hours (~480 segments) remain; the rest are deleted as you go.
+- On stop: Final file is exactly the last 14400 seconds (precision-trimmed). Returned instantly, duration ≈ 14400.0s.
+- Notes: This is a very large rolling window. Expect many segment rotations and deletes. Ensure sufficient storage headroom. Android logs a warning for windows > 2 hours; evaluate whether linear recording is more suitable if you truly need the entire session.
+
+Tips
+- Precision: Final trimming is done with MediaExtractor/MediaMuxer to honor the exact time range, independent of 30s boundaries.
+- Short recordings: If you stop before reaching maxDuration, you simply get the full recorded time (no trimming needed).
+- Pause/Resume: Reported duration excludes paused time; rolling keeps managing the buffer based on captured audio.
+
+
+## Scenario Table: Rolling Window Summary
+
+The table below summarizes how the rolling buffer behaves for common long-session cases. Assumptions:
+- Segment length = 30s
+- Segments created = ceil(totalSeconds / 30)
+- Max segments kept = ceil(maxDuration / 30)
+- Segments remaining at stop = min(segments created, max kept)
+- Segments deleted during recording = segments created - segments remaining
+- Final output duration (at stop) = min(maxDuration, totalSeconds), via precision trim if needed
+
+| # | maxDuration (s) | Recording length (approx) | Total seconds recorded | Segments created (30s) | Max segments kept | Segments deleted | Segments remaining at stop | Final output (s) |
+| - | ---------------- | ------------------------- | ---------------------- | ---------------------- | ----------------- | ---------------- | --------------------------- | ---------------- |
+| 1 | 5               | ~1 hour                   | 3600                   | 120                    | 1                 | 119              | 1                           | 5                |
+| 2 | 60              | ~1 hour                   | 3600                   | 120                    | 2                 | 118              | 2                           | 60               |
+| 3 | 300             | ~3 hours                  | 10800                  | 360                    | 10                | 350              | 10                          | 300              |
+| 4 | 1200            | ~4 hours                  | 14400                  | 480                    | 40                | 440              | 40                          | 1200             |
+| 5 | 14400           | ~10 hours                 | 36000                  | 1200                   | 480               | 720              | 480                         | 14400            |
+
+Notes
+- The system does not auto-stop at maxDuration. You can record longer; old segments are deleted as you go, keeping only the most recent window.
+- On Android, a continuous full-session file is closed instantly on stop (0s wait), then precision-trimmed to return exactly the last maxDuration seconds when the session exceeded that duration.
+- Very small windows (e.g., 5s) imply a 1-segment buffer; this is valid but less smooth across boundaries. Windows with ≥2 segments (≥60s) are recommended when possible.

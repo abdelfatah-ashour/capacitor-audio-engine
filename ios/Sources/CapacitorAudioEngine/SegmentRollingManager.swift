@@ -20,6 +20,10 @@ class SegmentRollingManager: NSObject {
     private var segmentBuffer: [URL] = []
     private var segmentTimer: Timer?
     private var currentSegmentRecorder: AVAudioRecorder?
+    // Continuous full-session recorder for 0s merge at stop
+    private var continuousRecorder: AVAudioRecorder?
+    private var continuousOutputURL: URL?
+    private var isContinuousActive: Bool = false
     private var recordingSession: AVAudioSession?
     private var segmentCounter: Int = 0
     private var isActive: Bool = false
@@ -258,6 +262,9 @@ class SegmentRollingManager: NSObject {
 
         log("Starting recording with segment rolling mode (maxDuration: \(maxDuration?.description ?? "unlimited"))")
 
+        // Start continuous full-session recorder for instant file at stop
+        try startContinuousRecorder()
+
         // Start recording
         log("About to call startNewSegment()")
         try startNewSegment()
@@ -281,6 +288,8 @@ class SegmentRollingManager: NSObject {
             guard !isPaused else { return } // Already paused
 
             currentSegmentRecorder?.pause()
+            // Pause continuous recorder as well
+            continuousRecorder?.pause()
 
             // Record pause time
             pausedTime = Date()
@@ -331,6 +340,9 @@ class SegmentRollingManager: NSObject {
                     self.rotateSegment()
                 }
             }
+
+            // Resume continuous recorder
+            _ = self.continuousRecorder?.record()
 
             log("Resumed segment rolling recording")
         }
@@ -399,8 +411,7 @@ class SegmentRollingManager: NSObject {
     }
 
     /**
-     * Stop segment rolling and merge all segments into final file
-     * - returns: URL of the merged audio file
+     * Stop segment rolling and return final file (prefer continuous for 0s merge, fallback to merge)
      */
     func stopSegmentRolling() throws -> URL {
         return try performQueueSafeOperation {
@@ -423,38 +434,41 @@ class SegmentRollingManager: NSObject {
                 currentSegmentRecorder = nil
             }
 
-            let finalFileURL: URL
+            var finalFileURL: URL
 
-            // Segment rolling mode - add current segment to buffer and merge
-            log("Stopping segment rolling mode")
+            log("Stopping segment rolling - attempting to use continuous recorder output for instant final file")
 
-            // Add current segment to buffer if it exists and has content
-            if let lastSegmentURL = getLastSegmentURL() {
-                log("Found last segment, adding to buffer")
-                addSegmentToBuffer(lastSegmentURL)
+            // Attempt to stop continuous recorder and get its file
+            if let continuousURL = stopContinuousRecorderAndReturnFile() {
+                log("Continuous recording file ready: \(continuousURL.lastPathComponent)")
+                // Apply trimming to last maxDuration seconds if configured
+                if let maxDuration = maxDuration {
+                    log("Trimming continuous file to last \(maxDuration)s for exact rolling window")
+                    finalFileURL = try trimMergedFile(continuousURL, maxDuration: maxDuration)
+                } else {
+                    finalFileURL = continuousURL
+                }
             } else {
-                log("No last segment found")
+                // Fallback: use segment merge path
+                log("Continuous recorder unavailable - falling back to merging \(segmentBuffer.count) segments")
+
+                // Add current segment to buffer if it exists and has content
+                if let lastSegmentURL = getLastSegmentURL() {
+                    addSegmentToBuffer(lastSegmentURL)
+                }
+
+                guard !segmentBuffer.isEmpty else {
+                    log("Warning: No segments in buffer, this might be a very short recording")
+                    throw SegmentRecordingError.noValidSegments
+                }
+
+                let mergedFileURL = try mergeSegments()
+                if let maxDuration = maxDuration {
+                    finalFileURL = try trimMergedFile(mergedFileURL, maxDuration: maxDuration)
+                } else {
+                    finalFileURL = mergedFileURL
+                }
             }
-
-            // Check if we have any segments to merge
-            if segmentBuffer.isEmpty {
-                log("Warning: No segments in buffer, this might be a very short recording")
-                throw SegmentRecordingError.noValidSegments
-            }
-
-            // Merge all segments
-            let mergedFileURL = try mergeSegments()
-
-            // Apply trimming if maxDuration is set (matching Android behavior)
-            if let maxDuration = maxDuration {
-                log("Applying trimming to merged file with maxDuration: \(maxDuration) seconds")
-                finalFileURL = try trimMergedFile(mergedFileURL, maxDuration: maxDuration)
-                log("Successfully trimmed recording to exact maxDuration")
-            } else {
-                finalFileURL = mergedFileURL
-            }
-
-            log("Stopped segment rolling and merged \(segmentBuffer.count) segments")
 
             // Cleanup
             isActive = false
@@ -561,8 +575,7 @@ class SegmentRollingManager: NSObject {
     }
 
     /**
-     * Stop segment rolling asynchronously to avoid blocking UI with sync export
-     * - parameter completion: Completion handler with result containing the merged audio file URL
+     * Stop segment rolling asynchronously (prefer continuous, fallback to merge)
      */
     func stopSegmentRollingAsync(completion: @escaping (Result<URL, Error>) -> Void) {
         // Perform the stop operation on a background queue to avoid QoS priority inversion
@@ -588,38 +601,34 @@ class SegmentRollingManager: NSObject {
                         self.currentSegmentRecorder = nil
                     }
 
-                    let finalFileURL: URL
+                    var finalFileURL: URL
+                    self.log("Stopping segment rolling (async) - attempting to use continuous recorder output")
 
-                    // Segment rolling mode - add current segment to buffer and merge
-                    self.log("Stopping segment rolling mode")
-
-                    // Add current segment to buffer if it exists and has content
-                    if let lastSegmentURL = self.getLastSegmentURL() {
-                        self.log("Found last segment, adding to buffer")
-                        self.addSegmentToBuffer(lastSegmentURL)
+                    if let continuousURL = self.stopContinuousRecorderAndReturnFile() {
+                        self.log("Continuous recording file ready: \(continuousURL.lastPathComponent)")
+                        if let maxDuration = self.maxDuration {
+                            self.log("Trimming continuous file to last \(maxDuration)s for exact rolling window (async)")
+                            finalFileURL = try self.trimMergedFile(continuousURL, maxDuration: maxDuration)
+                        } else {
+                            finalFileURL = continuousURL
+                        }
                     } else {
-                        self.log("No last segment found")
-                    }
-
-                    // Check if we have any segments to merge
-                        if self.segmentBuffer.isEmpty {
+                        // Fallback: merge segments
+                        self.log("Continuous recorder unavailable - falling back to merging \(self.segmentBuffer.count) segments (async)")
+                        if let lastSegmentURL = self.getLastSegmentURL() {
+                            self.addSegmentToBuffer(lastSegmentURL)
+                        }
+                        guard !self.segmentBuffer.isEmpty else {
                             self.log("Warning: No segments in buffer, this might be a very short recording")
                             throw SegmentRecordingError.noValidSegments
                         }
-
-                        // Merge all segments
                         let mergedFileURL = try self.mergeSegments()
-
-                        // Apply trimming if maxDuration is set (matching Android behavior)
                         if let maxDuration = self.maxDuration {
-                            self.log("Applying trimming to merged file with maxDuration: \(maxDuration) seconds")
                             finalFileURL = try self.trimMergedFile(mergedFileURL, maxDuration: maxDuration)
-                            self.log("Successfully trimmed recording to exact maxDuration")
                         } else {
                             finalFileURL = mergedFileURL
                         }
-
-                    self.log("Stopped segment rolling and merged \(self.segmentBuffer.count) segments")
+                    }
 
                     // Cleanup state
                     self.isActive = false
@@ -1345,6 +1354,58 @@ class SegmentRollingManager: NSObject {
         #endif
     }
 
+    // MARK: - Continuous Recorder Helpers
+
+    /// Start continuous full-session recorder for 0s merge at stop
+    private func startContinuousRecorder() throws {
+        // Build output file in Documents (parent of segments directory)
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let outputURL = documentsPath.appendingPathComponent("continuous_\(Int(Date().timeIntervalSince1970)).m4a")
+        continuousOutputURL = outputURL
+
+        // Release previous if any
+        continuousRecorder?.stop()
+        continuousRecorder = nil
+
+        do {
+            let recorder = try AVAudioRecorder(url: outputURL, settings: recordingSettings)
+            if !recorder.prepareToRecord() {
+                throw SegmentRecordingError.recordingStartFailed
+            }
+            // Start recording immediately
+            if !recorder.record() {
+                throw SegmentRecordingError.recordingStartFailed
+            }
+            continuousRecorder = recorder
+            isContinuousActive = true
+            log("Started continuous recorder: \(outputURL.lastPathComponent)")
+        } catch {
+            isContinuousActive = false
+            continuousRecorder = nil
+            throw SegmentRecordingError.recorderCreationFailed(error)
+        }
+    }
+
+    /// Stop continuous recorder and return file URL if valid, else nil
+    private func stopContinuousRecorderAndReturnFile() -> URL? {
+        let url = continuousOutputURL
+        if let recorder = continuousRecorder {
+            if recorder.isRecording {
+                recorder.stop()
+            }
+        }
+        continuousRecorder = nil
+        isContinuousActive = false
+
+        if let url = url, FileManager.default.fileExists(atPath: url.path) {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+               let size = attrs[.size] as? Int64, size > Int64(AudioEngineConstants.minValidFileSize) {
+                return url
+            }
+        }
+        return nil
+    }
+
     // MARK: - Cleanup
 
     deinit {
@@ -1376,6 +1437,14 @@ class SegmentRollingManager: NSObject {
 
             // Clean up temporary segment files
             cleanupSegments()
+
+            // Stop and release continuous recorder as well
+            if let recorder = continuousRecorder {
+                if recorder.isRecording { recorder.stop() }
+                continuousRecorder = nil
+                isContinuousActive = false
+                log("Continuous recorder stopped and deallocated")
+            }
 
             // Harden audio session deactivation with retry logic
             if let session = recordingSession {
