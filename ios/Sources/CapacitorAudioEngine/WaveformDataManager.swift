@@ -58,9 +58,10 @@ class WaveformDataManager {
     private var backgroundCalibrationDuration: Int = 1000 // Default 1 second (matching Android)
     private var vadWindowSize: Int = defaultVadWindowSize // Configurable VAD window size for latency optimization
     private var voiceBandFilterEnabled: Bool = true // Enable human voice band filtering for noise rejection
+    private var currentSampleRate: Double = sampleRate // Track current sample rate for ZCR-based voice band filter
 
     // Speech detection calculation properties (aligned with Android)
-    private var speechDetectionGainFactor: Float = 12.0 // Moderate gain factor for balanced voice representation
+    private var speechDetectionGainFactor: Float = 20.0 // Increased to match Android default gain for comparable levels
     private var adjustedSpeechThreshold: Float = defaultSpeechThreshold // Dynamic threshold based on background noise
     private var backgroundNoiseMultiplier: Float = 1.2 // Background noise calibration multiplier (aligned with Android)
     private var vadSpeechRatio: Float = 0.3 // Minimum ratio of speech frames in VAD window
@@ -265,7 +266,7 @@ class WaveformDataManager {
      * - Parameter gainFactor: Gain factor to apply to RMS values (5.0-30.0, default: 12.0)
      */
     func setGainFactor(_ gainFactor: Float) {
-        speechDetectionGainFactor = max(5.0, min(30.0, gainFactor))
+        speechDetectionGainFactor = max(5.0, min(50.0, gainFactor))
         log("Speech detection gain factor set to: \(speechDetectionGainFactor)")
     }
 
@@ -305,11 +306,11 @@ class WaveformDataManager {
 
         self.speechThreshold = adjustedThreshold
 
-        // Adjust gain factor based on sample rate and channel count for optimal voice levels
-        var optimalGain: Float = 12.0 // Moderate base gain
+        // Adjust gain factor based on sample rate and channel count to match Android behavior
+        var optimalGain: Float = 20.0 // Base gain aligned with Android
 
         if sampleRate >= 48000 {
-            optimalGain = 15.0 // Moderate gain increase for 48kHz+ recording
+            optimalGain = 25.0 // Higher gain for 48kHz+ recording (match Android)
         }
 
         if channels >= 2 {
@@ -450,6 +451,9 @@ class WaveformDataManager {
                 tapFormat = inputFormat
             }
 
+            // Track current sample rate for voice-band detection calculations
+            currentSampleRate = tapFormat.sampleRate
+
             log("Starting waveform monitoring with tap format: \(tapFormat)")
 
             // Install tap on input node to access PCM data
@@ -583,30 +587,32 @@ class WaveformDataManager {
      * Uses optimized filtering for higher sample rates
      */
     private func applyVoiceBandFilter(samples: UnsafePointer<Float>, frameLength: Int) -> [Float] {
+        // If filter disabled, return raw samples
         guard voiceBandFilterEnabled else {
             return Array(UnsafeBufferPointer(start: samples, count: frameLength))
         }
 
-        var filtered = [Float]()
+        // Compute zero crossing rate for the current buffer
+        let zeroCrossings = calculateZeroCrossingRate(channelData: samples, frameLength: frameLength)
 
-        // Lighter filtering approach for better voice preservation
-        let windowSize = 2 // Reduced window size for less aggressive filtering
+        // Calculate expected zero-crossing range for human voice based on current sample rate
+        let expectedMinZCR = (Self.minVoiceFreq * 2.0 * Float(frameLength)) / Float(currentSampleRate)
+        let expectedMaxZCR = (Self.maxVoiceFreq * 2.0 * Float(frameLength)) / Float(currentSampleRate)
 
-        for i in 0..<frameLength {
-            var sum: Float = 0
-            var count = 0
+        let inVoiceBand = Float(zeroCrossings) >= expectedMinZCR && Float(zeroCrossings) <= expectedMaxZCR
 
-            // Apply a lighter smoothing filter
-            for j in max(0, i - windowSize/2)...min(frameLength - 1, i + windowSize/2) {
-                let weight: Float = j == i ? 0.6 : 0.2 // Give more weight to center sample
-                sum += samples[j] * weight
-                count += 1
+        // If out of band, attenuate samples (similar to Android's level attenuation)
+        if !inVoiceBand {
+            var attenuated = [Float]()
+            attenuated.reserveCapacity(frameLength)
+            for i in 0..<frameLength {
+                attenuated.append(samples[i] * 0.3)
             }
-
-            filtered.append(sum)
+            return attenuated
         }
 
-        return filtered
+        // In-band: keep original samples to preserve amplitude
+        return Array(UnsafeBufferPointer(start: samples, count: frameLength))
     }
 
     /**
@@ -675,8 +681,8 @@ class WaveformDataManager {
 
             if noiseCalibrationFrames == Self.noiseCalibrationDuration {
                 backgroundNoiseLevel = backgroundNoiseLevel / Float(Self.noiseCalibrationDuration)
-                // Add a safety margin to the background noise level
-                backgroundNoiseLevel = backgroundNoiseLevel * 1.5
+                // Add a safety margin to the background noise level (aligned with Android)
+                backgroundNoiseLevel = backgroundNoiseLevel * 1.2
                 backgroundNoiseCalibrated = true
                 log("Background noise calibrated: \(backgroundNoiseLevel)")
             }
@@ -686,8 +692,8 @@ class WaveformDataManager {
         // Use adaptive threshold based on background noise if calibrated
         var effectiveThreshold = speechThreshold
         if backgroundNoiseCalibrated {
-            // Use the higher of configured threshold or background noise + margin
-            effectiveThreshold = max(speechThreshold, backgroundNoiseLevel + 0.01)
+            // Use the higher of configured threshold or background noise + smaller margin (aligned with Android)
+            effectiveThreshold = max(speechThreshold, backgroundNoiseLevel + 0.005)
         }
 
         let isSpeech = level > effectiveThreshold
