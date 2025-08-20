@@ -26,7 +26,7 @@ public class WaveformDataManager {
 
     // Configuration constants
     private static final int DEFAULT_BARS = 128; // Default is 128 bars for higher resolution
-    private static final int DEBOUNCE_TIME_MS = 1000; // Default debounce time of 1 second
+    private static final int DEBOUNCE_TIME_MS = 50; // Default debounce time of 50ms for ~20fps
     private static final int DEFAULT_SAMPLE_RATE = 44100;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
@@ -66,7 +66,7 @@ public class WaveformDataManager {
     private boolean voiceBandFilterEnabled = true; // Enable human voice band filtering for noise rejection
 
     // Gain factor for audio level amplification
-    private float gainFactor = 20.0f; // Increased from 8.0 to 20.0 for better sensitivity with low levels (0.1-0.3)
+    private float gainFactor = 18.0f; // Tuned down from 20.0 to better match iOS default levels
 
     // VAD state tracking (now with configurable window size)
     private float[] recentEnergyLevels; // Will be initialized based on vadWindowSize
@@ -309,14 +309,14 @@ public class WaveformDataManager {
         this.speechThreshold = adjustedThreshold;
 
         // Also adjust gain factor based on sample rate and channel count
-        float optimalGain = 20.0f; // Higher base gain than iOS (20 vs 15)
+        float optimalGain = 18.0f; // Slightly reduced base gain to better match iOS
 
         if (sampleRate >= 48000) {
-            optimalGain = 25.0f; // Higher gain for 48kHz+ recording
+            optimalGain = 22.0f; // Reduced high-sample-rate gain to reduce Android hotness
         }
 
         if (channels >= 2) {
-            optimalGain *= 1.15; // Slight gain boost for stereo recording
+            optimalGain *= 1.10; // Slight gain boost for stereo recording (reduced from 1.15)
         }
 
         this.gainFactor = optimalGain;
@@ -769,6 +769,7 @@ public class WaveformDataManager {
         try {
             JSObject data = new JSObject();
             data.put("level", level);
+            data.put("timestamp", System.currentTimeMillis());
 
             eventCallback.notifyListeners("waveformData", data);
 

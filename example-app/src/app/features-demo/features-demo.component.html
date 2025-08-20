@@ -807,7 +807,7 @@
                   <ion-label>Available Microphones</ion-label>
                 </ion-item-divider>
                 @for (mic of availableMicrophones(); track mic.id) {
-                  <ion-item button (click)="switchMicrophone(mic.id)">
+                  <ion-item (click)="switchMicrophone(mic.id)">
                     <ion-label>
                       <h3>{{ mic.name }}</h3>
                       <p>Type: {{ mic.type | titlecase }}</p>
@@ -851,7 +851,7 @@
           @if (recordedFiles().length > 0) {
             <ion-list>
               @for (file of recordedFiles(); track file.uri) {
-                <ion-item button (click)="selectedAudioInfo.set(file)">
+                <ion-item (click)="selectedAudioInfo.set(file)">
                   <ion-label>
                     <h3>{{ file.filename }}</h3>
                     <p>{{ formatTime(file.duration) }} • {{ formatFileSize(file.size) }}</p>

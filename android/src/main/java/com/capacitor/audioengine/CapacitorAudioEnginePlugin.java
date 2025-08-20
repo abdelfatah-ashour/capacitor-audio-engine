@@ -639,9 +639,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     @PluginMethod
     public void configureWaveform(PluginCall call) {
         try {
-            // Waveform visualization settings
-            Integer numberOfBars = call.getInt("numberOfBars", 32);
-            Double debounceTime = call.getDouble("debounceTime", 1.0);
+            // Derive current recording parameters
+            int sr = (recordingConfig != null) ? recordingConfig.getSampleRate() : AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
+            int ch = (recordingConfig != null) ? recordingConfig.getChannels() : AudioEngineConfig.Recording.DEFAULT_CHANNELS;
+            int br = (recordingConfig != null) ? recordingConfig.getBitrate() : AudioEngineConfig.Recording.DEFAULT_BITRATE;
+
+            // Quality-aware defaults based on recording config
+            boolean lowQuality = (sr <= 16000) || (br <= 32000);
+
+            // Waveform visualization settings with quality-based defaults
+            Integer numberOfBars = call.getInt("numberOfBars", lowQuality ? 64 : 128);
+            Double debounceTime = call.getDouble("debounceTime", lowQuality ? 0.1 : 0.05);
 
             // Convert debounceTime to seconds if it's a preset enum value
             float debounceInSeconds = debounceTime.floatValue();
@@ -653,12 +661,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             // Speech detection settings
             JSObject speechDetection = call.getObject("speechDetection");
             boolean speechEnabled = false;
-            float speechThreshold = 0.02f;
+            float speechThreshold = 0.01f;
             int calibrationDuration = 1000;
 
             if (speechDetection != null) {
                 speechEnabled = speechDetection.has("enabled") ? speechDetection.getBool("enabled") : false;
-                double threshold = speechDetection.has("threshold") ? speechDetection.getDouble("threshold") : 0.02;
+                double threshold = speechDetection.has("threshold") ? speechDetection.getDouble("threshold") : 0.01;
                 speechThreshold = (float) threshold;
                 calibrationDuration = speechDetection.has("calibrationDuration") ? speechDetection.getInt("calibrationDuration") : 1000;
 
@@ -681,6 +689,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             }
 
             if (waveformDataManager != null) {
+                // Ensure waveform manager is tuned for current recording configuration
+                waveformDataManager.configureForRecording(sr, ch, speechThreshold);
+
                 // Configure waveform visualization
                 waveformDataManager.configureWaveform(debounceInSeconds, numberOfBars);
 
@@ -727,6 +738,16 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
                 result.put("configuration", configuration);
                 call.resolve(result);
+
+                // Start monitoring if not already active
+                try {
+                    if (!waveformDataManager.isMonitoring()) {
+                        waveformDataManager.startMonitoring();
+                        Log.d(TAG, "Waveform data monitoring started via configureWaveform");
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Unable to start waveform monitoring from configureWaveform", e);
+                }
             } else {
                 call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
             }
@@ -736,81 +757,11 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         }
     }
 
-    /**
-     * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
-     */
-    @PluginMethod
-    public void configureWaveformSpeechDetection(PluginCall call) {
-        try {
-            Boolean enabled = call.getBoolean("enabled", false);
-            Double threshold = call.getDouble("threshold", 0.02);
-            Boolean useVAD = call.getBoolean("useVAD", true);
-            Integer calibrationDuration = call.getInt("calibrationDuration", 1000);
-
-            if (waveformDataManager != null) {
-                assert threshold != null;
-                // Explicitly use the Boolean/Integer version to resolve ambiguity
-                waveformDataManager.configureSpeechDetection(Boolean.TRUE.equals(enabled), threshold.floatValue(), useVAD, calibrationDuration);
-
-                Log.d(TAG, "Speech detection configured - enabled: " + enabled +
-                     ", threshold: " + threshold + ", VAD: " + useVAD +
-                     ", calibration: " + calibrationDuration + "ms");
-
-                JSObject result = new JSObject();
-                result.put("success", true);
-                result.put("enabled", enabled);
-                result.put("threshold", threshold);
-                result.put("useVAD", useVAD);
-                result.put("calibrationDuration", calibrationDuration);
-                call.resolve(result);
-            } else {
-                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to configure speech detection", e);
-            call.reject("CONFIGURE_ERROR", "Failed to configure speech detection: " + e.getMessage());
-        }
-    }
-
-    /**
-     * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
-     */
-    @PluginMethod
-    public void configureAdvancedVAD(PluginCall call) {
-        try {
-            Boolean enabled = call.getBoolean("enabled", true);
-            Integer windowSize = call.getInt("windowSize", 5); // Default to 5 frames for low latency
-            Boolean enableVoiceFilter = call.getBoolean("enableVoiceFilter", true);
-
-            if (waveformDataManager != null) {
-                // Configure advanced VAD settings
-                waveformDataManager.configureAdvancedVAD(enabled, windowSize, enableVoiceFilter);
-
-                int latencyMs = windowSize * 50; // Approximate latency
-                Log.d(TAG, "Advanced VAD configured - enabled: " + enabled +
-                     ", window: " + windowSize + " frames (~" + latencyMs + "ms)" +
-                     ", voiceFilter: " + enableVoiceFilter);
-
-                JSObject result = new JSObject();
-                result.put("success", true);
-                result.put("enabled", enabled);
-                result.put("windowSize", windowSize);
-                result.put("latencyMs", latencyMs);
-                result.put("enableVoiceFilter", enableVoiceFilter);
-                call.resolve(result);
-            } else {
-                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to configure advanced VAD", e);
-            call.reject("CONFIGURE_ERROR", "Failed to configure advanced VAD: " + e.getMessage());
-        }
-    }
 
     @PluginMethod
     public void setGainFactor(PluginCall call) {
         try {
-            Float gainFactor = call.getFloat("gainFactor", 20.0f); // Default higher than iOS (20.0 vs 12.0)
+            Float gainFactor = call.getFloat("gainFactor", 18.0f); // Tuned default down to better align with iOS
 
             // Validate gain factor range - increased upper bound to allow more amplification
             float validatedGain = Math.max(5.0f, Math.min(50.0f, gainFactor));

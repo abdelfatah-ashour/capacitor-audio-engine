@@ -49,6 +49,7 @@ export interface DurationChangeData {
 
 export interface WaveformData {
   level: number;
+  timestamp: number;
 }
 
 export interface WaveformInitData {
@@ -746,7 +747,7 @@ export interface CapacitorAudioEnginePlugin {
    * });
    * ```
    */
-  configureWaveform(options?: WaveformConfiguration): Promise<WaveformConfigurationResult>;
+  configureWaveform(): Promise<WaveformConfigurationResult>;
 
   /**
    * Destroy waveform configuration and clean up resources.
@@ -782,17 +783,6 @@ export interface CapacitorAudioEnginePlugin {
    */
   setGainFactor(options: SetGainFactorOptions): Promise<SetGainFactorResult>;
 
-  /**
-   * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
-   * Configure speech detection for waveform levels
-   */
-  configureWaveformSpeechDetection(options?: WaveformSpeechDetectionOptions): Promise<WaveformSpeechDetectionResult>;
-
-  /**
-   * @deprecated Use configureWaveform() instead. This method will be removed in a future version.
-   * Configure advanced Voice Activity Detection (VAD) for optimized latency and noise rejection.
-   */
-  configureAdvancedVAD(options?: AdvancedVADOptions): Promise<AdvancedVADResult>;
 
   // ==================== AUDIO PLAYBACK METHODS ====================
 

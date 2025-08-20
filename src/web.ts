@@ -12,12 +12,7 @@ import type {
   AvailableMicrophonesResult,
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
-  WaveformConfiguration,
   WaveformConfigurationResult,
-  WaveformSpeechDetectionOptions,
-  WaveformSpeechDetectionResult,
-  AdvancedVADOptions,
-  AdvancedVADResult,
   PreloadTracksOptions,
   PreloadTracksResult,
   PlaybackInfo,
@@ -231,37 +226,31 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with configuration result
    * @platform web Not supported
    */
-  async configureWaveform(options?: WaveformConfiguration): Promise<WaveformConfigurationResult> {
+  async configureWaveform(): Promise<WaveformConfigurationResult> {
     console.warn(
       'configureWaveform is not supported on web platform. Waveform data is not available for web recordings. Consider using MediaRecorder events and manual amplitude analysis.',
     );
 
-    // Extract legacy parameters for backward compatibility
-    const numberOfBars = options?.numberOfBars || 128;
-    const debounceTime = options?.debounceTime || 1.0;
-
-    // Convert debounce time to milliseconds
-    const debounceTimeMs = typeof debounceTime === 'number' ? debounceTime * 1000 : debounceTime;
+    // Build default configuration (web mock)
+    const numberOfBars = 128;
+    const debounceTimeMs = 50; // align with native default (50ms)
 
     // Build unified response structure
     return {
       success: false,
       configuration: {
-        numberOfBars: typeof numberOfBars === 'number' ? numberOfBars : 128,
-        debounceTimeMs: typeof debounceTimeMs === 'number' ? debounceTimeMs : 1000,
+        numberOfBars,
+        debounceTimeMs,
         speechDetection: {
-          enabled: options?.speechDetection?.enabled || false,
-          threshold: typeof options?.speechDetection?.threshold === 'number' ? options.speechDetection.threshold : 0.02,
-          calibrationDuration:
-            typeof options?.speechDetection?.calibrationDuration === 'number'
-              ? options.speechDetection.calibrationDuration
-              : 1000,
+          enabled: false,
+          threshold: 0.02,
+          calibrationDuration: 1000,
         },
         vad: {
-          enabled: options?.vad?.enabled || false,
-          windowSize: typeof options?.vad?.windowSize === 'number' ? options.vad.windowSize : 5,
-          estimatedLatencyMs: (typeof options?.vad?.windowSize === 'number' ? options.vad.windowSize : 5) * 50,
-          enableVoiceFilter: options?.vad?.enableVoiceFilter !== false,
+          enabled: false,
+          windowSize: 5,
+          estimatedLatencyMs: 5 * 50,
+          enableVoiceFilter: true,
         },
       },
     };
@@ -276,36 +265,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     console.warn('destroyWaveform is not supported on web platform. No waveform resources to clean up.');
   }
 
-  /**
-   * Configure speech detection for waveform levels.
-   * @param options - Configuration options for speech detection
-   * @returns Promise that resolves with configuration result
-   * @platform web Not supported
-   */
-  async configureWaveformSpeechDetection(
-    options?: WaveformSpeechDetectionOptions,
-  ): Promise<WaveformSpeechDetectionResult> {
-    const enabled = options?.enabled ?? false;
-    console.warn(
-      `configureWaveformSpeechDetection is not supported on web platform. Attempted to configure speech detection enabled: ${enabled}.`,
-    );
-    throw new Error('configureWaveformSpeechDetection is not supported on web platform');
-  }
 
-  /**
-   * Configure advanced VAD for optimized latency and noise rejection.
-   * @param options - Advanced VAD configuration options
-   * @returns Promise that resolves with configuration result
-   * @platform web Not supported
-   */
-  async configureAdvancedVAD(options?: AdvancedVADOptions): Promise<AdvancedVADResult> {
-    const enabled = options?.enabled ?? false;
-    const windowSize = options?.windowSize ?? 5;
-    console.warn(
-      `configureAdvancedVAD is not supported on web platform. Attempted to configure VAD enabled: ${enabled}, windowSize: ${windowSize}.`,
-    );
-    throw new Error('configureAdvancedVAD is not supported on web platform');
-  }
 
   // ==================== AUDIO PLAYBACK METHODS ====================
 

@@ -21,7 +21,7 @@ class WaveformDataManager {
     // MARK: - Configuration Constants
 
     private static let defaultBars = 128 // Default is 128 bars for higher resolution
-    private static let debounceTime: TimeInterval = 1.0 // Default debounce time of 1 second
+    private static let debounceTime: TimeInterval = 0.05 // Default debounce time of 50ms (~20fps)
     private static let sampleRate: Double = 44100.0
     private static let bufferSize: AVAudioFrameCount = 1024
 
@@ -61,7 +61,7 @@ class WaveformDataManager {
     private var currentSampleRate: Double = sampleRate // Track current sample rate for ZCR-based voice band filter
 
     // Speech detection calculation properties (aligned with Android)
-    private var speechDetectionGainFactor: Float = 20.0 // Increased to match Android default gain for comparable levels
+    private var speechDetectionGainFactor: Float = 30.0 // Boosted to achieve ~0.5+ peaks near mic on iOS by default
     private var adjustedSpeechThreshold: Float = defaultSpeechThreshold // Dynamic threshold based on background noise
     private var backgroundNoiseMultiplier: Float = 1.2 // Background noise calibration multiplier (aligned with Android)
     private var vadSpeechRatio: Float = 0.3 // Minimum ratio of speech frames in VAD window
@@ -306,15 +306,15 @@ class WaveformDataManager {
 
         self.speechThreshold = adjustedThreshold
 
-        // Adjust gain factor based on sample rate and channel count to match Android behavior
-        var optimalGain: Float = 20.0 // Base gain aligned with Android
+        // Adjust gain factor based on sample rate and channel count to better converge with Android
+        var optimalGain: Float = 30.0 // Increased base gain to reach ~0.5+ peaks near mic
 
         if sampleRate >= 48000 {
-            optimalGain = 25.0 // Higher gain for 48kHz+ recording (match Android)
+            optimalGain = 34.0 // Increase for high sample rates to match perceived loudness and reach ~0.5+ peaks
         }
 
         if channels >= 2 {
-            optimalGain *= 1.15 // Slight gain boost for stereo recording
+            optimalGain *= 1.10 // Keep reduced stereo multiplier
         }
 
         speechDetectionGainFactor = optimalGain
@@ -453,6 +453,12 @@ class WaveformDataManager {
 
             // Track current sample rate for voice-band detection calculations
             currentSampleRate = tapFormat.sampleRate
+
+            // Adjust gain dynamically based on actual tap sample rate (e.g., 48kHz input)
+            if currentSampleRate >= 48000, speechDetectionGainFactor < 34.0 {
+                speechDetectionGainFactor = 34.0
+                log("Adjusted gain for high sample rate input (\(currentSampleRate) Hz): \(speechDetectionGainFactor)")
+            }
 
             log("Starting waveform monitoring with tap format: \(tapFormat)")
 
@@ -873,7 +879,8 @@ class WaveformDataManager {
         }
 
         let data: [String: Any] = [
-            "level": level
+            "level": level,
+            "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
         ]
 
         eventCallback.notifyListeners("waveformData", data: data)
