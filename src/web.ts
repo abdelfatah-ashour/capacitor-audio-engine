@@ -118,6 +118,17 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
+   * Reset the current recording session without finalizing a file.
+   * @platform web Not supported
+   */
+  async resetRecording(): Promise<void> {
+    console.warn(
+      'resetRecording is not supported on web platform. No recording buffers to reset.',
+    );
+    throw new Error('resetRecording is not supported on web platform');
+  }
+
+  /**
    * Get the current recording duration.
    * @returns Promise that resolves with the current duration in seconds
    * @platform web Not supported - returns 0

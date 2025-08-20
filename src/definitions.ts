@@ -591,6 +591,17 @@ export interface CapacitorAudioEnginePlugin {
   resumeRecording(): Promise<void>;
 
   /**
+   * Reset the current recording session without finalizing a file.
+   * Behavior:
+   * - Discards the current recording (segments are cleared)
+   * - Discards current duration and waveform data
+   * - Keeps the previously configured recording settings for seamless resume
+   * - Leaves the session in paused state so resumeRecording() starts fresh
+   * @returns Promise that resolves when the session is reset
+   */
+  resetRecording(): Promise<void>;
+
+  /**
    * Stop the current recording and get the recorded file information.
    * @returns Promise that resolves with the recorded audio file details
    * @throws {Error} If no active recording exists

@@ -299,6 +299,46 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
     @PluginMethod
+    public void resetRecording(PluginCall call) {
+        // Ensure there is an active recording session context to reset
+        boolean sessionActive = isRecording ||
+            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
+
+        if (!sessionActive) {
+            call.reject("No active recording session to reset");
+            return;
+        }
+
+        try {
+            // Discard current recording segments and reset duration inside manager
+            if (segmentRollingManager != null) {
+                segmentRollingManager.resetSegmentRolling();
+                Log.d(TAG, "Segment rolling reset successfully");
+            }
+
+            // Discard waves by stopping waveform monitoring (frontend should clear visualization on waveformDestroy)
+            if (waveformDataManager != null) {
+                waveformDataManager.stopMonitoring();
+                Log.d(TAG, "Waveform monitoring stopped (waves discarded)");
+            }
+
+            // Keep recordingConfig/maxDuration for resume; mark session as paused state
+            if (eventManager != null) {
+                JSObject pauseData = new JSObject();
+                pauseData.put("duration", 0.0);
+                pauseData.put("isRecording", true); // Session remains active and resumable
+                pauseData.put("status", "paused");
+                eventManager.emitRecordingStateChange("paused", pauseData);
+            }
+
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to reset recording", e);
+            call.reject("Failed to reset recording: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void stopRecording(PluginCall call) {
         try {
             JSObject result = stopRecordingInternal();
@@ -1583,10 +1623,19 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                     Log.d(TAG, "Fresh segment rolling started after legacy reset");
                 }
 
-                // Resume waveform data monitoring
+                // Ensure waveform data monitoring restarts fresh if it was stopped by reset
                 if (waveformDataManager != null) {
-                    waveformDataManager.resumeMonitoring();
-                    Log.d(TAG, "Waveform data monitoring resumed");
+                    try {
+                        if (!waveformDataManager.isMonitoring()) {
+                            waveformDataManager.startMonitoring();
+                            Log.d(TAG, "Waveform data monitoring started");
+                        } else {
+                            waveformDataManager.resumeMonitoring();
+                            Log.d(TAG, "Waveform data monitoring resumed");
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Unable to start/resume waveform monitoring", e);
+                    }
                 }
 
                 // Emit recording state change event for consistency

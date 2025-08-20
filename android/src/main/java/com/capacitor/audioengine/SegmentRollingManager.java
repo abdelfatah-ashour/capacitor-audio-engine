@@ -292,8 +292,15 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 startNewSegment();
             }
 
-            // Resume continuous recorder if supported
-            if (continuousRecorder != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            // Resume or restart continuous recorder if needed
+            if (continuousRecorder == null) {
+                try {
+                    startContinuousRecorder();
+                    Log.d(TAG, "Continuous recorder started after reset");
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to start continuous recorder after reset", e);
+                }
+            } else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
                 try {
                     continuousRecorder.resume();
                 } catch (Exception e) {
@@ -372,12 +379,39 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             // Clear all segments and reset buffers
             cleanupSegments();
 
+            // Also discard any continuous recording so post-reset audio starts fresh
+            if (continuousRecorder != null) {
+                try {
+                    if (isContinuousActive) {
+                        // If paused, resume briefly to avoid stop errors
+                        if (isManuallyPaused.get() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                            try { continuousRecorder.resume(); } catch (Exception ignored) {}
+                        }
+                        continuousRecorder.stop();
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping continuous recorder during reset", e);
+                } finally {
+                    try { continuousRecorder.release(); } catch (Exception ignored) {}
+                    continuousRecorder = null;
+                    isContinuousActive = false;
+                }
+            }
+            // Delete previous continuous output file if exists
+            if (continuousOutputFile != null && continuousOutputFile.exists()) {
+                boolean deleted = continuousOutputFile.delete();
+                if (!deleted) {
+                    Log.w(TAG, "Failed to delete previous continuous file during reset: " + continuousOutputFile.getAbsolutePath());
+                }
+            }
+            continuousOutputFile = null;
+
             // Reset all duration tracking variables to start fresh
             recordingStartTime = System.currentTimeMillis(); // Reset start time to now
             pausedDurationOffset = 0;
             pauseStartTime = 0;
             manualPausedDurationOffset = 0;
-            manualPauseStartTime = 0;
+            manualPauseStartTime = recordingStartTime; // Start manual pause at reset time to keep duration at 0 while paused
 
             // Reset segment counter
             segmentCounter.set(0);
@@ -385,7 +419,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
             // Reset pause states
             isDurationPaused.set(false);
-            isManuallyPaused.set(false);
+            isManuallyPaused.set(true); // Mark as paused after reset so duration stays 0 until resume
 
             // Keep session active without creating a new recorder
             // This maintains the session state while avoiding MediaRecorder stop issues

@@ -413,6 +413,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   protected readonly canStop = computed(() =>
     ['recording', 'paused'].includes(this.recordingStatus())
   );
+  protected readonly canReset = computed(() =>
+    ['recording', 'paused'].includes(this.recordingStatus())
+  );
 
   protected readonly recordingProgressPercent = computed(() => {
     if (!this.isSegmentRollingEnabled()) return 0;
@@ -628,6 +631,20 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       if (!error?.toString().includes('No active recording to stop')) {
         await this.showToast('Failed to stop recording', 'danger');
       }
+    }
+  }
+
+  async resetRecording(): Promise<void> {
+    try {
+      await CapacitorAudioEngine.resetRecording();
+      // Reset local UI state to reflect pause with zero duration
+      this.recordingStatus.set('paused');
+      this.recordingDuration.set(0);
+      this.waveformHistory.set([]);
+      await this.showToast('Recording reset - ready to resume fresh', "success");
+    } catch (error: any) {
+      console.error('Failed to reset recording:', error);
+      await this.showToast('Failed to reset recording', 'danger');
     }
   }
 

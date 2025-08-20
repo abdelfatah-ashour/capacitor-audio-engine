@@ -42,6 +42,7 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 
 - 🎯 Record high-quality audio on Android and iOS
 - ⏯️ Pause and resume your recordings
+- 🔄 Reset an in-progress recording (discard segments/duration/waveform, keep settings; resume starts fresh)
 - 📊 Monitor recording status in real-time
 - 🔒 Handle permissions automatically
 - ✂️ Trim your audio files
@@ -532,6 +533,20 @@ Resume the current recording if it was previously paused.
 resumeRecording(): Promise<void>;
 ```
 
+##### `resetRecording()`
+
+Reset the current recording session without finalizing a file.
+
+```typescript
+resetRecording(): Promise<void>;
+```
+
+Notes:
+- Discards current segments, duration, and waveform data
+- Keeps your previous recording configuration so you can resume seamlessly
+- Leaves the session in paused state; call resumeRecording() to start fresh
+- Web: Not supported (throws an error)
+
 ##### `stopRecording()`
 
 Stop the current recording and get the recorded file information.
@@ -555,7 +570,7 @@ getDuration(): Promise<{ duration: number }>;
 Check the current recording status.
 
 ```typescript
-getStatus(): Promise<{ status: RecordingStatus; isRecording: boolean }>;
+getStatus(): Promise<{ status: RecordingStatus; isRecording: boolean; duration: number }>;
 ```
 
 #### Audio Processing

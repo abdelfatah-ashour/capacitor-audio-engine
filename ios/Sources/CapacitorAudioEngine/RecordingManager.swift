@@ -398,7 +398,64 @@ class RecordingManager: NSObject {
         }
     }
 
-    // resetRecording removed: to start fresh, stopRecording then startRecording
+    // MARK: - Reset Recording
+
+    /// Reset the current recording session without finalizing a file
+    /// Behavior:
+    /// - Discards current recording data (segments)
+    /// - Discards current duration and waves
+    /// - Keeps last configured recording settings for seamless resume
+    /// - Leaves the session in paused state so `resumeRecording()` can start fresh
+    func resetRecording() {
+        performStateOperation {
+            self.log("resetRecording called - isRecording=\(self.isRecording), isPaused=\(self.isPaused)")
+
+            // Pause active recording if needed (no finalize)
+            if self.isRecording {
+                self.segmentRollingManager?.pauseSegmentRolling()
+                self.log("Paused active segment rolling before reset")
+            }
+
+            // Stop duration monitoring and reset counters
+            self.stopDurationMonitoring()
+            self.currentDuration = 0
+            self.lastReportedDuration = nil
+
+            // Discard segments and internal waveform buffers by recreating the rolling manager
+            if let manager = self.segmentRollingManager {
+                manager.cleanup()
+                self.log("Cleaned up existing SegmentRollingManager (discarded segments/waves)")
+            }
+
+            // Recreate manager to keep session ready with same configuration
+            self.segmentRollingManager = SegmentRollingManager()
+
+            // Re-apply maxDuration configuration if any
+            if let maxDurationValue = self.maxDuration {
+                self.segmentRollingManager?.setMaxDuration(maxDurationValue)
+            } else {
+                self.segmentRollingManager?.setMaxDuration(nil)
+            }
+
+            // Keep lastRecordingSettings and storedRecordingSettings for resume
+            // Do NOT clear storedRecordingSettings here to preserve configured start recording
+
+            // Set paused state
+            self.isRecording = false
+            self.isPaused = true
+
+            // Notify delegate of paused state with duration 0
+            DispatchQueue.main.async {
+                self.delegate?.recordingDidChangeState("paused", data: [
+                    "duration": 0,
+                    "isRecording": false,
+                    "status": "paused"
+                ])
+            }
+
+            self.log("resetRecording completed: session is paused with duration reset to 0")
+        }
+    }
 
     /**
      * Stops the current recording and processes the audio file

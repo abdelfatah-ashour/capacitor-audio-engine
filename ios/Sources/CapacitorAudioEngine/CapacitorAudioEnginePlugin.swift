@@ -19,6 +19,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "pauseRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resumeRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resetRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getDuration", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimAudio", returnType: CAPPluginReturnPromise),
@@ -309,6 +310,23 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
         // Resume waveform data monitoring
         waveformDataManager.resumeMonitoring()
+
+        call.resolve()
+    }
+
+    @objc func resetRecording(_ call: CAPPluginCall) {
+        // Ensure there is an active recording session to reset
+        let status = recordingManager.getStatus()
+        if status == "idle" {
+            call.reject("No active recording session to reset")
+            return
+        }
+
+        // Reset recording manager state (discards segments, duration, keeps config, pauses)
+        recordingManager.resetRecording()
+
+        // Discard waveform data by stopping monitoring so UI can clear on waveformDestroy
+        waveformDataManager.stopMonitoring()
 
         call.resolve()
     }
