@@ -568,6 +568,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       await CapacitorAudioEngine.startRecording({
         ...options,
         ...segmentOptions,
+        sampleRate: 48000, // AudioSampleRate.CD_44K
+        channels: 1, // AudioChannels.MONO
+        bitrate: 128000, // AudioBitrate.HIGH
       });
 
       this.recordingStatus.set('recording');

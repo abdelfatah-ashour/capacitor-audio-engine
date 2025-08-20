@@ -282,6 +282,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         let channelsInt = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
         waveformDataManager.configureForRecording(sampleRate: sampleRateInt, channels: channelsInt, speechThreshold: 0.01)
 
+        // Apply a 2x boost for specific high-quality mono configuration
+        if sampleRateInt == 48000 && channelsInt == 1 && bitrate == 128000 {
+            // configureForRecording sets 40.0 for this case; double to 80.0 for clearer levels
+            waveformDataManager.setGainFactor(80.0)
+            log("Applied 2x waveform gain boost for 48kHz/128kbps mono (gain=80.0)")
+        }
+
         // Start waveform data monitoring for real-time audio levels
         waveformDataManager.startMonitoring()
 

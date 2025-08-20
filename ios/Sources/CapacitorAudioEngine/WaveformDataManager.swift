@@ -61,7 +61,7 @@ class WaveformDataManager {
     private var currentSampleRate: Double = sampleRate // Track current sample rate for ZCR-based voice band filter
 
     // Speech detection calculation properties (aligned with Android)
-    private var speechDetectionGainFactor: Float = 30.0 // Boosted to achieve ~0.5+ peaks near mic on iOS by default
+    private var speechDetectionGainFactor: Float = 36.0 // Boosted default to achieve ~0.6+ peaks near mic on iOS by default
     private var adjustedSpeechThreshold: Float = defaultSpeechThreshold // Dynamic threshold based on background noise
     private var backgroundNoiseMultiplier: Float = 1.2 // Background noise calibration multiplier (aligned with Android)
     private var vadSpeechRatio: Float = 0.3 // Minimum ratio of speech frames in VAD window
@@ -266,7 +266,8 @@ class WaveformDataManager {
      * - Parameter gainFactor: Gain factor to apply to RMS values (5.0-30.0, default: 12.0)
      */
     func setGainFactor(_ gainFactor: Float) {
-        speechDetectionGainFactor = max(5.0, min(50.0, gainFactor))
+        // Allow higher headroom to support explicit 2x boosts for high-quality mono (e.g., 48kHz/128kbps)
+        speechDetectionGainFactor = max(5.0, min(100.0, gainFactor))
         log("Speech detection gain factor set to: \(speechDetectionGainFactor)")
     }
 
@@ -307,14 +308,14 @@ class WaveformDataManager {
         self.speechThreshold = adjustedThreshold
 
         // Adjust gain factor based on sample rate and channel count to better converge with Android
-        var optimalGain: Float = 30.0 // Increased base gain to reach ~0.5+ peaks near mic
+        var optimalGain: Float = 36.0 // Increased base gain to reach ~0.6+ peaks near mic
 
         if sampleRate >= 48000 {
-            optimalGain = 34.0 // Increase for high sample rates to match perceived loudness and reach ~0.5+ peaks
+            optimalGain = 40.0 // Increase for high sample rates to match perceived loudness and reach ~0.6+ peaks
         }
 
         if channels >= 2 {
-            optimalGain *= 1.10 // Keep reduced stereo multiplier
+            optimalGain *= 1.15 // Slightly higher stereo multiplier for balanced loudness
         }
 
         speechDetectionGainFactor = optimalGain
@@ -455,8 +456,8 @@ class WaveformDataManager {
             currentSampleRate = tapFormat.sampleRate
 
             // Adjust gain dynamically based on actual tap sample rate (e.g., 48kHz input)
-            if currentSampleRate >= 48000, speechDetectionGainFactor < 34.0 {
-                speechDetectionGainFactor = 34.0
+            if currentSampleRate >= 48000, speechDetectionGainFactor < 40.0 {
+                speechDetectionGainFactor = 40.0
                 log("Adjusted gain for high sample rate input (\(currentSampleRate) Hz): \(speechDetectionGainFactor)")
             }
 

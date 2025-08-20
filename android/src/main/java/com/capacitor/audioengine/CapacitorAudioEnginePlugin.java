@@ -849,6 +849,20 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
         // Start waveform data monitoring for real-time audio levels
         if (waveformDataManager != null) {
+            // Apply a 2x boost for specific high-quality mono configuration (48kHz, 128kbps, mono)
+            try {
+                int sr = recordingConfig != null ? recordingConfig.getSampleRate() : AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
+                int ch = recordingConfig != null ? recordingConfig.getChannels() : AudioEngineConfig.Recording.DEFAULT_CHANNELS;
+                int br = recordingConfig != null ? recordingConfig.getBitrate() : AudioEngineConfig.Recording.DEFAULT_BITRATE;
+                if (sr == 48000 && ch == 1 && br == 128000) {
+                    // configureForRecording uses 22.0 at 48kHz mono; double to 44.0
+                    waveformDataManager.setGainFactor(44.0f);
+                    Log.d(TAG, "Applied 2x waveform gain boost for 48kHz/128kbps mono (gain=44.0)");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Unable to apply conditional gain boost", e);
+            }
+
             waveformDataManager.startMonitoring();
             Log.d(TAG, "Waveform data monitoring started");
         }
