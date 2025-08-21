@@ -9,7 +9,7 @@ import Capacitor
  */
 
 @objc(CapacitorAudioEnginePlugin)
-public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingManagerDelegate, PlaybackManagerDelegate, WaveformDataManager.WaveformEventCallback {
+public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingManagerDelegate, PlaybackManagerDelegate, WaveformEventCallback {
     public let identifier = "CapacitorAudioEnginePlugin"
     public let jsName = "CapacitorAudioEngine"
     public let pluginMethods: [CAPPluginMethod] = [

@@ -1,6 +1,11 @@
 import Foundation
 import AVFoundation
 
+// MARK: - Protocols
+protocol WaveformEventCallback: AnyObject {
+    func notifyListeners(_ eventName: String, data: [String: Any])
+}
+
 /**
  * WaveformDataManager handles real-time audio level monitoring during recording on iOS
  * Features:
@@ -47,9 +52,14 @@ class WaveformDataManager {
     private var inputNode: AVAudioInputNode?
     private var numberOfBars: Int = defaultBars
     private var debounceTime: TimeInterval = debounceTime // Configurable debounce time, initialized with default value
-    private var isActive: Bool = false
-    private var isRecording: Bool = false
+
+    // Monitoring state flags (renamed for clarity)
+    private var isMonitoringActive: Bool = false
+    private var isMonitoringPaused: Bool = false
     private var lastEmissionTime: TimeInterval = 0
+
+    // Callback dispatch queue (configurable)
+    private var callbackQueue: DispatchQueue = .main
 
     // Speech detection properties
     private var speechOnlyMode: Bool = false
@@ -60,11 +70,19 @@ class WaveformDataManager {
     private var voiceBandFilterEnabled: Bool = true // Enable human voice band filtering for noise rejection
     private var currentSampleRate: Double = sampleRate // Track current sample rate for ZCR-based voice band filter
 
+    // Centralized tuning constants and variables
+    private static let defaultGainFactor: Float = 36.0
+    private static let defaultVadSpeechRatio: Float = 0.3
+    private static let zcrMinSpeech: Int = 10
+    private static let zcrMaxSpeech: Int = 1000
+    private static let outOfBandAttenuation: Float = 0.3
+
     // Speech detection calculation properties (aligned with Android)
-    private var speechDetectionGainFactor: Float = 36.0 // Boosted default to achieve ~0.6+ peaks near mic on iOS by default
+    private var speechDetectionGainFactor: Float = defaultGainFactor // Boosted default to achieve ~0.6+ peaks near mic on iOS by default
     private var adjustedSpeechThreshold: Float = defaultSpeechThreshold // Dynamic threshold based on background noise
     private var backgroundNoiseMultiplier: Float = 1.2 // Background noise calibration multiplier (aligned with Android)
-    private var vadSpeechRatio: Float = 0.3 // Minimum ratio of speech frames in VAD window
+    private var vadSpeechRatio: Float = defaultVadSpeechRatio // Minimum ratio of speech frames in VAD window
+    private var energyThresholdMultiplier: Float = 2.0 // Energy threshold multiplier for VAD (configurable)
 
     // VAD state tracking (now with configurable window size)
     private var recentEnergyLevels: [Float] = []
@@ -89,17 +107,22 @@ class WaveformDataManager {
     // Debug tracking
     private var debugFrameCount: Int = 0
 
+    // Channel handling strategy
+    enum ChannelHandling {
+        case average
+        case max
+    }
+    private var channelHandling: ChannelHandling = .average
+
+    // Reusable buffer for voice band filtering to avoid per-call allocations
+    private var voiceFilterBuffer: [Float] = []
+
     // Event callback
     private weak var eventCallback: WaveformEventCallback?
 
     // Thread safety
     private let queue = DispatchQueue(label: "waveform-data-queue", qos: .userInitiated)
 
-    // MARK: - Protocols
-
-    protocol WaveformEventCallback: AnyObject {
-        func notifyListeners(_ eventName: String, data: [String: Any])
-    }
 
     // MARK: - Initialization
 
@@ -198,7 +221,7 @@ class WaveformDataManager {
             log("VAD window size set to: \(vadWindowSize) frames (~\(vadWindowSize * 50)ms latency)")
 
             // Only reset VAD state if currently enabled and not during initial configuration
-            if vadEnabled && isActive {
+            if vadEnabled && isMonitoringActive {
                 resetVadState()
             }
         }
@@ -291,6 +314,28 @@ class WaveformDataManager {
     }
 
     /**
+     * Configure tuning parameters centrally.
+     * - Parameters are optional; pass only those you want to change.
+     */
+    func configure(
+        silenceThreshold: Float? = nil,
+        vadEnergyRatio: Float? = nil,
+        vadSpeechRatio: Float? = nil,
+        gainFactor: Float? = nil,
+        channelHandling: ChannelHandling? = nil,
+        callbackQueue: DispatchQueue? = nil
+    ) {
+        if let v = silenceThreshold { speechThreshold = max(0.0, min(1.0, v)) }
+        if let v = vadEnergyRatio { energyThresholdMultiplier = max(0.5, min(5.0, v)) }
+        if let v = vadSpeechRatio { self.vadSpeechRatio = max(0.05, min(1.0, v)) }
+        if let v = gainFactor { setGainFactor(v) } // reuse validation
+        if let v = channelHandling { self.channelHandling = v }
+        if let q = callbackQueue { self.callbackQueue = q }
+
+        log("Central configure: threshold=\(speechThreshold), vadEnergyRatio=\(energyThresholdMultiplier), vadSpeechRatio=\(self.vadSpeechRatio), gain=\(speechDetectionGainFactor), channelHandling=\(self.channelHandling), callbackQueue=\(String(describing: type(of: self.callbackQueue)))")
+    }
+
+    /**
      * Configure waveform manager with recording parameters for optimal performance
      * - Parameter sampleRate: Recording sample rate (e.g., 48000)
      * - Parameter channels: Number of recording channels (e.g., 2 for stereo)
@@ -308,7 +353,7 @@ class WaveformDataManager {
         self.speechThreshold = adjustedThreshold
 
         // Adjust gain factor based on sample rate and channel count to better converge with Android
-        var optimalGain: Float = 36.0 // Increased base gain to reach ~0.6+ peaks near mic
+        var optimalGain: Float = Self.defaultGainFactor // Base gain to reach ~0.6+ peaks near mic
 
         if sampleRate >= 48000 {
             optimalGain = 40.0 // Increase for high sample rates to match perceived loudness and reach ~0.6+ peaks
@@ -381,7 +426,7 @@ class WaveformDataManager {
      */
     func pauseMonitoring() {
         queue.async { [weak self] in
-            self?.isRecording = false
+            self?.isMonitoringPaused = true
             self?.log("Waveform monitoring paused")
         }
     }
@@ -391,8 +436,8 @@ class WaveformDataManager {
      */
     func resumeMonitoring() {
         queue.async { [weak self] in
-            guard let self = self, self.isActive else { return }
-            self.isRecording = true
+            guard let self = self, self.isMonitoringActive else { return }
+            self.isMonitoringPaused = false
             self.log("Waveform monitoring resumed")
         }
     }
@@ -402,17 +447,20 @@ class WaveformDataManager {
      */
     func isMonitoring() -> Bool {
         return queue.sync {
-            return isActive && isRecording
+            return isMonitoringActive && !isMonitoringPaused
         }
     }
 
     // MARK: - Private Methods
 
     private func startMonitoringInternal() {
-        guard !isActive else {
+        guard !isMonitoringActive else {
             log("Waveform monitoring is already active")
             return
         }
+
+        // Reset calibration state at start to avoid drift
+        resetVadState()
 
         do {
             // Create audio engine
@@ -475,8 +523,8 @@ class WaveformDataManager {
             // Start audio engine
             try audioEngine.start()
 
-            isActive = true
-            isRecording = true
+            isMonitoringActive = true
+            isMonitoringPaused = false
             lastEmissionTime = 0
 
             log("Waveform monitoring started with debounceTime: \(debounceTime) seconds (\(debounceTime * 1000)ms)")
@@ -488,12 +536,17 @@ class WaveformDataManager {
 
         } catch {
             log("Failed to start waveform monitoring: \(error.localizedDescription)")
+            // Emit error event
+            let errMsg = error.localizedDescription
+            callbackQueue.async { [weak self] in
+                self?.emitWaveformError(message: errMsg)
+            }
             cleanup()
         }
     }
 
     private func stopMonitoringInternal() {
-        guard isActive else {
+        guard isMonitoringActive else {
             log("Waveform monitoring is not active")
             return
         }
@@ -503,8 +556,8 @@ class WaveformDataManager {
         // Emit waveform destroy event before cleanup
         emitWaveformDestroy(reason: "stop_recording")
 
-        isActive = false
-        isRecording = false
+        isMonitoringActive = false
+        isMonitoringPaused = false
 
         // Stop audio engine
         if let audioEngine = audioEngine {
@@ -528,7 +581,7 @@ class WaveformDataManager {
      * - Parameter buffer: PCM audio buffer from AVAudioEngine
      */
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard isActive && isRecording else { return }
+        guard isMonitoringActive && !isMonitoringPaused else { return }
 
         // Check emission interval to maintain target frequency
         let currentTime = CACurrentMediaTime()
@@ -583,8 +636,17 @@ class WaveformDataManager {
             }
         }
 
-        // Always emit waveform level on main queue (continuous emission)
-        DispatchQueue.main.async { [weak self] in
+        // Apply global silence gate and soft peak clamp so UI sees 0 in silence and ~0.3-0.7 during speech
+        // Silence gate: zero out very small values even if speechOnlyMode is off
+        let silenceGate = max(0.01, speechThreshold)
+        if emitLevel < silenceGate { emitLevel = 0.0 }
+        
+        // Soft clamp to keep typical speaking levels within ~0.3-0.7 range
+        // (still allows lower values if speaking softly and won't exceed 0.7 peak)
+        if emitLevel > 0.0 { emitLevel = min(0.7, emitLevel) }
+
+        // Always emit waveform level on callback queue (continuous emission)
+        callbackQueue.async { [weak self] in
             self?.emitWaveformLevel(level: emitLevel)
         }
     }
@@ -594,9 +656,15 @@ class WaveformDataManager {
      * Uses optimized filtering for higher sample rates
      */
     private func applyVoiceBandFilter(samples: UnsafePointer<Float>, frameLength: Int) -> [Float] {
-        // If filter disabled, return raw samples
+        // Ensure reusable buffer size
+        if voiceFilterBuffer.count != frameLength {
+            voiceFilterBuffer = Array(repeating: 0.0, count: frameLength)
+        }
+
+        // If filter disabled, copy samples into reusable buffer and return
         guard voiceBandFilterEnabled else {
-            return Array(UnsafeBufferPointer(start: samples, count: frameLength))
+            for i in 0..<frameLength { voiceFilterBuffer[i] = samples[i] }
+            return voiceFilterBuffer
         }
 
         // Compute zero crossing rate for the current buffer
@@ -610,16 +678,14 @@ class WaveformDataManager {
 
         // If out of band, attenuate samples (similar to Android's level attenuation)
         if !inVoiceBand {
-            var attenuated = [Float]()
-            attenuated.reserveCapacity(frameLength)
-            for i in 0..<frameLength {
-                attenuated.append(samples[i] * 0.3)
-            }
-            return attenuated
+            let attenuation = Self.outOfBandAttenuation
+            for i in 0..<frameLength { voiceFilterBuffer[i] = samples[i] * attenuation }
+            return voiceFilterBuffer
         }
 
         // In-band: keep original samples to preserve amplitude
-        return Array(UnsafeBufferPointer(start: samples, count: frameLength))
+        for i in 0..<frameLength { voiceFilterBuffer[i] = samples[i] }
+        return voiceFilterBuffer
     }
 
     /**
@@ -631,29 +697,33 @@ class WaveformDataManager {
      * - Returns: Single normalized amplitude level (0-1) with gain applied if needed
      */
     private func processAudioDataForSingleLevel(channelData: UnsafePointer<UnsafeMutablePointer<Float>>, frameLength: Int, channelCount: Int) -> Float {
-        var sum: Float = 0.0
-        var totalSamples = 0
+        var perChannelRMS: [Float] = []
+        perChannelRMS.reserveCapacity(max(1, channelCount))
 
-        // Process all channels and average them
         for channel in 0..<channelCount {
             let samples = channelData[channel]
-
-            // Apply voice band filtering if enabled
             let processedSamples = applyVoiceBandFilter(samples: samples, frameLength: frameLength)
 
-            for sample in processedSamples {
-                sum += sample * sample
-                totalSamples += 1
+            var sum: Float = 0.0
+            for i in 0..<frameLength {
+                let s = processedSamples[i]
+                sum += s * s
             }
+            let rms = sqrt(sum / Float(frameLength))
+            perChannelRMS.append(rms)
         }
 
-        guard totalSamples > 0 else { return 0.0 }
+        guard !perChannelRMS.isEmpty else { return 0.0 }
 
-        // Calculate RMS with updated gain factor
-        let rms = sqrt(sum / Float(totalSamples))
-        let adjustedRms = rms * speechDetectionGainFactor
+        let combinedRMS: Float
+        switch channelHandling {
+        case .average:
+            combinedRMS = perChannelRMS.reduce(0, +) / Float(perChannelRMS.count)
+        case .max:
+            combinedRMS = perChannelRMS.max() ?? 0.0
+        }
 
-        // Ensure it's in 0-1 range
+        let adjustedRms = combinedRMS * speechDetectionGainFactor
         return min(1.0, max(0.0, adjustedRms))
     }
 
@@ -672,7 +742,7 @@ class WaveformDataManager {
 
         // Enhanced VAD (Voice Activity Detection) with static threshold
         let aboveThreshold = level > speechThreshold
-        return performVAD(currentLevel: level, channelData: channelData, frameLength: frameLength) && aboveThreshold
+        return performFullVAD(currentLevel: level, channelData: channelData, frameLength: frameLength) && aboveThreshold
     }
 
     /**
@@ -758,7 +828,7 @@ class WaveformDataManager {
      * - Parameter frameLength: Number of audio frames
      * - Returns: true if voice activity is detected
      */
-    private func performVAD(currentLevel: Float, channelData: UnsafePointer<Float>, frameLength: Int) -> Bool {
+    private func performFullVAD(currentLevel: Float, channelData: UnsafePointer<Float>, frameLength: Int) -> Bool {
         frameCount += 1
 
         // Update energy level history
@@ -774,7 +844,7 @@ class WaveformDataManager {
         if !backgroundCalibrated && frameCount <= calibrationFrames {
             backgroundEnergyLevel += currentLevel
             if frameCount == calibrationFrames {
-                backgroundEnergyLevel = (backgroundEnergyLevel / Float(calibrationFrames)) * Self.energyThresholdMultiplier
+                backgroundEnergyLevel = (backgroundEnergyLevel / Float(calibrationFrames)) * energyThresholdMultiplier
                 backgroundCalibrated = true
                 log("VAD background energy calibrated after \(calibrationFrames) frames (\(backgroundCalibrationDuration)ms): \(backgroundEnergyLevel)")
             }
@@ -790,7 +860,7 @@ class WaveformDataManager {
 
         // Calculate zero crossing rate for additional speech characteristics
         let zeroCrossings = calculateZeroCrossingRate(channelData: channelData, frameLength: frameLength)
-        let zcrCheck = zeroCrossings > 10 && zeroCrossings < 1000 // Typical speech range
+        let zcrCheck = zeroCrossings > Self.zcrMinSpeech && zeroCrossings < Self.zcrMaxSpeech // Typical speech range
 
         // Count recent frames above energy threshold
         let speechFrames = recentEnergyLevels.filter { $0 > backgroundEnergyLevel }.count
@@ -812,7 +882,7 @@ class WaveformDataManager {
      * - Parameter rmsLevel: Current RMS energy level
      * - Returns: Speech level (0.0 if no speech detected, rmsLevel if speech detected)
      */
-    private func performVAD(rmsLevel: Float) -> Float {
+    private func performSimplifiedVAD(rmsLevel: Float) -> Float {
         vadFrameCount += 1
 
         // Update energy level history
@@ -904,7 +974,9 @@ class WaveformDataManager {
             "calibrationDuration": backgroundCalibrationDuration
         ]
 
-        eventCallback.notifyListeners("waveformInit", data: data)
+        callbackQueue.async {
+            eventCallback.notifyListeners("waveformInit", data: data)
+        }
     }
 
     /**
@@ -922,7 +994,26 @@ class WaveformDataManager {
             "timestamp": Int64(Date().timeIntervalSince1970 * 1000) // milliseconds
         ]
 
-        eventCallback.notifyListeners("waveformDestroy", data: data)
+        callbackQueue.async {
+            eventCallback.notifyListeners("waveformDestroy", data: data)
+        }
+    }
+
+    /**
+     * Emit waveform error event
+     */
+    private func emitWaveformError(message: String) {
+        guard let eventCallback = eventCallback else {
+            log("No event callback available for waveform error: \(message)")
+            return
+        }
+        let data: [String: Any] = [
+            "message": message,
+            "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
+        ]
+        callbackQueue.async {
+            eventCallback.notifyListeners("waveformError", data: data)
+        }
     }
 
     /**
