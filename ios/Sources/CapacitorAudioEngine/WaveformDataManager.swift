@@ -77,12 +77,21 @@ class WaveformDataManager {
     private static let zcrMaxSpeech: Int = 1000
     private static let outOfBandAttenuation: Float = 0.3
 
+    // Preferred sample rate configuration (best effort): 44100 or 48000 recommended
+    private static let defaultPreferredSampleRate: Double = 48000.0
+
     // Speech detection calculation properties (aligned with Android)
     private var speechDetectionGainFactor: Float = defaultGainFactor // Boosted default to achieve ~0.6+ peaks near mic on iOS by default
     private var adjustedSpeechThreshold: Float = defaultSpeechThreshold // Dynamic threshold based on background noise
     private var backgroundNoiseMultiplier: Float = 1.2 // Background noise calibration multiplier (aligned with Android)
     private var vadSpeechRatio: Float = defaultVadSpeechRatio // Minimum ratio of speech frames in VAD window
     private var energyThresholdMultiplier: Float = 2.0 // Energy threshold multiplier for VAD (configurable)
+
+    // Best-effort preferred sample rate for the session (nil = do not override)
+    private var preferredSampleRate: Double? = defaultPreferredSampleRate
+
+    // Optional software gain for RAW PCM mode only (applied before clamping to 1.0)
+    private var rawGainFactor: Float = 1.0
 
     // VAD state tracking (now with configurable window size)
     private var recentEnergyLevels: [Float] = []
@@ -120,6 +129,9 @@ class WaveformDataManager {
     // Event callback
     private weak var eventCallback: WaveformEventCallback?
 
+    // Raw PCM measurement mode: bypass filtering, gain, gating, clamping, and speech detection
+    private var measureRawPCM: Bool = false
+    
     // Thread safety
     private let queue = DispatchQueue(label: "waveform-data-queue", qos: .userInitiated)
 
@@ -190,6 +202,26 @@ class WaveformDataManager {
      */
     func configureWaveform(debounceInSeconds: Float) {
         configureWaveform(debounceInSeconds: debounceInSeconds, bars: -1) // -1 means don't change bars
+    }
+
+    /**
+     * Enable/disable raw PCM measurement mode
+     * When enabled, the manager computes RMS directly from input PCM buffers without
+     * any filtering, gain, gating, or speech detection. You can optionally apply a
+     * software gain via setRawGainFactor(_:) which is clamped after normalization to 0..1.
+     */
+    func setMeasureRawPCM(_ enabled: Bool) {
+        measureRawPCM = enabled
+        log("Raw PCM measurement mode: \(enabled ? \"ENABLED\" : \"disabled\")")
+    }
+
+    /**
+     * Set an optional software gain specifically for RAW PCM measurement mode.
+     * - Parameter factor: Gain multiplier (0.1x to 8.0x, default 1.0)
+     */
+    func setRawGainFactor(_ factor: Float) {
+        rawGainFactor = max(0.1, min(8.0, factor))
+        log("Raw PCM software gain set to: \(rawGainFactor)x")
     }
 
     /**
@@ -311,6 +343,22 @@ class WaveformDataManager {
         setVadWindowSize(windowSize)
 
         log("Advanced VAD configured - enabled: \(enabled), window: \(vadWindowSize) frames (~\(vadWindowSize * 50)ms), voiceFilter: \(voiceBandFilterEnabled)")
+    }
+
+    /**
+     * Set the preferred sample rate for the AVAudioSession (best effort). Pass nil to avoid overriding.
+     * Recommended values: 44100 or 48000 Hz.
+     */
+    func setPreferredSampleRate(_ rate: Double?) {
+        if let r = rate {
+            // Accept reasonable values (>= 44100 and <= 192000)
+            let clamped = max(44100.0, min(192000.0, r))
+            preferredSampleRate = clamped
+            log("Preferred sample rate set to: \(clamped) Hz")
+        } else {
+            preferredSampleRate = nil
+            log("Preferred sample rate override disabled (using system/input default)")
+        }
     }
 
     /**
@@ -463,6 +511,20 @@ class WaveformDataManager {
         resetVadState()
 
         do {
+            // Best-effort configure AVAudioSession with preferred sample rate before creating engine
+            do {
+                let session = AVAudioSession.sharedInstance()
+                // Use measurement mode to minimize processing
+                try session.setCategory(.record, mode: .measurement, options: [])
+                if let prefSR = preferredSampleRate {
+                    try session.setPreferredSampleRate(prefSR)
+                    log("Requested preferred sample rate: \(prefSR) Hz")
+                }
+                try session.setActive(true, options: [])
+            } catch {
+                log("AVAudioSession configuration warning: \(error.localizedDescription)")
+            }
+
             // Create audio engine
             audioEngine = AVAudioEngine()
             guard let audioEngine = audioEngine else {
@@ -604,6 +666,37 @@ class WaveformDataManager {
 
         guard frameLength > 0 else { return }
 
+        // In raw mode: compute RMS directly from input PCM samples with no filtering, gain, gating, or speech detection
+        if measureRawPCM {
+            var perChannelRMS: [Float] = []
+            perChannelRMS.reserveCapacity(max(1, channelCount))
+            for channel in 0..<channelCount {
+                let samples = channelData[channel]
+                var sum: Float = 0.0
+                for i in 0..<frameLength {
+                    let s = samples[i]
+                    sum += s * s
+                }
+                let rms = sqrt(sum / Float(frameLength))
+                perChannelRMS.append(rms)
+            }
+            let rawRMS: Float
+            switch channelHandling {
+            case .average:
+                rawRMS = perChannelRMS.reduce(0, +) / Float(perChannelRMS.count)
+            case .max:
+                rawRMS = perChannelRMS.max() ?? 0.0
+            }
+            // Optional software pre-amplification for raw mode (clamped after normalization)
+            var level = rawRMS * rawGainFactor
+            level = min(1.0, max(0.0, level))
+            let emitLevel = level
+            callbackQueue.async { [weak self] in
+                self?.emitWaveformLevel(level: emitLevel)
+            }
+            return
+        }
+
         // Process audio data to create single waveform level
         let calculatedLevel = processAudioDataForSingleLevel(
             channelData: channelData,
@@ -659,6 +752,12 @@ class WaveformDataManager {
         // Ensure reusable buffer size
         if voiceFilterBuffer.count != frameLength {
             voiceFilterBuffer = Array(repeating: 0.0, count: frameLength)
+        }
+
+        // In raw mode, always return unmodified samples
+        if measureRawPCM {
+            for i in 0..<frameLength { voiceFilterBuffer[i] = samples[i] }
+            return voiceFilterBuffer
         }
 
         // If filter disabled, copy samples into reusable buffer and return
@@ -971,7 +1070,11 @@ class WaveformDataManager {
             "speechOnlyMode": speechOnlyMode,
             "speechThreshold": speechThreshold,
             "vadEnabled": vadEnabled,
-            "calibrationDuration": backgroundCalibrationDuration
+            "calibrationDuration": backgroundCalibrationDuration,
+            "rawMode": measureRawPCM,
+            "preferredSampleRate": preferredSampleRate as Any,
+            "currentSampleRate": currentSampleRate,
+            "rawGainFactor": rawGainFactor
         ]
 
         callbackQueue.async {
