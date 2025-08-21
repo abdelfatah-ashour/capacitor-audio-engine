@@ -51,6 +51,9 @@ class RecordingManager: NSObject {
     /// Whether recording is currently paused
     private var isPaused = false
 
+    /// Whether a reset operation is in progress (guards against race conditions)
+    private var isResetting = false
+
     /// Last reported duration to avoid duplicate callbacks
     private var lastReportedDuration: Double?
 
@@ -408,6 +411,13 @@ class RecordingManager: NSObject {
     /// - Leaves the session in paused state so `resumeRecording()` can start fresh
     func resetRecording() {
         performStateOperation {
+            // Guard against concurrent resets
+            if self.isResetting {
+                self.log("resetRecording ignored: already resetting")
+                return
+            }
+            self.isResetting = true
+
             self.log("resetRecording called - isRecording=\(self.isRecording), isPaused=\(self.isPaused)")
 
             // Pause active recording if needed (no finalize)
@@ -421,14 +431,18 @@ class RecordingManager: NSObject {
             self.currentDuration = 0
             self.lastReportedDuration = nil
 
-            // Discard segments and internal waveform buffers by recreating the rolling manager
-            if let manager = self.segmentRollingManager {
+            // Discard segments and internal waveform buffers safely
+            // Swap out the manager first to avoid other readers seeing a half-cleaned instance
+            let oldManager = self.segmentRollingManager
+            self.segmentRollingManager = nil
+            if let manager = oldManager {
                 manager.cleanup()
                 self.log("Cleaned up existing SegmentRollingManager (discarded segments/waves)")
             }
 
             // Recreate manager to keep session ready with same configuration
-            self.segmentRollingManager = SegmentRollingManager()
+            let newManager = SegmentRollingManager()
+            self.segmentRollingManager = newManager
 
             // Re-apply maxDuration configuration if any
             if let maxDurationValue = self.maxDuration {
@@ -454,6 +468,9 @@ class RecordingManager: NSObject {
             }
 
             self.log("resetRecording completed: session is paused with duration reset to 0")
+
+            // Clear resetting flag
+            self.isResetting = false
         }
     }
 
@@ -750,6 +767,9 @@ class RecordingManager: NSObject {
             guard let self = self else { return }
 
             // Get duration from segment rolling manager
+            // Avoid reporting during reset to prevent races while manager is being cleaned/recreated
+            if self.isResetting { return }
+
             let duration = self.segmentRollingManager?.getCurrentDuration() ?? 0
             self.currentDuration = duration
 

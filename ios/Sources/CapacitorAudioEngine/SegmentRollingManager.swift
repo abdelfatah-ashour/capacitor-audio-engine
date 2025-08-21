@@ -29,7 +29,8 @@ class SegmentRollingManager: NSObject {
     private var isActive: Bool = false
     private let segmentsDirectory: URL
 
-
+    // Cleanup idempotency flag
+    private var hasCleanedUp: Bool = false
 
     // Recording settings
     private var recordingSettings: [String: Any] = [:]
@@ -1415,6 +1416,12 @@ class SegmentRollingManager: NSObject {
     /// Comprehensive cleanup of all segment rolling resources with improved error handling
     func cleanup() {
         performQueueSafeOperation {
+            if hasCleanedUp {
+                log("SegmentRollingManager cleanup already performed - skipping")
+                return
+            }
+            hasCleanedUp = true
+
             log("Starting SegmentRollingManager cleanup")
 
             // Stop timer with main queue safety
