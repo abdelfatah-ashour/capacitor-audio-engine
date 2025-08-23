@@ -131,7 +131,7 @@ class WaveformDataManager {
 
     // Raw PCM measurement mode: bypass filtering, gain, gating, clamping, and speech detection
     private var measureRawPCM: Bool = false
-    
+
     // Thread safety
     private let queue = DispatchQueue(label: "waveform-data-queue", qos: .userInitiated)
 
@@ -212,7 +212,8 @@ class WaveformDataManager {
      */
     func setMeasureRawPCM(_ enabled: Bool) {
         measureRawPCM = enabled
-        log("Raw PCM measurement mode: \(enabled ? \"ENABLED\" : \"disabled\")")
+        let status = enabled ? "ENABLED" : "disabled"
+        log("Raw PCM measurement mode: \(status)")
     }
 
     /**
@@ -265,7 +266,8 @@ class WaveformDataManager {
      */
     func setVoiceBandFilterEnabled(_ enabled: Bool) {
         voiceBandFilterEnabled = enabled
-        log("Voice band filter: \(enabled ? "ENABLED" : "disabled") (filtering \(Self.minVoiceFreq)Hz-\(Self.maxVoiceFreq)Hz)")
+        let filterStatus = enabled ? "ENABLED" : "disabled"
+        log("Voice band filter: \(filterStatus) (filtering \(Self.minVoiceFreq)Hz-\(Self.maxVoiceFreq)Hz)")
     }
 
     /**
@@ -733,7 +735,7 @@ class WaveformDataManager {
         // Silence gate: zero out very small values even if speechOnlyMode is off
         let silenceGate = max(0.01, speechThreshold)
         if emitLevel < silenceGate { emitLevel = 0.0 }
-        
+
         // Soft clamp to keep typical speaking levels within ~0.3-0.7 range
         // (still allows lower values if speaking softly and won't exceed 0.7 peak)
         if emitLevel > 0.0 { emitLevel = min(0.7, emitLevel) }
