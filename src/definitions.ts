@@ -1,13 +1,16 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 
 export type RecordingStatus = 'idle' | 'recording' | 'paused';
-export type PlaybackStatus = 'idle' | 'loaded' | 'playing' | 'paused' | 'stopped' | 'completed' | 'error';
-export type AudioRecordingEventName = 'recordingInterruption' | 'durationChange' | 'error';
+export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
+export type AudioRecordingEventName = 'durationChange' | 'error' | 'waveformData' | 'waveformInit' | 'waveformDestroy';
 export type AudioPlaybackEventName =
-  | 'playbackStatusChange'
+  | 'trackChanged'
+  | 'trackEnded'
+  | 'playbackStarted'
+  | 'playbackPaused'
+  | 'playbackError'
   | 'playbackProgress'
-  | 'playbackCompleted'
-  | 'playbackError';
+  | 'playbackStatusChanged';
 export type AudioEventName = AudioRecordingEventName | AudioPlaybackEventName;
 
 export interface AudioRecordingEvent<T = any> {
@@ -21,26 +24,45 @@ export interface AudioPlaybackEvent<T = any> {
 }
 
 export type AudioRecordingEventMap = {
-  recordingInterruption: RecordingInterruptionData;
   durationChange: DurationChangeData;
   error: ErrorEventData;
+  waveformData: WaveformData;
+  waveformInit: WaveformInitData;
+  waveformDestroy: WaveformDestroyData;
 };
 
 export type AudioPlaybackEventMap = {
-  playbackStatusChange: PlaybackStatusData;
+  trackChanged: TrackChangedData;
+  trackEnded: TrackEndedData;
+  playbackStarted: PlaybackStartedData;
+  playbackPaused: PlaybackPausedData;
+  playbackError: ErrorEventData;
   playbackProgress: PlaybackProgressData;
-  playbackCompleted: PlaybackCompletedData;
-  playbackError: PlaybackErrorData;
+  playbackStatusChanged: PlaybackStatusChangedData;
 };
 
 export type AudioEventMap = AudioRecordingEventMap & AudioPlaybackEventMap;
 
-export interface RecordingInterruptionData {
-  message: string;
-}
-
 export interface DurationChangeData {
   duration: number;
+}
+
+export interface WaveformData {
+  level: number;
+  timestamp: number;
+}
+
+export interface WaveformInitData {
+  numberOfBars: number;
+  speechOnlyMode?: boolean;
+  speechThreshold?: number;
+  vadEnabled?: boolean;
+  calibrationDuration?: number;
+}
+
+export interface WaveformDestroyData {
+  reason: string;
+  timestamp: number;
 }
 
 export interface ErrorEventData {
@@ -49,33 +71,133 @@ export interface ErrorEventData {
   details?: any;
 }
 
+export interface AudioTrack {
+  id: string;
+  url: string;
+  title?: string;
+  artist?: string;
+  artworkUrl?: string;
+}
+
+export interface TrackChangedData {
+  track: AudioTrack;
+  index: number;
+}
+
+export interface TrackEndedData {
+  track: AudioTrack;
+  index: number;
+}
+
+export interface PlaybackStartedData {
+  track: AudioTrack;
+  index: number;
+}
+
+export interface PlaybackPausedData {
+  track: AudioTrack;
+  index: number;
+  position: number;
+}
+
+export interface PlaybackProgressData {
+  track: AudioTrack;
+  index: number;
+  currentPosition: number;
+  duration: number;
+  isPlaying: boolean;
+}
+
+export interface PlaybackStatusChangedData {
+  track: AudioTrack | null;
+  index: number;
+  status: PlaybackStatus;
+  currentPosition: number;
+  duration: number;
+  isPlaying: boolean;
+}
+
+// Recording Configuration Enums
+export enum AudioSampleRate {
+  /** Low quality - 8kHz for voice recording */
+  VOICE_8K = 8000,
+  /** Voice quality - 16kHz for speech */
+  VOICE_16K = 16000,
+  /** Standard quality - 22.05kHz (default optimized) */
+  STANDARD_22K = 22050,
+  /** CD quality - 44.1kHz */
+  CD_44K = 44100,
+  /** High quality - 48kHz */
+  HIGH_48K = 48000,
+}
+
+export enum AudioChannels {
+  /** Mono - single channel */
+  MONO = 1,
+  /** Stereo - two channels */
+  STEREO = 2,
+}
+
+export enum AudioBitrate {
+  /** Very low bitrate - 16kbps for voice notes */
+  VERY_LOW = 16000,
+  /** Low bitrate - 32kbps for voice recording */
+  LOW = 32000,
+  /** Medium bitrate - 64kbps (default optimized) */
+  MEDIUM = 64000,
+  /** High bitrate - 128kbps for music */
+  HIGH = 128000,
+  /** Very high bitrate - 256kbps for high quality */
+  VERY_HIGH = 256000,
+}
+
+export enum AudioQuality {
+  /** Low quality: 16kHz, 32kbps - smallest files, suitable for voice notes */
+  LOW = 'low',
+  /** Medium quality: 22.05kHz, 64kbps - balanced quality/size (default) */
+  MEDIUM = 'medium',
+  /** High quality: 44.1kHz, 128kbps - higher quality, larger files */
+  HIGH = 'high',
+}
+
 export interface RecordingOptions {
   /**
-   * Maximum duration in seconds to keep at the end of recording
+   * Audio sample rate (Hz). Default: AudioSampleRate.STANDARD_22K (optimized for smaller file sizes)
+   */
+  sampleRate?: AudioSampleRate | number;
+  /**
+   * Number of audio channels. Default: AudioChannels.MONO
+   */
+  channels?: AudioChannels | number;
+  /**
+   * Audio bitrate (bps). Default: AudioBitrate.MEDIUM (optimized for smaller file sizes)
+   */
+  bitrate?: AudioBitrate | number;
+  /**
+   * Audio quality preset. If specified, overrides individual sampleRate and bitrate settings.
+   * - AudioQuality.LOW: 16kHz, 32kbps - smallest files, suitable for voice notes
+   * - AudioQuality.MEDIUM: 22.05kHz, 64kbps - balanced quality/size (default)
+   * - AudioQuality.HIGH: 44.1kHz, 128kbps - higher quality, larger files
+   */
+  quality?: AudioQuality;
+  /**
+   * Maximum recording duration in seconds.
+   * When set, enables segment rolling mode:
+   * - Records in 30-second segments
+   * - Maintains rolling buffer of last 10 minutes (20 segments)
+   * - Automatically merges segments when recording stops
+   * If not set, uses linear recording mode.
    */
   maxDuration?: number;
   /**
-   * Audio sample rate (Hz). Default: 44100
-   */
-  sampleRate?: number;
-  /**
-   * Number of audio channels. Default: 1 (mono)
-   */
-  channels?: number;
-  /**
-   * Audio bitrate (bps). Default: 128000
-   */
-  bitrate?: number;
-  /**
    * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
+   *
+   * Enhanced Recording Features:
+   * - Automatic segment rolling (30-second segments) for improved reliability
+   * - Rolling window retention (10 minutes max) for efficient memory usage
+   * - Automatic segment merging when recording stops
+   * - Better handling of long recording sessions and interruptions
    */
-}
-
-export interface SegmentedRecordingOptions extends RecordingOptions {
-  /**
-   * Duration of each segment in seconds (default: 30)
-   */
-  segmentDuration?: number;
 }
 
 export interface AudioFileInfo {
@@ -92,7 +214,13 @@ export interface AudioFileInfo {
   filename: string;
   /**
    * Base64-encoded audio data with MIME prefix (Data URI format)
-   * Format: "data:audio/m4a;base64,<base64-data>"
+   *
+   * iOS may return compressed data for better performance:
+   * - Compressed: "data:audio/m4a;base64,lzfse:<compressed-base64-data>"
+   * - Uncompressed: "data:audio/m4a;base64,<base64-data>"
+   *
+   * Use compression-utils.ts helpers to parse and handle compressed data.
+   * Compression is lossless LZFSE algorithm optimized for iOS.
    */
   base64?: string;
 }
@@ -124,105 +252,272 @@ export interface SwitchMicrophoneResult {
   microphoneId: number;
 }
 
-export interface PlaybackOptions {
-  /**
-   * Playback speed (0.5 - 2.0). Default: 1.0
-   */
-  speed?: number;
-  /**
-   * Start time in seconds. Default: 0
-   */
-  startTime?: number;
-  /**
-   * Whether to loop the audio. Default: false
-   */
-  loop?: boolean;
-  /**
-   * Volume level (0.0 - 1.0). Default: 1.0
-   */
-  volume?: number;
+// Enums for configuration parameters
+export enum WaveformBarsCount {
+  BARS_16 = 16,
+  BARS_32 = 32,
+  BARS_64 = 64,
+  BARS_128 = 128,
+  BARS_256 = 256,
 }
 
-export interface ResumePlaybackOptions {
-  /**
-   * URI of the audio file to resume
-   * If not provided, resumes the currently paused playback
-   */
-  uri?: string;
-  /**
-   * Playback speed (0.5 - 2.0). Default: 1.0
-   */
-  speed?: number;
-  /**
-   * Volume level (0.0 - 1.0). Default: 1.0
-   */
-  volume?: number;
-  /**
-   * Whether to loop the audio. Default: false
-   */
-  loop?: boolean;
+export enum WaveformDebounceTime {
+  /** Real-time visualization (20ms) */
+  REALTIME = 0.02,
+  /** Very fast updates (50ms) */
+  VERY_FAST = 0.05,
+  /** Fast updates (100ms) */
+  FAST = 0.1,
+  /** Medium updates (250ms) */
+  MEDIUM = 0.25,
+  /** Slow updates (500ms) */
+  SLOW = 0.5,
+  /** Very slow updates (1000ms) - Default */
+  VERY_SLOW = 1.0,
 }
 
-export interface PreloadOptions {
-  /**
-   * URI of the audio file to preload
-   */
-  uri: string;
-  /**
-   * Whether to prepare for playback immediately. Default: true
-   */
-  prepare?: boolean;
+export enum SpeechThreshold {
+  /** Very sensitive (0.005) */
+  VERY_SENSITIVE = 0.005,
+  /** Sensitive (0.01) */
+  SENSITIVE = 0.01,
+  /** Normal (0.02) */
+  NORMAL = 0.02,
+  /** Moderate (0.04) */
+  MODERATE = 0.04,
+  /** Less sensitive (0.06) */
+  LESS_SENSITIVE = 0.06,
+  /** Not sensitive (0.1) */
+  NOT_SENSITIVE = 0.1,
 }
 
-export interface AudioPlayerInfo {
-  status: PlaybackStatus;
-  currentTime: number;
-  duration: number;
-  speed?: number;
-  volume?: number;
-  isLooping?: boolean;
-  uri?: string;
+export enum VADWindowSize {
+  /** Minimum latency (~150ms) */
+  MINIMAL = 3,
+  /** Low latency (~200ms) */
+  LOW = 4,
+  /** Normal latency (~250ms) */
+  NORMAL = 5,
+  /** Medium latency (~400ms) */
+  MEDIUM = 8,
+  /** High accuracy (~500ms) */
+  HIGH = 10,
+  /** Maximum accuracy (~750ms) */
+  MAXIMUM = 15,
 }
 
-export interface PlaybackProgressData {
-  currentTime: number;
-  duration: number;
-  position: number; // Playback position as percentage (0-100)
+export enum CalibrationDuration {
+  /** Quick calibration (500ms) */
+  QUICK = 500,
+  /** Normal calibration (1000ms) */
+  NORMAL = 1000,
+  /** Extended calibration (2000ms) */
+  EXTENDED = 2000,
+  /** Long calibration (3000ms) */
+  LONG = 3000,
 }
 
-export interface PlaybackStatusData {
-  status: PlaybackStatus;
-  currentTime?: number;
-  duration?: number;
-}
-
-export interface PlaybackErrorData {
-  message: string;
-  code?: string | number;
-  details?: any;
-}
-
-export interface PlaybackCompletedData {
-  duration: number;
-}
-
-export interface GetAudioInfoOptions {
-  /**
-   * URI of the audio file to analyze
-   * Supports:
-   * - Local file URIs (from stopRecording)
-   * - Remote CDN URLs (HTTP/HTTPS)
-   */
-  uri: string;
+export enum GainFactor {
+  /** Minimal gain (5.0) */
+  MINIMAL = 5.0,
+  /** Low gain (10.0) */
+  LOW = 10.0,
+  /** Standard gain (15.0) */
+  STANDARD = 15.0,
+  /** Medium gain (20.0) - Default */
+  MEDIUM = 20.0,
+  /** High gain (30.0) */
+  HIGH = 30.0,
+  /** Maximum gain (50.0) */
+  MAXIMUM = 50.0,
 }
 
 /**
- * Interface for the Native Audio Plugin that provides audio recording and playback capabilities.
+ * Options for setting gain factor for audio levels
+ */
+export interface SetGainFactorOptions {
+  /**
+   * Gain factor value (5.0-50.0)
+   * Higher values amplify audio levels more, especially useful for quiet recordings
+   */
+  gainFactor: GainFactor | number;
+}
+
+/**
+ * Result of setting gain factor
+ */
+export interface SetGainFactorResult {
+  success: boolean;
+  gainFactor: number;
+}
+
+/**
+ * Unified waveform configuration options combining all waveform features
+ */
+export interface WaveformConfiguration {
+  /** Number of bars in the waveform visualization (default: 128) */
+  numberOfBars?: WaveformBarsCount | number;
+  /** Debounce time in seconds between waveform data emissions (default: 1.0) */
+  debounceTime?: WaveformDebounceTime | number;
+
+  /** Speech detection configuration */
+  speechDetection?: {
+    /** Enable speech-only detection */
+    enabled: boolean;
+    /** Speech detection sensitivity threshold */
+    threshold?: SpeechThreshold | number;
+    /** Background noise calibration duration */
+    calibrationDuration?: CalibrationDuration | number;
+  };
+
+  /** Voice Activity Detection (VAD) configuration */
+  vad?: {
+    /** Enable VAD for improved speech detection */
+    enabled: boolean;
+    /** VAD analysis window size (affects latency vs accuracy) */
+    windowSize?: VADWindowSize | number;
+    /** Enable human voice band filtering (85Hz-3400Hz) */
+    enableVoiceFilter?: boolean;
+  };
+}
+
+/**
+ * Result of waveform configuration
+ */
+export interface WaveformConfigurationResult {
+  success: boolean;
+  configuration: {
+    numberOfBars: number;
+    debounceTimeMs: number;
+    speechDetection: {
+      enabled: boolean;
+      threshold: number;
+      calibrationDuration: number;
+    };
+    vad: {
+      enabled: boolean;
+      windowSize: number;
+      estimatedLatencyMs: number;
+      enableVoiceFilter: boolean;
+    };
+  };
+}
+
+// Legacy interfaces for backward compatibility (deprecated)
+/** @deprecated Use WaveformConfiguration instead */
+export interface WaveformOptions {
+  numberOfBars?: number;
+  debounceInSeconds?: number; // Maintained for backward compatibility
+}
+
+/** @deprecated Use WaveformConfiguration instead */
+export interface WaveformConfigurationOptions {
+  numberOfBars?: number;
+  debounceInSeconds?: number; // Maintained for backward compatibility
+}
+
+/** @deprecated Use WaveformConfiguration instead */
+export interface WaveformSpeechDetectionOptions {
+  enabled?: boolean;
+  threshold?: number;
+  useVAD?: boolean;
+  calibrationDuration?: number;
+}
+
+/** @deprecated Use WaveformConfigurationResult instead */
+export interface WaveformSpeechDetectionResult {
+  success: boolean;
+  enabled: boolean;
+  threshold: number;
+  useVAD: boolean;
+  calibrationDuration: number;
+}
+
+/** @deprecated Use WaveformConfiguration instead */
+export interface AdvancedVADOptions {
+  /** Enable VAD for speech detection */
+  enabled?: boolean;
+  /** VAD window size in frames (3-20). Smaller = lower latency, larger = more accuracy. Default: 5 */
+  windowSize?: number;
+  /** Enable human voice band filtering (85Hz-3400Hz) for noise rejection. Default: true */
+  enableVoiceFilter?: boolean;
+}
+
+/** @deprecated Use WaveformConfigurationResult instead */
+export interface AdvancedVADResult {
+  success: boolean;
+  enabled: boolean;
+  windowSize: number;
+  /** Approximate VAD latency in milliseconds */
+  latencyMs: number;
+  enableVoiceFilter: boolean;
+}
+
+/** @deprecated Use WaveformConfigurationResult instead */
+export interface ConfigureWaveformResult {
+  success: boolean;
+  numberOfBars: number;
+  debounceInSeconds: number; // Maintained for backward compatibility
+}
+
+export interface PreloadTracksOptions {
+  tracks: string[];
+  preloadNext?: boolean;
+}
+
+export interface PreloadedTrackInfo {
+  url: string;
+  loaded: boolean;
+  mimeType?: string;
+  duration?: number;
+  size?: number;
+}
+
+export interface PreloadTracksResult {
+  tracks: PreloadedTrackInfo[];
+}
+
+export interface PlaybackInfo {
+  currentTrack: AudioTrack | null;
+  currentIndex: number;
+  currentPosition: number;
+  duration: number;
+  isPlaying: boolean;
+  status: PlaybackStatus;
+}
+
+export interface SeekOptions {
+  seconds: number;
+  url?: string;
+}
+
+export interface PlayAudioOptions {
+  url?: string;
+}
+
+export interface PauseAudioOptions {
+  url?: string;
+}
+
+export interface ResumeAudioOptions {
+  url?: string;
+}
+
+export interface StopAudioOptions {
+  url?: string;
+}
+
+export interface SkipToIndexOptions {
+  index: number;
+}
+
+/**
+ * Interface for the Native Audio Plugin that provides audio recording capabilities.
  *
  * Platform-specific implementations:
- * - Web: Uses MediaRecorder API with WebM/Opus format for recording, and AudioContext for playback
- * - Android: Uses MediaRecorder with AAC format in MP4 container for recording, and Android MediaPlayer for playback
- * - iOS: Uses AVAudioRecorder with AAC format in M4A container for recording, and AVAudioPlayer for playback
+ * - Web: Uses MediaRecorder API with WebM/Opus format for recording
+ * - Android: Uses MediaRecorder with AAC format in MP4 container for recording
+ * - iOS: Uses AVAudioRecorder with AAC format in M4A container for recording
  *
  * Common settings across platforms:
  * - Sample Rate: 44.1kHz
@@ -265,7 +560,6 @@ export interface CapacitorAudioEnginePlugin {
   /**
    * Start recording audio from the device's microphone.
    * @param options - Recording options
-   * @param options.maxDuration - Maximum duration in seconds to keep at the end of recording
    * @returns Promise that resolves when recording starts successfully
    * @throws {Error} If recording is already in progress
    * @throws {Error} If microphone permission is not granted
@@ -297,6 +591,17 @@ export interface CapacitorAudioEnginePlugin {
   resumeRecording(): Promise<void>;
 
   /**
+   * Reset the current recording session without finalizing a file.
+   * Behavior:
+   * - Discards the current recording (segments are cleared)
+   * - Discards current duration and waveform data
+   * - Keeps the previously configured recording settings for seamless resume
+   * - Leaves the session in paused state so resumeRecording() starts fresh
+   * @returns Promise that resolves when the session is reset
+   */
+  resetRecording(): Promise<void>;
+
+  /**
    * Stop the current recording and get the recorded file information.
    * @returns Promise that resolves with the recorded audio file details
    * @throws {Error} If no active recording exists
@@ -320,13 +625,11 @@ export interface CapacitorAudioEnginePlugin {
    * @returns Promise that resolves with the current recording status
    * @property {RecordingStatus} status - The current state of the recorder
    * @property {boolean} isRecording - True if the recording session is active
-   * @property {number} currentSegment - The current segment number
    * @property {number} duration - The current recording duration in seconds
    */
   getStatus(): Promise<{
     status: RecordingStatus;
     isRecording: boolean;
-    currentSegment: number;
     duration: number;
   }>;
 
@@ -345,13 +648,30 @@ export interface CapacitorAudioEnginePlugin {
   trimAudio(options: { uri: string; start: number; end: number }): Promise<AudioFileInfo>;
 
   /**
-   * Add a listener for recording or playback events
+   * Add a listener for recording events
    * @param eventName - The name of the event to listen to
    * @param callback - The callback to invoke when the event occurs
    * @returns A promise that resolves with a handle to the listener
-   * @platform web Not supported for playback events, recording events use MediaRecorder
-   * @platform android Uses MediaRecorder events and MediaPlayer events
-   * @platform ios Uses AVAudioSession notifications and AVAudioPlayer notifications
+   * @platform web Not supported, recording events use MediaRecorder
+   * @platform android Uses MediaRecorder events
+   * @platform ios Uses AVAudioSession notifications
+   *
+   * @example
+   * ```typescript
+   * // Listen for playback progress updates (every 500ms)
+   * const progressListener = await CapacitorAudioEngine.addListener('playbackProgress', (data) => {
+   *   console.log(`Progress: ${data.currentPosition}/${data.duration} seconds`);
+   * });
+   *
+   * // Listen for status changes
+   * const statusListener = await CapacitorAudioEngine.addListener('playbackStatusChanged', (data) => {
+   *   console.log(`Status: ${data.status}, Playing: ${data.isPlaying}`);
+   * });
+   *
+   * // Don't forget to remove listeners when done
+   * progressListener.remove();
+   * statusListener.remove();
+   * ```
    */
   addListener<T extends AudioEventName>(
     eventName: T,
@@ -398,132 +718,164 @@ export interface CapacitorAudioEnginePlugin {
   switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
 
   /**
-   * Start audio playback.
-   * @param options - Playback options
-   * @param options.uri - URI of the audio file to play
-   * @param options.speed - Playback speed (0.5 - 2.0). Default: 1.0
-   * @param options.startTime - Start time in seconds. Default: 0
-   * @param options.loop - Whether to loop the audio. Default: false
-   * @param options.volume - Volume level (0.0 - 1.0). Default: 1.0
+   * Configure all waveform settings in one unified call.
+   * This method combines waveform visualization, speech detection, and VAD configuration.
+   *
+   * @param options - Unified waveform configuration options
+   * @returns Promise that resolves with complete configuration result
+   * @throws {Error} If configuration fails
+   * @platform web Not supported
+   * @platform android Configures real-time PCM audio processing with speech detection and VAD
+   * @platform ios Configures AVAudioEngine audio tap with speech detection and VAD
+   *
+   * @example
+   * ```typescript
+   * // Basic waveform configuration
+   * await CapacitorAudioEngine.configureWaveform({
+   *   numberOfBars: WaveformBarsCount.BARS_64,
+   *   debounceTime: WaveformDebounceTime.FAST
+   * });
+   *
+   * // Advanced configuration with speech detection and VAD
+   * await CapacitorAudioEngine.configureWaveform({
+   *   numberOfBars: WaveformBarsCount.BARS_32,
+   *   debounceTime: WaveformDebounceTime.REALTIME,
+   *   speechDetection: {
+   *     enabled: true,
+   *     threshold: SpeechThreshold.NORMAL,
+   *     calibrationDuration: CalibrationDuration.NORMAL
+   *   },
+   *   vad: {
+   *     enabled: true,
+   *     windowSize: VADWindowSize.LOW,
+   *     enableVoiceFilter: true
+   *   }
+   * });
+   *
+   * // Listen for waveform data events during recording
+   * const waveformListener = await CapacitorAudioEngine.addListener('waveformData', (data) => {
+   *   console.log('Amplitude level:', data.level); // Single normalized value (0-1)
+   * });
+   * ```
+   */
+  configureWaveform(): Promise<WaveformConfigurationResult>;
+
+  /**
+   * Destroy waveform configuration and clean up resources.
+   * This will stop waveform monitoring if active and reset configuration to defaults.
+   * @returns Promise that resolves when waveform configuration is destroyed
+   * @platform web Not supported
+   * @platform android Stops waveform monitoring and releases AudioRecord resources
+   * @platform ios Stops AVAudioEngine tap and cleans up resources
+   *
+   * @example
+   * ```typescript
+   * // Destroy waveform configuration when no longer needed
+   * await CapacitorAudioEngine.destroyWaveform();
+   * ```
+   */
+  destroyWaveform(): Promise<void>;
+
+  /**
+   * Set gain factor for waveform visualization levels
+   * @param options - Gain factor options
+   * @returns Promise that resolves with gain factor result
+   * @platform web Not supported
+   * @platform android Amplifies audio levels by applying gain factor to RMS values
+   * @platform ios Amplifies audio levels by applying gain factor to RMS values
+   *
+   * @example
+   * ```typescript
+   * // Set gain factor to boost waveform visualization levels
+   * await CapacitorAudioEngine.setGainFactor({
+   *   gainFactor: GainFactor.HIGH // or a custom value like 25.0
+   * });
+   * ```
+   */
+  setGainFactor(options: SetGainFactorOptions): Promise<SetGainFactorResult>;
+
+
+  // ==================== AUDIO PLAYBACK METHODS ====================
+
+  /**
+   * Preload audio tracks from URLs and initialize playlist
+   * @param options - Preload options containing track URLs and preload settings
+   * @returns Promise that resolves with preload results for each track including load status, mimetype, duration, and file size
+   * @platform web Uses HTML5 Audio API
+   * @platform android Uses ExoPlayer with ConcatenatingMediaSource
+   * @platform ios Uses AVQueuePlayer or AVPlayer with queue management
+   */
+  preloadTracks(options: PreloadTracksOptions): Promise<PreloadTracksResult>;
+
+  /**
+   * Start or resume playback of current track or specific preloaded track by URL
+   * @param options - Optional playback options with URL to play specific preloaded track
    * @returns Promise that resolves when playback starts
-   * @throws {Error} If playback is already in progress
-   * @throws {Error} If audio session setup fails
-   * @platform web Uses AudioContext and MediaElementAudioSourceNode
-   * @platform android Uses Android MediaPlayer
-   * @platform ios Uses AVAudioPlayer
    */
-  startPlayback(options: PlaybackOptions & { uri: string }): Promise<void>;
+  playAudio(options?: PlayAudioOptions): Promise<void>;
 
   /**
-   * Pause the current playback.
+   * Pause audio playback for current track or specific preloaded track by URL
+   * @param options - Optional pause options with URL to pause specific preloaded track
    * @returns Promise that resolves when playback is paused
-   * @throws {Error} If no active playback exists or if playback is already paused
-   * @platform web Uses AudioContext.suspend()
-   * @platform android Uses MediaPlayer.pause()
-   * @platform ios Uses AVAudioPlayer.pause()
    */
-  pausePlayback(): Promise<void>;
+  pauseAudio(options?: PauseAudioOptions): Promise<void>;
 
   /**
-   * Resume the current playback if it was previously paused.
-   * @param options - Resume playback options
-   * @param options.uri - URI of the audio file to resume. If not provided, resumes the currently paused playback
-   * @param options.speed - Playback speed (0.5 - 2.0). Default: 1.0
-   * @param options.volume - Volume level (0.0 - 1.0). Default: 1.0
-   * @param options.loop - Whether to loop the audio. Default: false
-   * @returns Promise that resolves when playback is resumed
-   * @throws {Error} If no active playback exists or if playback is not paused
-   * @platform web Uses AudioContext.resume()
-   * @platform android Uses MediaPlayer.start()
-   * @platform ios Uses AVAudioPlayer.play()
+   * Resume audio playback from paused state for current track or specific preloaded track by URL
+   * @param options - Optional resume options with URL to resume specific preloaded track
+   * @returns Promise that resolves when playback resumes
    */
-  resumePlayback(options?: ResumePlaybackOptions): Promise<void>;
+  resumeAudio(options?: ResumeAudioOptions): Promise<void>;
 
   /**
-   * Stop the current playback.
-   * @returns Promise that resolves when playback is stopped
-   * @throws {Error} If no active playback exists
-   * @platform web Uses AudioContext.close()
-   * @platform android Uses MediaPlayer.stop()
-   * @platform ios Uses AVAudioPlayer.stop()
+   * Stop audio playback and reset to beginning for current track or specific preloaded track by URL
+   * @param options - Optional stop options with URL to stop specific preloaded track
+   * @returns Promise that resolves when playback stops
    */
-  stopPlayback(): Promise<void>;
+  stopAudio(options?: StopAudioOptions): Promise<void>;
 
   /**
-   * Seek to a specific time in the currently playing audio.
-   * @param options - Seek options
-   * @param options.time - Time in seconds to seek to
-   * @returns Promise that resolves when seek is complete
-   * @throws {Error} If no active playback exists
-   * @platform web Uses AudioContext.currentTime
-   * @platform android Uses MediaPlayer.seekTo()
-   * @platform ios Uses AVAudioPlayer.setCurrentTime()
+   * Seek to specific position in current track or specific preloaded track by URL
+   * @param options - Seek options with time in seconds and optional URL for specific preloaded track
+   * @returns Promise that resolves when seek completes
    */
-  seekTo(options: { time: number }): Promise<void>;
+  seekAudio(options: SeekOptions): Promise<void>;
 
   /**
-   * Get the current playback status.
-   * @returns Promise that resolves with the current playback status
-   * @property {PlaybackStatus} status - The current state of the player
-   * @property {number} currentTime - The current playback position in seconds
-   * @property {number} duration - The total duration of the audio in seconds
-   * @property {number} speed - The current playback speed
-   * @property {number} volume - The current volume level
-   * @property {boolean} isLooping - Whether the audio is looping
-   * @property {string} uri - The URI of the current audio file
+   * Skip to next track in playlist
+   * @returns Promise that resolves when skip completes
    */
-  getPlaybackStatus(): Promise<AudioPlayerInfo>;
+  skipToNext(): Promise<void>;
 
   /**
-   * Add a listener for playback events
-   * @param eventName - The name of the event to listen to
-   * @param callback - The callback to invoke when the event occurs
-   * @returns A promise that resolves with a handle to the listener
-   * @platform web Not supported
-   * @platform android Uses MediaPlayer events
-   * @platform ios Uses AVAudioPlayer notifications
+   * Skip to previous track in playlist
+   * @returns Promise that resolves when skip completes
    */
-  addPlaybackListener(eventName: AudioPlaybackEventName, callback: (event: any) => void): Promise<PluginListenerHandle>;
+  skipToPrevious(): Promise<void>;
 
   /**
-   * Remove all playback listeners
-   * @returns Promise that resolves when all listeners are removed
+   * Skip to specific track index in playlist
+   * @param options - Options with target track index
+   * @returns Promise that resolves when skip completes
    */
-  removeAllPlaybackListeners(): Promise<void>;
+  skipToIndex(options: SkipToIndexOptions): Promise<void>;
 
   /**
-   * Preload an audio file for faster playback start.
-   * @param options - Preload options
-   * @param options.uri - URI of the audio file to preload
-   * @param options.prepare - Whether to prepare for playback immediately. Default: true
-   * @returns Promise that resolves with audio file information when preloading is complete
-   * @throws {Error} If preloading fails
-   * @platform web Not supported
-   * @platform android Uses MediaPlayer.prepareAsync()
-   * @platform ios Uses AVAudioPlayer.prepareToPlay()
+   * Get current playback information
+   * @returns Promise that resolves with current playback state
    */
-  preload(options: PreloadOptions): Promise<AudioFileInfo>;
+  getPlaybackInfo(): Promise<PlaybackInfo>;
 
   /**
-   * Get information about an audio file.
-   * @param options - Options for getting audio info
-   * @param options.uri - URI of the audio file (local file or CDN URL)
-   * @returns Promise that resolves with audio file information
-   * @throws {Error} If file cannot be accessed or analyzed
-   * @platform web Not supported
-   * @platform android Uses MediaMetadataRetriever to extract audio metadata
-   * @platform ios Uses AVAsset to extract audio metadata
+   * Navigate to the app's permission settings screen.
+   * This method opens the system settings page where users can manually adjust permissions.
+   * Useful when permissions are denied and need to be changed through settings.
+   * @returns Promise that resolves when navigation is initiated
+   * @throws {Error} If navigation fails
+   * @platform web Not supported - shows alert with instructions
+   * @platform android Opens the app-specific settings page (App Info) using ACTION_APPLICATION_DETAILS_SETTINGS intent, where users can manage permissions, notifications, and other app settings
+   * @platform ios Opens the app-specific settings page using UIApplication.openSettingsURLString, which navigates directly to Settings > [App Name] where users can manage app permissions and settings
    */
-  getAudioInfo(options: GetAudioInfoOptions): Promise<AudioFileInfo>;
-
-  /**
-   * Destroy all active playback sessions and clear all preloaded audio.
-   * This method stops all current playback, releases all MediaPlayer/AVAudioPlayer instances,
-   * and clears all preloaded audio from memory.
-   * @returns Promise that resolves when all playback resources are destroyed
-   * @platform web Not supported
-   * @platform android Stops MediaPlayer and clears preloaded audio
-   * @platform ios Stops AVAudioPlayer and clears preloaded audio
-   */
-  destroyAllPlaybacks(): Promise<void>;
+  openSettings(): Promise<void>;
 }

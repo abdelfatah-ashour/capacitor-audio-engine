@@ -110,21 +110,7 @@ public class ValidationUtils {
         }
     }
 
-    /**
-     * Validate maximum duration parameter
-     */
-    public static void validateMaxDuration(Integer maxDuration) throws IllegalArgumentException {
-        if (maxDuration != null) {
-            if (maxDuration <= 0) {
-                throw new IllegalArgumentException(AudioEngineError.INVALID_PARAMETERS.getDetailedMessage("Max duration must be positive"));
-            }
 
-            if (maxDuration > MAX_DURATION) {
-                throw new IllegalArgumentException(AudioEngineError.INVALID_PARAMETERS.getDetailedMessage(
-                    "Max duration cannot exceed " + MAX_DURATION + " seconds"));
-            }
-        }
-    }
 
     /**
      * Validate file exists and is readable
@@ -178,23 +164,6 @@ public class ValidationUtils {
 
         } catch (Exception e) {
             throw new IllegalArgumentException(AudioEngineError.INVALID_URI.getDetailedMessage("Malformed URL: " + e.getMessage()));
-        }
-    }
-
-    /**
-     * Validate playback parameters
-     */
-    public static void validatePlaybackParameters(Float speed, Float volume) throws IllegalArgumentException {
-        if (speed != null) {
-            if (speed <= 0 || speed > 4.0f) {
-                throw new IllegalArgumentException(AudioEngineError.INVALID_PARAMETERS.getDetailedMessage("Playback speed must be between 0.1 and 4.0"));
-            }
-        }
-
-        if (volume != null) {
-            if (volume < 0 || volume > 1.0f) {
-                throw new IllegalArgumentException(AudioEngineError.INVALID_PARAMETERS.getDetailedMessage("Volume must be between 0.0 and 1.0"));
-            }
         }
     }
 

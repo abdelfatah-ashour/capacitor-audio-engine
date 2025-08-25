@@ -6,15 +6,20 @@ import type {
   RecordingStatus,
   AudioEventName,
   AudioFileInfo,
-  AudioPlayerInfo,
   AudioEventMap,
   RecordingOptions,
   MicrophoneStatusResult,
   AvailableMicrophonesResult,
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
-  GetAudioInfoOptions,
-  ResumePlaybackOptions,
+  WaveformConfigurationResult,
+  PreloadTracksOptions,
+  PreloadTracksResult,
+  PlaybackInfo,
+  SeekOptions,
+  SkipToIndexOptions,
+  SetGainFactorOptions,
+  SetGainFactorResult,
 } from './definitions';
 
 declare global {
@@ -64,7 +69,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   /**
    * Start recording audio from the device's microphone.
    * @param options - Recording options
-   * @param options.maxDuration - Maximum duration in seconds to keep at the end of recording
+
    * @returns Promise that resolves when recording starts successfully
    * @platform web Not supported
    */
@@ -113,6 +118,17 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
+   * Reset the current recording session without finalizing a file.
+   * @platform web Not supported
+   */
+  async resetRecording(): Promise<void> {
+    console.warn(
+      'resetRecording is not supported on web platform. No recording buffers to reset.',
+    );
+    throw new Error('resetRecording is not supported on web platform');
+  }
+
+  /**
    * Get the current recording duration.
    * @returns Promise that resolves with the current duration in seconds
    * @platform web Not supported - returns 0
@@ -132,13 +148,13 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async getStatus(): Promise<{
     status: RecordingStatus;
     isRecording: boolean;
-    currentSegment: number;
+
     duration: number;
   }> {
     console.warn(
       'getStatus is not supported on web platform. For web implementation, consider using MediaRecorder API directly.',
     );
-    return { status: 'idle', isRecording: false, currentSegment: 0, duration: 0 };
+    return { status: 'idle', isRecording: false, duration: 0 };
   }
 
   /**
@@ -154,7 +170,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
-   * Add a listener for recording or playback events
+   * Add a listener for recording events
    * @returns A promise that resolves with a handle to the listener
    * @platform web Not supported
    */
@@ -216,152 +232,219 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
-   * Start audio playback.
+   * Configure waveform data generation settings (unified configuration).
+   * @param options - Unified configuration options for waveform data
+   * @returns Promise that resolves with configuration result
+   * @platform web Not supported
+   */
+  async configureWaveform(): Promise<WaveformConfigurationResult> {
+    console.warn(
+      'configureWaveform is not supported on web platform. Waveform data is not available for web recordings. Consider using MediaRecorder events and manual amplitude analysis.',
+    );
+
+    // Build default configuration (web mock)
+    const numberOfBars = 128;
+    const debounceTimeMs = 50; // align with native default (50ms)
+
+    // Build unified response structure
+    return {
+      success: false,
+      configuration: {
+        numberOfBars,
+        debounceTimeMs,
+        speechDetection: {
+          enabled: false,
+          threshold: 0.02,
+          calibrationDuration: 1000,
+        },
+        vad: {
+          enabled: false,
+          windowSize: 5,
+          estimatedLatencyMs: 5 * 50,
+          enableVoiceFilter: true,
+        },
+      },
+    };
+  }
+
+  /**
+   * Destroy waveform configuration and clean up resources.
+   * @returns Promise that resolves when waveform configuration is destroyed
+   * @platform web Not supported
+   */
+  async destroyWaveform(): Promise<void> {
+    console.warn('destroyWaveform is not supported on web platform. No waveform resources to clean up.');
+  }
+
+
+
+  // ==================== AUDIO PLAYBACK METHODS ====================
+
+  /**
+   * Preload audio tracks from URLs and initialize playlist
+   * @param options - Preload options containing track URLs and preload settings
+   * @returns Promise that resolves with preload results for each track including load status, mimetype, duration, and file size
+   * @platform web Not supported
+   */
+  async preloadTracks(options: PreloadTracksOptions): Promise<PreloadTracksResult> {
+    console.warn(
+      'preloadTracks is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+    );
+
+    // Return empty results for each track URL with loaded=false
+    const tracks = options.tracks.map((url) => ({
+      url,
+      loaded: false,
+    }));
+
+    return { tracks };
+  }
+
+  /**
+   * Start or resume playback of current track
    * @returns Promise that resolves when playback starts
    * @platform web Not supported
    */
-  async startPlayback(_options: any): Promise<void> {
-    void _options; // Parameter for API compatibility
+  async playAudio(): Promise<void> {
     console.warn(
-      'startPlayback is not supported on web platform. For web implementation, consider using AudioContext API directly.',
+      'playAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
-    throw new Error('startPlayback is not supported on web platform');
+    throw new Error('playAudio is not supported on web platform');
   }
 
   /**
-   * Pause the current playback.
+   * Pause audio playback
    * @returns Promise that resolves when playback is paused
    * @platform web Not supported
    */
-  async pausePlayback(): Promise<void> {
+  async pauseAudio(): Promise<void> {
     console.warn(
-      'pausePlayback is not supported on web platform. For web implementation, consider using AudioContext API directly.',
+      'pauseAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
-    throw new Error('pausePlayback is not supported on web platform');
+    throw new Error('pauseAudio is not supported on web platform');
   }
 
   /**
-   * Resume the current playback if it was previously paused.
-   * @param options - Resume playback options
-   * @returns Promise that resolves when playback is resumed
+   * Resume audio playback from paused state
+   * @returns Promise that resolves when playback resumes
    * @platform web Not supported
    */
-  async resumePlayback(options?: ResumePlaybackOptions): Promise<void> {
+  async resumeAudio(): Promise<void> {
     console.warn(
-      'resumePlayback is not supported on web platform. For web implementation, consider using AudioContext API directly.',
+      'resumeAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
-    if (options?.uri) {
-      console.warn(`Attempted to resume playback for URI: ${options.uri}`);
-    }
-    throw new Error('resumePlayback is not supported on web platform');
+    throw new Error('resumeAudio is not supported on web platform');
   }
 
   /**
-   * Stop the current playback.
-   * @returns Promise that resolves when playback is stopped
+   * Stop audio playback and reset to beginning
+   * @returns Promise that resolves when playback stops
    * @platform web Not supported
    */
-  async stopPlayback(): Promise<void> {
+  async stopAudio(): Promise<void> {
     console.warn(
-      'stopPlayback is not supported on web platform. For web implementation, consider using AudioContext API directly.',
+      'stopAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
-    throw new Error('stopPlayback is not supported on web platform');
+    throw new Error('stopAudio is not supported on web platform');
   }
 
   /**
-   * Seek to a specific time in the audio.
-   * @returns Promise that resolves when seek is complete
+   * Seek to specific position in current track
+   * @param options - Seek options with time in seconds
+   * @returns Promise that resolves when seek completes
    * @platform web Not supported
    */
-  async seekTo(_options: { time: number }): Promise<void> {
+  async seekAudio(_options: SeekOptions): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'seekTo is not supported on web platform. For web implementation, consider using AudioContext API directly.',
+      'seekAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
-    throw new Error('seekTo is not supported on web platform');
+    throw new Error('seekAudio is not supported on web platform');
   }
 
   /**
-   * Get the current playback status.
-   * @returns Promise that resolves with the current playback status
+   * Skip to next track in playlist
+   * @returns Promise that resolves when skip completes
    * @platform web Not supported
    */
-  async getPlaybackStatus(): Promise<AudioPlayerInfo> {
+  async skipToNext(): Promise<void> {
     console.warn(
-      'getPlaybackStatus is not supported on web platform. For web implementation, consider using AudioContext API directly.',
+      'skipToNext is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
+    throw new Error('skipToNext is not supported on web platform');
+  }
+
+  /**
+   * Skip to previous track in playlist
+   * @returns Promise that resolves when skip completes
+   * @platform web Not supported
+   */
+  async skipToPrevious(): Promise<void> {
+    console.warn(
+      'skipToPrevious is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+    );
+    throw new Error('skipToPrevious is not supported on web platform');
+  }
+
+  /**
+   * Skip to specific track index in playlist
+   * @param options - Options with target track index
+   * @returns Promise that resolves when skip completes
+   * @platform web Not supported
+   */
+  async skipToIndex(_options: SkipToIndexOptions): Promise<void> {
+    void _options; // Parameter for API compatibility
+    console.warn(
+      'skipToIndex is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+    );
+    throw new Error('skipToIndex is not supported on web platform');
+  }
+
+  /**
+   * Get current playback information
+   * @returns Promise that resolves with current playback state
+   * @platform web Not supported
+   */
+  async getPlaybackInfo(): Promise<PlaybackInfo> {
+    console.warn(
+      'getPlaybackInfo is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+    );
+    throw new Error('getPlaybackInfo is not supported on web platform');
+  }
+
+  /**
+   * Set gain factor for waveform visualization levels
+   * @param options - Gain factor options
+   * @returns Promise that resolves with gain factor result
+   * @platform web Not supported
+   */
+  async setGainFactor(options: SetGainFactorOptions): Promise<SetGainFactorResult> {
+    console.warn(
+      `setGainFactor is not supported on web platform. Attempted to set gain factor: ${options.gainFactor}`,
+    );
+
+    // Return mock success with provided gain factor for API compatibility
     return {
-      status: 'idle',
-      currentTime: 0,
-      duration: 0,
-      speed: 1.0,
-      volume: 1.0,
-      isLooping: false,
-      uri: '',
+      success: false,
+      gainFactor: options.gainFactor,
     };
   }
 
   /**
-   * Add a listener for playback events
-   * @returns A promise that resolves with a handle to the listener
-   * @platform web Not supported
+   * Navigate to the app's permission settings screen.
+   * @returns Promise that resolves when navigation is initiated
+   * @platform web Shows alert with instructions to manually open browser settings for permissions
    */
-  async addPlaybackListener(_eventName: string, _callback: (event: any) => void): Promise<PluginListenerHandle> {
-    void _eventName; // Parameter for API compatibility
-    void _callback; // Parameter for API compatibility
-    console.warn(
-      'addPlaybackListener is not supported on web platform. For web implementation, consider using AudioContext events directly.',
-    );
-    return {
-      remove: async () => Promise.resolve(),
-    };
-  }
+  async openSettings(): Promise<void> {
+    console.warn('openSettings is not fully supported on web platform. Showing alert with instructions.');
 
-  /**
-   * Remove all playback listeners
-   * @returns Promise that resolves when all listeners are removed
-   * @platform web Not supported
-   */
-  async removeAllPlaybackListeners(): Promise<void> {
-    console.warn('removeAllPlaybackListeners is not supported on web platform.');
-  }
+    const message =
+      'To manage app permissions:\n\n' +
+      "1. Click the lock icon in your browser's address bar\n" +
+      '2. Select "Site settings" or "Permissions"\n' +
+      '3. Adjust microphone and other permissions as needed\n\n' +
+      'Or access browser settings directly through the browser menu.';
 
-  /**
-   * Preload an audio file for faster playback start.
-   * @returns Promise that resolves with audio file information when preloading is complete
-   * @platform web Not supported
-   */
-  async preload(_options: any): Promise<AudioFileInfo> {
-    void _options; // Parameter for API compatibility
-    console.warn(
-      'preload is not supported on web platform. For web implementation, consider using AudioContext API directly.',
-    );
-    throw new Error('preload is not supported on web platform');
-  }
-
-  /**
-   * Get information about an audio file.
-   * @param options - Options for getting audio info
-   * @returns Promise that resolves with audio file information
-   * @platform web Not supported
-   */
-  async getAudioInfo(_options: GetAudioInfoOptions): Promise<AudioFileInfo> {
-    void _options; // Parameter for API compatibility
-    console.warn(
-      'getAudioInfo is not supported on web platform. For web implementation, consider using Web Audio API directly.',
-    );
-    throw new Error('getAudioInfo is not supported on web platform');
-  }
-
-  /**
-   * Destroy all active playback sessions and clear all preloaded audio.
-   * @returns Promise that resolves when all playback resources are destroyed
-   * @platform web Not supported
-   */
-  async destroyAllPlaybacks(): Promise<void> {
-    console.warn(
-      'destroyAllPlaybacks is not supported on web platform. For web implementation, consider using Web Audio API directly.',
-    );
-    throw new Error('destroyAllPlaybacks is not supported on web platform');
+    alert(message);
   }
 }

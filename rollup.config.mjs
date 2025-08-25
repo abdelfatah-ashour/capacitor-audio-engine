@@ -1,3 +1,8 @@
+import terser from '@rollup/plugin-terser';
+
+// eslint-disable-next-line no-undef
+const isDev = process.env.NODE_ENV === 'development';
+
 export default {
   input: 'dist/esm/index.js',
   output: [
@@ -8,14 +13,23 @@ export default {
       globals: {
         '@capacitor/core': 'capacitorExports',
       },
-      sourcemap: true,
+      sourcemap: isDev,
       inlineDynamicImports: true,
+      plugins: [!isDev && terser()].filter(Boolean),
     },
     {
-      file: 'dist/plugin.cjs.js',
+      file: 'dist/plugin.cjs',
       format: 'cjs',
-      sourcemap: true,
+      sourcemap: isDev,
       inlineDynamicImports: true,
+      plugins: [!isDev && terser()].filter(Boolean),
+    },
+    {
+      file: 'dist/plugin.esm.js',
+      format: 'esm',
+      sourcemap: isDev,
+      inlineDynamicImports: true,
+      plugins: [!isDev && terser()].filter(Boolean),
     },
   ],
   external: ['@capacitor/core'],

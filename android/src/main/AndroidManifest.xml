@@ -6,21 +6,27 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <!-- Permission to read from external storage -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <!-- Permission to manage external storage (for Android 11 and above) -->
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <!-- Permission for foreground service -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- Permission for microphone foreground service type (Android 10+) -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <!-- Permission to post notifications -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Permission to wake lock for background processing -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+
     <!-- Network permissions for CDN audio support -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Phone state permission for call interruption handling -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Audio focus and system audio management -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Foreground service permissions for background recording -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <application>
-        <!-- Background audio recording service -->
+        <!-- Declare support for 16KB page size -->
+        <property android:name="android.supports_page_size_16kb" android:value="true" />
+
+
+        <!-- Foreground service for background audio recording -->
         <service
             android:name="com.capacitor.audioengine.AudioRecordingService"
             android:enabled="true"

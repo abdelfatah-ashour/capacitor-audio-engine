@@ -1,19 +1,29 @@
 {
   "name": "capacitor-audio-engine",
-  "version": "1.0.16",
-  "description": "A Capacitor plugin for high-quality audio recording using native device capabilities on iOS and Android.",
+  "version": "1.9.2",
+  "description": "High-quality audio recording Capacitor plugin with native iOS & Android support. Features pause/resume, microphone management, real-time monitoring, audio trimming, and comprehensive mobile audio recording capabilities.",
   "type": "module",
-  "main": "dist/plugin.cjs.js",
-  "module": "dist/esm/index.js",
-  "types": "dist/esm/index.d.ts",
+  "sideEffects": false,
+  "main": "dist/plugin.cjs",
+  "types": "dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "*": [
+        "dist/index.d.ts"
+      ]
+    }
+  },
   "unpkg": "dist/plugin.js",
+  "module": "dist/plugin.esm.js",
   "exports": {
     ".": {
-      "types": "./dist/esm/index.d.ts",
-      "import": "./dist/esm/index.js",
-      "require": "./dist/plugin.cjs.js",
-      "default": "./dist/esm/index.js"
-    }
+      "types": "./dist/index.d.ts",
+      "import": "./dist/plugin.esm.js",
+      "require": "./dist/plugin.cjs",
+      "node": "./dist/plugin.cjs",
+      "default": "./dist/plugin.esm.js"
+    },
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public"
@@ -22,13 +32,25 @@
     "android/src/main/",
     "android/build.gradle",
     "dist/",
+    "!dist/docs.json",
+    "!dist/**/*.map",
     "ios/Sources",
-    "ios/Tests",
     "Package.swift",
     "CapacitorAudioEngine.podspec"
   ],
-  "author": "Abdelfattah Ashour",
+  "author": {
+    "name": "Abdelfattah Ashour",
+    "url": "https://github.com/abdelfatah-ashour"
+  },
   "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/abdelfatah-ashour"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/abdelfatah-ashour/capacitor-audio-engine.git"
@@ -36,10 +58,38 @@
   "bugs": {
     "url": "https://github.com/abdelfatah-ashour/capacitor-audio-engine/issues"
   },
+  "homepage": "https://github.com/abdelfatah-ashour/capacitor-audio-engine#readme",
   "keywords": [
     "capacitor",
     "plugin",
-    "native"
+    "native",
+    "audio",
+    "recording",
+    "microphone",
+    "ios",
+    "android",
+    "mobile",
+    "voice",
+    "sound",
+    "record",
+    "audio-recording",
+    "mobile-audio",
+    "capacitor-plugin",
+    "ionic",
+    "audio-engine",
+    "voice-recording",
+    "audio-processing",
+    "media-recorder",
+    "audio-capture",
+    "mic",
+    "audio-quality",
+    "real-time",
+    "pause-resume",
+    "audio-trimming",
+    "typescript",
+    "swift",
+    "java",
+    "cross-platform"
   ],
   "scripts": {
     "verify": "npm run verify:ios && npm run verify:android && npm run verify:web",
@@ -52,7 +102,8 @@
     "prettier": "prettier \"**/*.{css,html,ts,js,java}\" --plugin=prettier-plugin-java",
     "swiftlint": "node-swiftlint",
     "docgen": "docgen --api CapacitorAudioEnginePlugin --output-readme README.md --output-json dist/docs.json",
-    "build": "npm run clean && npm run docgen && tsc && rollup -c rollup.config.mjs",
+    "build": "npm run clean && npm run docgen && tsc && NODE_ENV=production rollup -c rollup.config.mjs && npm run generate-types",
+    "generate-types": "echo 'export * from \"./esm/index\";' > dist/index.d.ts",
     "clean": "rimraf ./dist",
     "watch": "tsc --watch",
     "prepublishOnly": "npm run build",
@@ -65,7 +116,9 @@
     "@ionic/eslint-config": "^0.4.0",
     "@ionic/prettier-config": "^4.0.0",
     "@ionic/swiftlint-config": "^2.0.0",
+    "@rollup/plugin-terser": "^0.4.4",
     "eslint": "^8.57.0",
+    "gzip-size": "^7.0.0",
     "prettier": "^3.4.2",
     "prettier-plugin-java": "^2.6.6",
     "rimraf": "^6.0.1",
