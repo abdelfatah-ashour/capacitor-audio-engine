@@ -26,8 +26,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Manages segment rolling audio recording with automatic cleanup for Android
  * Features:
- * - Records audio in 30-second segments using MediaRecorder
- * - Maintains a rolling buffer of the last 10 minutes (20 segments)
+ * - Records audio in 5-minute segments using MediaRecorder (improved performance)
+ * - Maintains a rolling buffer of the last 10 minutes (2 segments)
  * - Automatically removes oldest segments when buffer is full
  * - Merges segments into final audio file using MediaMuxer when recording stops
  * - Handles audio interruptions (phone calls, audio focus loss, etc.)
@@ -36,9 +36,9 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private static final String TAG = "SegmentRollingManager";
 
     // Segment rolling constants
-    private static final int SEGMENT_DURATION_MS = 30000; // 30 seconds
+    private static final int SEGMENT_DURATION_MS = 300000; // 5 minutes (improved performance)
     private static final int MAX_RETENTION_DURATION_MS = 600000; // 10 minutes
-    private static final int MAX_SEGMENTS = MAX_RETENTION_DURATION_MS / SEGMENT_DURATION_MS; // 20 segments
+    private static final int MAX_SEGMENTS = MAX_RETENTION_DURATION_MS / SEGMENT_DURATION_MS; // 2 segments
 
     // Callback interface for max duration events
     public interface MaxDurationCallback {
@@ -1680,7 +1680,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         stats.append(String.format("Total Memory Usage: %.2f MB\n", totalMB));
         stats.append(String.format("Segment Count: %d (expected: %d)\n", segmentCount, expectedSegments));
         stats.append(String.format("Average Segment Size: %.2f MB\n", avgSegmentMB));
-        stats.append(String.format("Segment Duration: %d seconds\n", SEGMENT_DURATION_MS / 1000));
+        stats.append(String.format("Segment Duration: %d seconds (5 minutes)\n", SEGMENT_DURATION_MS / 1000));
 
         if (maxDurationMs != null && maxDurationMs > 0) {
             int maxExpectedSegments = (int) Math.ceil((double) maxDurationMs / SEGMENT_DURATION_MS) + 1;
@@ -1888,7 +1888,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     public String getConfigurationSummary() {
         return String.format(
             "SegmentRollingManager Configuration:\n" +
-            "- Segment Duration: %ds\n" +
+            "- Segment Duration: %ds (5 minutes)\n" +
             "- Memory Safety Margin: %.1fx\n" +
             "- Segment Safety Buffer: %d\n" +
             "- Compression Enabled: %s\n" +
@@ -1921,7 +1921,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         StringBuilder debug = new StringBuilder();
         debug.append("=== Segment Rolling Debug Info ===\n");
         debug.append(String.format("Recording Duration: %.1fs\n", recordingDuration / 1000.0));
-        debug.append(String.format("Current Segment: %d (elapsed: %.1fs/%.1fs)\n",
+        debug.append(String.format("Current Segment: %d (elapsed: %.1fs/%.1fs = 5min)\n",
                     segmentCounter.get(), currentSegmentElapsed / 1000.0, SEGMENT_DURATION_MS / 1000.0));
         debug.append(String.format("Buffer Size: %d segments\n", segmentBuffer.size()));
         debug.append(String.format("Expected Segments: %d\n", expectedSegments));

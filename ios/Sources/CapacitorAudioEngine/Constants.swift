@@ -22,9 +22,9 @@ internal struct AudioEngineConstants {
     static let networkCheckTimeout: TimeInterval = 2.0
 
     // MARK: - Segment Rolling Constants
-    static let segmentDuration: TimeInterval = 30.0  // 30 seconds per segment
+    static let segmentDuration: TimeInterval = 300.0  // 5 minutes per segment (improved performance)
     static let maxRetentionDuration: TimeInterval = 600.0  // 10 minutes total retention
-    static let maxSegments = Int(maxRetentionDuration / segmentDuration)  // 20 segments max
+    static let maxSegments = Int(maxRetentionDuration / segmentDuration)  // 2 segments max
 
     // MARK: - Performance Constants
     static let minValidFileSize: Int64 = 100  // Minimum file size to consider valid

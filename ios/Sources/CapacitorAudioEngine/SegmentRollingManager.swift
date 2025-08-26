@@ -5,7 +5,7 @@ import UIKit
 /**
  * Manages segment rolling audio recording with automatic cleanup
  * Features:
- * - Records audio in 30-second segments for all recordings
+ * - Records audio in 5-minute segments for all recordings (improved performance)
  * - When no maxDuration is set, maintains all segments (unlimited recording)
  * - When maxDuration is set, maintains a rolling buffer (keeps only last N seconds)
  * - Duration reporting continues to count up (never resets)
@@ -271,13 +271,13 @@ class SegmentRollingManager: NSObject {
         try startNewSegment()
         log("startNewSegment() completed successfully")
 
-        // Start segment timer for rotating segments every 30 seconds
+        // Start segment timer for rotating segments every 5 minutes
         DispatchQueue.main.async {
             self.segmentTimer = Timer.scheduledTimer(withTimeInterval: AudioEngineConstants.segmentDuration, repeats: true) { _ in
                 self.rotateSegment()
             }
         }
-        log("Started segment rolling with 30-second intervals")
+        log("Started segment rolling with 5-minute intervals")
     }
 
     /**
@@ -978,7 +978,7 @@ class SegmentRollingManager: NSObject {
             guard self.isActive else { return }
 
             let totalElapsed = self.recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
-            self.throttledLog("Rotating segment \(self.segmentCounter) after 30s (total elapsed: \(totalElapsed)s)",
+            self.throttledLog("Rotating segment \(self.segmentCounter) after 5min (total elapsed: \(totalElapsed)s)",
                             throttleKey: "segment_rotation", maxFrequency: 5.0)
 
             // Stop current segment with aggressive cleanup
