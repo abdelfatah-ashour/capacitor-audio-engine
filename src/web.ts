@@ -18,8 +18,6 @@ import type {
   PlaybackInfo,
   SeekOptions,
   SkipToIndexOptions,
-  SetGainFactorOptions,
-  SetGainFactorResult,
 } from './definitions';
 
 declare global {
@@ -122,9 +120,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @platform web Not supported
    */
   async resetRecording(): Promise<void> {
-    console.warn(
-      'resetRecording is not supported on web platform. No recording buffers to reset.',
-    );
+    console.warn('resetRecording is not supported on web platform. No recording buffers to reset.');
     throw new Error('resetRecording is not supported on web platform');
   }
 
@@ -276,8 +272,6 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     console.warn('destroyWaveform is not supported on web platform. No waveform resources to clean up.');
   }
 
-
-
   // ==================== AUDIO PLAYBACK METHODS ====================
 
   /**
@@ -410,24 +404,6 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
       'getPlaybackInfo is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
     throw new Error('getPlaybackInfo is not supported on web platform');
-  }
-
-  /**
-   * Set gain factor for waveform visualization levels
-   * @param options - Gain factor options
-   * @returns Promise that resolves with gain factor result
-   * @platform web Not supported
-   */
-  async setGainFactor(options: SetGainFactorOptions): Promise<SetGainFactorResult> {
-    console.warn(
-      `setGainFactor is not supported on web platform. Attempted to set gain factor: ${options.gainFactor}`,
-    );
-
-    // Return mock success with provided gain factor for API compatibility
-    return {
-      success: false,
-      gainFactor: options.gainFactor,
-    };
   }
 
   /**

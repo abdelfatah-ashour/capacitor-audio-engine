@@ -318,15 +318,7 @@ class WaveformDataManager {
         }
     }
 
-    /**
-     * Configure gain factor for better voice level representation
-     * - Parameter gainFactor: Gain factor to apply to RMS values (5.0-30.0, default: 12.0)
-     */
-    func setGainFactor(_ gainFactor: Float) {
-        // Allow higher headroom to support explicit 2x boosts for high-quality mono (e.g., 48kHz/128kbps)
-        speechDetectionGainFactor = max(5.0, min(100.0, gainFactor))
-        log("Speech detection gain factor set to: \(speechDetectionGainFactor)")
-    }
+
 
     /**
      * Configure advanced VAD settings for optimal performance
@@ -378,7 +370,7 @@ class WaveformDataManager {
         if let v = silenceThreshold { speechThreshold = max(0.0, min(1.0, v)) }
         if let v = vadEnergyRatio { energyThresholdMultiplier = max(0.5, min(5.0, v)) }
         if let v = vadSpeechRatio { self.vadSpeechRatio = max(0.05, min(1.0, v)) }
-        if let v = gainFactor { setGainFactor(v) } // reuse validation
+        // Gain factor is now automatically optimized internally
         if let v = channelHandling { self.channelHandling = v }
         if let q = callbackQueue { self.callbackQueue = q }
 

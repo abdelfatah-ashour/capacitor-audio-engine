@@ -798,31 +798,11 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     }
 
 
-    @PluginMethod
-    public void setGainFactor(PluginCall call) {
-        try {
-            Float gainFactor = call.getFloat("gainFactor", 18.0f); // Tuned default down to better align with iOS
 
-            // Validate gain factor range - increased upper bound to allow more amplification
-            float validatedGain = Math.max(5.0f, Math.min(50.0f, gainFactor));
 
-            if (waveformDataManager != null) {
-                // Set gain factor
-                waveformDataManager.setGainFactor(validatedGain);
-                Log.d(TAG, "Gain factor set to: " + validatedGain);
 
-                JSObject result = new JSObject();
-                result.put("success", true);
-                result.put("gainFactor", validatedGain);
-                call.resolve(result);
-            } else {
-                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to set gain factor", e);
-            call.reject("GAIN_FACTOR_ERROR", "Failed to set gain factor: " + e.getMessage());
-        }
-    }
+
+
 
     @PluginMethod
     public void destroyWaveform(PluginCall call) {
@@ -889,22 +869,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
         // Start waveform data monitoring for real-time audio levels
         if (waveformDataManager != null) {
-            // Apply a 2x boost for specific high-quality mono configuration (48kHz, 128kbps, mono)
-            try {
-                int sr = recordingConfig != null ? recordingConfig.getSampleRate() : AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
-                int ch = recordingConfig != null ? recordingConfig.getChannels() : AudioEngineConfig.Recording.DEFAULT_CHANNELS;
-                int br = recordingConfig != null ? recordingConfig.getBitrate() : AudioEngineConfig.Recording.DEFAULT_BITRATE;
-                if (sr == 48000 && ch == 1 && br == 128000) {
-                    // configureForRecording uses 22.0 at 48kHz mono; double to 44.0
-                    waveformDataManager.setGainFactor(44.0f);
-                    Log.d(TAG, "Applied 2x waveform gain boost for 48kHz/128kbps mono (gain=44.0)");
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Unable to apply conditional gain boost", e);
-            }
-
+            // Gain factor is now automatically optimized internally based on recording configuration
             waveformDataManager.startMonitoring();
-            Log.d(TAG, "Waveform data monitoring started");
+            Log.d(TAG, "Waveform data monitoring started with automatic gain optimization");
         }
 
         isRecording = true;

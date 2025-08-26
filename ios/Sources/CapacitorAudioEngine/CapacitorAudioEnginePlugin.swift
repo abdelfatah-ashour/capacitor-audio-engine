@@ -27,7 +27,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "getAvailableMicrophones", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "switchMicrophone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "configureWaveform", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setGainFactor", returnType: CAPPluginReturnPromise),
+
         CAPPluginMethod(name: "destroyWaveform", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
         CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise),
@@ -283,12 +283,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         let channelsInt = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
         waveformDataManager.configureForRecording(sampleRate: sampleRateInt, channels: channelsInt, speechThreshold: 0.01)
 
-        // Apply a 2x boost for specific high-quality mono configuration
-        if sampleRateInt == 48000 && channelsInt == 1 && bitrate == 128000 {
-            // configureForRecording sets 40.0 for this case; double to 80.0 for clearer levels
-            waveformDataManager.setGainFactor(80.0)
-            log("Applied 2x waveform gain boost for 48kHz/128kbps mono (gain=80.0)")
-        }
+        // Gain factor is now automatically optimized internally based on recording configuration
 
         // Start waveform data monitoring for real-time audio levels
         waveformDataManager.startMonitoring()
@@ -507,23 +502,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
 
-    @objc func setGainFactor(_ call: CAPPluginCall) {
-        let gainFactor = call.getFloat("gainFactor") ?? 30.0 // Increased default to target ~0.5+ peaks near mic
 
-        // Validate gain factor range - increased upper bound to allow more amplification
-        let validatedGain = max(5.0, min(50.0, gainFactor))
-
-        // Set gain factor
-        waveformDataManager.setGainFactor(validatedGain)
-
-        log("Gain factor set to: \(validatedGain)")
-
-        let result: [String: Any] = [
-            "success": true,
-            "gainFactor": validatedGain
-        ]
-        call.resolve(result)
-    }
 
     @objc func destroyWaveform(_ call: CAPPluginCall) {
         // Stop monitoring if active
