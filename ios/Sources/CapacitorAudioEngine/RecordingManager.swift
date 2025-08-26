@@ -560,7 +560,7 @@ class RecordingManager: NSObject {
     }
 
     func getDuration() -> Int {
-        return Int(segmentRollingManager?.getCurrentDuration() ?? currentDuration)
+        return Int(segmentRollingManager?.getElapsedRecordingTime() ?? currentDuration)
     }
 
     func getStatus() -> String {
@@ -770,7 +770,7 @@ class RecordingManager: NSObject {
             // Avoid reporting during reset to prevent races while manager is being cleaned/recreated
             if self.isResetting { return }
 
-            let duration = self.segmentRollingManager?.getCurrentDuration() ?? 0
+            let duration = self.segmentRollingManager?.getElapsedRecordingTime() ?? 0
             self.currentDuration = duration
 
             self.lastReportedDuration = duration

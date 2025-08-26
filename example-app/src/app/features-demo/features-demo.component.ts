@@ -495,7 +495,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Recording methods
   async checkPermission(): Promise<void> {
     try {
-      const result = await CapacitorAudioEngine.checkPermission();
+      const result = await CapacitorAudioEngine.checkPermissions();
       this.hasPermission.set(result.granted);
       this.permissionChecked.set(true);
     } catch (error: any) {
@@ -512,7 +512,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async requestPermission(): Promise<void> {
     try {
-      const result = await CapacitorAudioEngine.requestPermission();
+      const result = await CapacitorAudioEngine.requestPermissions();
       this.hasPermission.set(result.granted);
       if (!result.granted) {
         await this.showToast('Permission denied. Cannot record audio.', 'warning');

@@ -13,8 +13,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     public let identifier = "CapacitorAudioEnginePlugin"
     public let jsName = "CapacitorAudioEngine"
     public let pluginMethods: [CAPPluginMethod] = [
-        CAPPluginMethod(name: "checkPermission", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "checkPermissions", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestPermissions", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pauseRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopRecording", returnType: CAPPluginReturnPromise),
@@ -121,7 +121,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         return request
     }
 
-    @objc func checkPermission(_ call: CAPPluginCall) {
+    @objc public override func checkPermissions(_ call: CAPPluginCall) {
         Task {
             let audioStatus = AVAudioSession.sharedInstance().recordPermission
             let audioGranted = audioStatus == .granted
@@ -181,7 +181,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         }
     }
 
-    @objc func requestPermission(_ call: CAPPluginCall) {
+    @objc public override func requestPermissions(_ call: CAPPluginCall) {
         // First request audio permission
         AVAudioSession.sharedInstance().requestRecordPermission { audioGranted in
             // Then check/request notification permission on iOS 10+
@@ -399,73 +399,42 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         let lowQuality = (currentRecordingSampleRate <= 16000) || (currentRecordingBitrate <= 32000)
 
         // Waveform visualization settings (quality-aware defaults)
-        let numberOfBars = call.getInt("numberOfBars") ?? (lowQuality ? 64 : 128)
-        let debounceTime = call.getDouble("debounceTime") ?? (lowQuality ? 0.1 : 0.05)
+        let numberOfBars = lowQuality ? 64 : 128
+        let debounceTime = lowQuality ? 0.1 : 0.05
+        let debounceInSeconds = Float(debounceTime)
 
-        // Convert debounceTime to seconds if it's a preset enum value
-        var debounceInSeconds = Float(debounceTime)
-        if debounceInSeconds > 10.0 {
-            // Handle enum values (they will be larger numbers)
-            debounceInSeconds = debounceInSeconds / 1000.0 // Convert from ms to seconds
-        }
+        // Speech detection settings (defaults)
+        let speechEnabled = false
+        let speechThreshold: Float = 0.01
+        let calibrationDuration = 1000
 
-        // Speech detection settings
-        var speechEnabled = false
-        var speechThreshold: Float = 0.01
-        var calibrationDuration = 1000
-
-        if let speechDetection = call.getObject("speechDetection") {
-            speechEnabled = speechDetection["enabled"] as? Bool ?? false
-            let threshold = speechDetection["threshold"] as? Double ?? 0.01
-            speechThreshold = Float(threshold)
-            calibrationDuration = speechDetection["calibrationDuration"] as? Int ?? 1000
-
-            // Handle enum values for threshold
-            if speechThreshold > 1.0 {
-                speechThreshold = speechThreshold / 1000.0 // Convert from enum to actual value
-            }
-        }
-
-        // VAD settings
-        var vadEnabled = false
-        var vadWindowSize = 5
-        var enableVoiceFilter = true
-
-        if let vad = call.getObject("vad") {
-            vadEnabled = vad["enabled"] as? Bool ?? false
-            vadWindowSize = vad["windowSize"] as? Int ?? 5
-            enableVoiceFilter = vad["enableVoiceFilter"] as? Bool ?? true
-
-            // Validate window size
-            vadWindowSize = max(3, min(20, vadWindowSize))
-        }
+        // VAD settings (defaults)
+        let vadEnabled = false
+        let vadWindowSize = 5
+        let enableVoiceFilter = true
 
         // Ensure waveform manager is tuned for current recording configuration
         waveformDataManager.configureForRecording(sampleRate: currentRecordingSampleRate, channels: currentRecordingChannels, speechThreshold: speechThreshold)
 
-        // Configure waveform visualization
+        // Configure waveform visualization with defaults
         waveformDataManager.configureWaveform(debounceInSeconds: debounceInSeconds, bars: numberOfBars)
 
-        // Configure speech detection if provided
-        if call.hasOption("speechDetection") {
-            waveformDataManager.configureSpeechDetection(
-                enabled: speechEnabled,
-                threshold: speechThreshold,
-                useVAD: vadEnabled,
-                calibrationDuration: calibrationDuration
-            )
-        }
+        // Configure speech detection with defaults
+        waveformDataManager.configureSpeechDetection(
+            enabled: speechEnabled,
+            threshold: speechThreshold,
+            useVAD: vadEnabled,
+            calibrationDuration: calibrationDuration
+        )
 
-        // Configure VAD if provided
-        if call.hasOption("vad") {
-            waveformDataManager.configureAdvancedVAD(
-                enabled: vadEnabled,
-                windowSize: vadWindowSize,
-                enableVoiceFilter: enableVoiceFilter
-            )
-        }
+        // Configure VAD with defaults
+        waveformDataManager.configureAdvancedVAD(
+            enabled: vadEnabled,
+            windowSize: vadWindowSize,
+            enableVoiceFilter: enableVoiceFilter
+        )
 
-        log("Unified waveform configured - bars: \(numberOfBars), interval: \(debounceInSeconds)s, speech: \(speechEnabled) (threshold: \(speechThreshold)), VAD: \(vadEnabled) (window: \(vadWindowSize))")
+        log("Waveform configured with defaults - bars: \(numberOfBars), interval: \(debounceInSeconds)s, speech: \(speechEnabled) (threshold: \(speechThreshold)), VAD: \(vadEnabled) (window: \(vadWindowSize))")
 
         // Build comprehensive result
         let speechConfig: [String: Any] = [

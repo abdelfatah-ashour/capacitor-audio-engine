@@ -152,16 +152,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         permissionManager.requestPermissions(call);
     }
 
-    // Backward compatibility methods (deprecated)
-    @PluginMethod
-    public void checkPermission(PluginCall call) {
-        checkPermissions(call);
-    }
 
-    @PluginMethod
-    public void requestPermission(PluginCall call) {
-        requestPermissions(call);
-    }
 
     @PermissionCallback
     private void permissionCallback(PluginCall call) {
@@ -405,7 +396,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
             if (segmentRollingManager != null) {
                 // Use the segment manager's duration which respects the rolling window
-                long segmentDuration = segmentRollingManager.getCurrentDuration();
+                long segmentDuration = segmentRollingManager.getElapsedRecordingTime();
                 result.put("duration", segmentDuration / 1000.0); // Convert to seconds
                 Log.d(TAG, "Segment rolling current duration: " + (segmentDuration / 1000.0) + " seconds");
             } else {
@@ -443,7 +434,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
         if (segmentRollingManager != null) {
             // Use the segment manager's duration which respects the rolling window
-            long segmentDuration = segmentRollingManager.getCurrentDuration();
+            long segmentDuration = segmentRollingManager.getElapsedRecordingTime();
             result.put("duration", segmentDuration / 1000.0); // Convert to seconds
         } else {
             result.put("duration", 0.0);
@@ -688,69 +679,34 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             boolean lowQuality = (sr <= 16000) || (br <= 32000);
 
             // Waveform visualization settings with quality-based defaults
-            Integer numberOfBars = call.getInt("numberOfBars", lowQuality ? 64 : 128);
-            Double debounceTime = call.getDouble("debounceTime", lowQuality ? 0.1 : 0.05);
+            int numberOfBars = lowQuality ? 64 : 128;
+            double debounceTime = lowQuality ? 0.1 : 0.05;
+            float debounceInSeconds = (float) debounceTime;
 
-            // Convert debounceTime to seconds if it's a preset enum value
-            float debounceInSeconds = debounceTime.floatValue();
-            if (debounceInSeconds > 10.0f) {
-                // Handle enum values (they will be larger numbers)
-                debounceInSeconds = debounceInSeconds / 1000.0f; // Convert from ms to seconds
-            }
-
-            // Speech detection settings
-            JSObject speechDetection = call.getObject("speechDetection");
+            // Speech detection settings (defaults)
             boolean speechEnabled = false;
             float speechThreshold = 0.01f;
             int calibrationDuration = 1000;
 
-            if (speechDetection != null) {
-                speechEnabled = speechDetection.has("enabled") ? speechDetection.getBool("enabled") : false;
-                double threshold = speechDetection.has("threshold") ? speechDetection.getDouble("threshold") : 0.01;
-                speechThreshold = (float) threshold;
-                calibrationDuration = speechDetection.has("calibrationDuration") ? speechDetection.getInt("calibrationDuration") : 1000;
-
-                // Handle enum values for threshold
-                if (speechThreshold > 1.0f) {
-                    speechThreshold = speechThreshold / 1000.0f; // Convert from enum to actual value
-                }
-            }
-
-            // VAD settings
-            JSObject vad = call.getObject("vad");
+            // VAD settings (defaults)
             boolean vadEnabled = false;
             int vadWindowSize = 5;
             boolean enableVoiceFilter = true;
-
-            if (vad != null) {
-                vadEnabled = vad.has("enabled") ? vad.getBool("enabled") : false;
-                vadWindowSize = vad.has("windowSize") ? vad.getInt("windowSize") : 5;
-                enableVoiceFilter = vad.has("enableVoiceFilter") ? vad.getBool("enableVoiceFilter") : true;
-            }
 
             if (waveformDataManager != null) {
                 // Ensure waveform manager is tuned for current recording configuration
                 waveformDataManager.configureForRecording(sr, ch, speechThreshold);
 
-                // Configure waveform visualization
+                // Configure waveform visualization with defaults
                 waveformDataManager.configureWaveform(debounceInSeconds, numberOfBars);
 
-                // Configure speech detection if provided
-                if (speechDetection != null) {
-                    // Explicitly use the boolean/int version to avoid ambiguity
-                    waveformDataManager.configureSpeechDetection(speechEnabled, speechThreshold, vadEnabled, calibrationDuration);
-                }
+                // Configure speech detection with defaults
+                waveformDataManager.configureSpeechDetection(speechEnabled, speechThreshold, vadEnabled, calibrationDuration);
 
-                // Configure VAD if provided
-                if (vad != null) {
-                    // Explicitly use the wrapper types version to avoid ambiguity
-                    Boolean vadEnabledObj = Boolean.valueOf(vadEnabled);
-                    Integer vadWindowSizeObj = Integer.valueOf(vadWindowSize);
-                    Boolean enableVoiceFilterObj = Boolean.valueOf(enableVoiceFilter);
-                    waveformDataManager.configureAdvancedVAD(vadEnabledObj, vadWindowSizeObj, enableVoiceFilterObj);
-                }
+                // Configure VAD with defaults
+                waveformDataManager.configureAdvancedVAD(vadEnabled, vadWindowSize, enableVoiceFilter);
 
-                Log.d(TAG, "Unified waveform configured - bars: " + numberOfBars +
+                Log.d(TAG, "Waveform configured with defaults - bars: " + numberOfBars +
                      ", interval: " + debounceInSeconds + "s" +
                      ", speech: " + speechEnabled + " (threshold: " + speechThreshold + ")" +
                      ", VAD: " + vadEnabled + " (window: " + vadWindowSize + ")");
@@ -1550,7 +1506,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 // Emit pause state change event for consistency
                 if (eventManager != null) {
                     JSObject pauseData = new JSObject();
-                    long currentDuration = segmentRollingManager.getCurrentDuration();
+                    long currentDuration = segmentRollingManager.getElapsedRecordingTime();
                     pauseData.put("duration", currentDuration / 1000.0);
                     pauseData.put("isRecording", true); // Session is still active
                     pauseData.put("status", "paused");
@@ -1608,7 +1564,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 // Emit recording state change event for consistency
                 if (eventManager != null) {
                     JSObject resumeData = new JSObject();
-                    long currentDuration = segmentRollingManager.getCurrentDuration();
+                    long currentDuration = segmentRollingManager.getElapsedRecordingTime();
                     resumeData.put("duration", currentDuration / 1000.0);
                     resumeData.put("isRecording", true);
                     resumeData.put("status", "recording");

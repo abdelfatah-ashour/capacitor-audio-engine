@@ -12,15 +12,13 @@ The Capacitor Audio Engine plugin now supports real-time waveform data during re
 
 ## Quick Start
 
-### 1. Configure Waveform Settings (Optional)
+### 1. Configure Waveform Settings
 
 ```typescript
 import { CapacitorAudioEngine } from '@capacitor-community/audio-engine';
 
-// Configure number of waveform bars (default: 32)
-await CapacitorAudioEngine.configureWaveform({
-  numberOfBars: 64, // Higher resolution for smoother visualization
-});
+// Configure waveform with default settings
+await CapacitorAudioEngine.configureWaveform();
 ```
 
 ### 2. Listen for Waveform Data
@@ -74,8 +72,8 @@ class WaveformRecorder {
   private waveformBars: HTMLElement[] = [];
 
   async initialize() {
-    // Configure waveform with higher resolution
-    await CapacitorAudioEngine.configureWaveform({ numberOfBars: 48 });
+    // Configure waveform with default settings
+    await CapacitorAudioEngine.configureWaveform();
 
     // Create waveform UI elements
     this.createWaveformUI();
@@ -176,11 +174,14 @@ class WaveformRecorder {
 
 ## Configuration Options
 
-### `configureWaveform(options)`
+### `configureWaveform()`
 
-| Option         | Type     | Default | Description                      |
-| -------------- | -------- | ------- | -------------------------------- |
-| `numberOfBars` | `number` | `32`    | Number of amplitude bars (1-256) |
+The `configureWaveform()` method uses quality-aware defaults based on your current recording configuration:
+
+- **High Quality Recording** (≥44.1kHz, ≥128kbps): 128 bars, 50ms debounce
+- **Low Quality Recording** (≤16kHz, ≤32kbps): 64 bars, 100ms debounce
+
+These defaults are automatically selected to provide optimal performance for your recording setup.
 
 ### Waveform Data Event
 

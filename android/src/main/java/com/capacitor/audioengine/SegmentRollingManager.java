@@ -198,7 +198,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 public void run() {
                     // Emit duration change event every second for real-time updates
                     if (durationChangeCallback != null && isActive.get()) {
-                        long currentDuration = getCurrentDuration();
+                        long currentDuration = getElapsedRecordingTime();
                         try {
                             durationChangeCallback.onDurationChanged(currentDuration);
                         } catch (Exception e) {
@@ -327,7 +327,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 public void run() {
                     // Emit duration change event every second for real-time updates
                     if (durationChangeCallback != null && isActive.get()) {
-                        long currentDuration = getCurrentDuration();
+                        long currentDuration = getElapsedRecordingTime();
                         try {
                             durationChangeCallback.onDurationChanged(currentDuration);
                         } catch (Exception e) {
@@ -560,7 +560,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
      * For rolling recording, this returns the actual elapsed time since recording started,
      * accounting for interruption pauses and manual pauses to provide accurate usable recording time
      */
-    public long getCurrentDuration() {
+    public long getElapsedRecordingTime() {
         if (!isActive.get()) {
             return 0;
         }
@@ -878,7 +878,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
                 // Emit duration change event for consistency with linear recording
                 if (durationChangeCallback != null) {
-                    long currentDuration = getCurrentDuration();
+                    long currentDuration = getElapsedRecordingTime();
                     try {
                         durationChangeCallback.onDurationChanged(currentDuration);
                         Log.d(TAG, "Emitted duration change event: " + (currentDuration / 1000.0) + "s");

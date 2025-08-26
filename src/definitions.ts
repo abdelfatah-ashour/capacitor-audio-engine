@@ -384,63 +384,6 @@ export interface WaveformConfigurationResult {
   };
 }
 
-// Legacy interfaces for backward compatibility (deprecated)
-/** @deprecated Use WaveformConfiguration instead */
-export interface WaveformOptions {
-  numberOfBars?: number;
-  debounceInSeconds?: number; // Maintained for backward compatibility
-}
-
-/** @deprecated Use WaveformConfiguration instead */
-export interface WaveformConfigurationOptions {
-  numberOfBars?: number;
-  debounceInSeconds?: number; // Maintained for backward compatibility
-}
-
-/** @deprecated Use WaveformConfiguration instead */
-export interface WaveformSpeechDetectionOptions {
-  enabled?: boolean;
-  threshold?: number;
-  useVAD?: boolean;
-  calibrationDuration?: number;
-}
-
-/** @deprecated Use WaveformConfigurationResult instead */
-export interface WaveformSpeechDetectionResult {
-  success: boolean;
-  enabled: boolean;
-  threshold: number;
-  useVAD: boolean;
-  calibrationDuration: number;
-}
-
-/** @deprecated Use WaveformConfiguration instead */
-export interface AdvancedVADOptions {
-  /** Enable VAD for speech detection */
-  enabled?: boolean;
-  /** VAD window size in frames (3-20). Smaller = lower latency, larger = more accuracy. Default: 5 */
-  windowSize?: number;
-  /** Enable human voice band filtering (85Hz-3400Hz) for noise rejection. Default: true */
-  enableVoiceFilter?: boolean;
-}
-
-/** @deprecated Use WaveformConfigurationResult instead */
-export interface AdvancedVADResult {
-  success: boolean;
-  enabled: boolean;
-  windowSize: number;
-  /** Approximate VAD latency in milliseconds */
-  latencyMs: number;
-  enableVoiceFilter: boolean;
-}
-
-/** @deprecated Use WaveformConfigurationResult instead */
-export interface ConfigureWaveformResult {
-  success: boolean;
-  numberOfBars: number;
-  debounceInSeconds: number; // Maintained for backward compatibility
-}
-
 export interface PreloadTracksOptions {
   tracks: string[];
   preloadNext?: boolean;
@@ -524,7 +467,7 @@ export interface CapacitorAudioEnginePlugin {
    * @platform android Uses ContextCompat.checkSelfPermission with RECORD_AUDIO permission
    * @platform ios Uses AVAudioSession.recordPermission
    */
-  checkPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
+  checkPermissions(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
 
   /**
    * Request microphone permission from the user.
@@ -536,7 +479,7 @@ export interface CapacitorAudioEnginePlugin {
    * @platform android Uses ActivityCompat.requestPermissions with RECORD_AUDIO permission
    * @platform ios Uses AVAudioSession.requestRecordPermission
    */
-  requestPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
+  requestPermissions(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
 
   /**
    * Start recording audio from the device's microphone.
@@ -699,10 +642,10 @@ export interface CapacitorAudioEnginePlugin {
   switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
 
   /**
-   * Configure all waveform settings in one unified call.
-   * This method combines waveform visualization, speech detection, and VAD configuration.
+   * Configure waveform visualization and monitoring settings with default values.
+   * This method sets up real-time waveform data collection using quality-aware
+   * defaults based on current recording configuration.
    *
-   * @param options - Unified waveform configuration options
    * @returns Promise that resolves with complete configuration result
    * @throws {Error} If configuration fails
    * @platform web Not supported
@@ -711,27 +654,8 @@ export interface CapacitorAudioEnginePlugin {
    *
    * @example
    * ```typescript
-   * // Basic waveform configuration
-   * await CapacitorAudioEngine.configureWaveform({
-   *   numberOfBars: WaveformBarsCount.BARS_64,
-   *   debounceTime: WaveformDebounceTime.FAST
-   * });
-   *
-   * // Advanced configuration with speech detection and VAD
-   * await CapacitorAudioEngine.configureWaveform({
-   *   numberOfBars: WaveformBarsCount.BARS_32,
-   *   debounceTime: WaveformDebounceTime.REALTIME,
-   *   speechDetection: {
-   *     enabled: true,
-   *     threshold: SpeechThreshold.NORMAL,
-   *     calibrationDuration: CalibrationDuration.NORMAL
-   *   },
-   *   vad: {
-   *     enabled: true,
-   *     windowSize: VADWindowSize.LOW,
-   *     enableVoiceFilter: true
-   *   }
-   * });
+   * // Configure waveform with default settings
+   * await CapacitorAudioEngine.configureWaveform();
    *
    * // Listen for waveform data events during recording
    * const waveformListener = await CapacitorAudioEngine.addListener('waveformData', (data) => {

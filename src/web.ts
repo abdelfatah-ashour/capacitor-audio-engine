@@ -41,9 +41,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with an object containing the permission status
    * @platform web Not supported - returns false
    */
-  async checkPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }> {
+  async checkPermissions(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }> {
     console.warn(
-      'checkPermission is not supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
+      'checkPermissions is not supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
     );
     return { granted: false };
   }
@@ -53,13 +53,13 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with an object containing the permission status
    * @platform web Not supported - returns false
    */
-  async requestPermission(): Promise<{
+  async requestPermissions(): Promise<{
     granted: boolean;
     audioPermission?: boolean;
     notificationPermission?: boolean;
   }> {
     console.warn(
-      'requestPermission is not supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
+      'requestPermissions is not supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
     );
     return { granted: false };
   }
@@ -228,8 +228,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
-   * Configure waveform data generation settings (unified configuration).
-   * @param options - Unified configuration options for waveform data
+   * Configure waveform data generation settings with default values.
    * @returns Promise that resolves with configuration result
    * @platform web Not supported
    */

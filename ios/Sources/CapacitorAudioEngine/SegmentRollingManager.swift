@@ -531,19 +531,7 @@ class SegmentRollingManager: NSObject {
         }
     }
 
-    /**
-     * @deprecated Use getElapsedRecordingTime() instead
-     */
-    func getCurrentDuration() -> TimeInterval {
-        return getElapsedRecordingTime()
-    }
 
-    /**
-     * @deprecated Use getBufferedAudioDuration() instead
-     */
-    func getBufferedDuration() -> TimeInterval {
-        return getBufferedAudioDuration()
-    }
 
     /**
      * Check if segment rolling is currently active
