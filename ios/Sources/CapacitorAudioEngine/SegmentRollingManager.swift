@@ -123,6 +123,26 @@ class SegmentRollingManager: NSObject {
         }
     }
 
+    /// Async version of queue safe operation for async operations
+    private func performQueueSafeOperationAsync<T>(_ operation: @escaping () async throws -> T) async throws -> T {
+        if DispatchQueue.getSpecific(key: queueKey) == queueValue {
+            return try await operation()
+        } else {
+            return try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    Task {
+                        do {
+                            let result = try await operation()
+                            continuation.resume(returning: result)
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Throttled logging to reduce spam and UI lag
     private func throttledLog(_ message: String, throttleKey: String = "general", maxFrequency: TimeInterval = 1.0) {
         #if DEBUG
@@ -568,15 +588,15 @@ class SegmentRollingManager: NSObject {
      */
     func stopSegmentRollingAsync(completion: @escaping (Result<URL, Error>) -> Void) {
         // Perform the stop operation on a background queue to avoid QoS priority inversion
-        DispatchQueue.global(qos: .utility).async {
+        Task.detached(priority: .utility) {
             do {
-                let finalFileURL = try self.performQueueSafeOperation {
+                let finalFileURL = try await self.performQueueSafeOperationAsync {
                     guard self.isActive else {
                         throw SegmentRecordingError.noRecordingToStop
                     }
 
                     // Stop timer
-                    DispatchQueue.main.sync {
+                    await MainActor.run {
                         self.segmentTimer?.invalidate()
                         self.segmentTimer = nil
                     }
@@ -597,7 +617,7 @@ class SegmentRollingManager: NSObject {
                         self.log("Continuous recording file ready: \(continuousURL.lastPathComponent)")
                         if let maxDuration = self.maxDuration {
                             self.log("Trimming continuous file to last \(maxDuration)s for exact rolling window (async)")
-                            finalFileURL = try self.trimMergedFile(continuousURL, maxDuration: maxDuration)
+                            finalFileURL = try await self.trimMergedFileAsync(continuousURL, maxDuration: maxDuration)
                         } else {
                             finalFileURL = continuousURL
                         }
@@ -613,7 +633,7 @@ class SegmentRollingManager: NSObject {
                         }
                         let mergedFileURL = try self.mergeSegments()
                         if let maxDuration = self.maxDuration {
-                            finalFileURL = try self.trimMergedFile(mergedFileURL, maxDuration: maxDuration)
+                            finalFileURL = try await self.trimMergedFileAsync(mergedFileURL, maxDuration: maxDuration)
                         } else {
                             finalFileURL = mergedFileURL
                         }
@@ -630,11 +650,11 @@ class SegmentRollingManager: NSObject {
                     return finalFileURL
                 }
 
-                DispatchQueue.main.async {
+                await MainActor.run {
                     completion(.success(finalFileURL))
                 }
             } catch {
-                DispatchQueue.main.async {
+                await MainActor.run {
                     completion(.failure(error))
                 }
             }
@@ -1163,7 +1183,7 @@ class SegmentRollingManager: NSObject {
     }
 
     /**
-     * Trim merged file to specified duration
+     * Trim merged file to specified duration (synchronous version for compatibility)
      *
      * Assumptions in trimming logic:
      * - The rolling buffer maintains enough segments to ensure we can extract exactly maxDuration seconds
@@ -1172,6 +1192,114 @@ class SegmentRollingManager: NSObject {
      * - This matches Android behavior for consistent cross-platform experience
      */
     private func trimMergedFile(_ sourceURL: URL, maxDuration: TimeInterval) throws -> URL {
+        log("Starting trimMergedFile: source=\(sourceURL.lastPathComponent), maxDuration: \(maxDuration)")
+
+        let asset = AVAsset(url: sourceURL)
+        let duration = asset.duration.seconds
+        log("Source file duration: \(duration) seconds")
+
+        // The rolling buffer ensures we have enough audio to extract exactly maxDuration seconds
+        // We always trim to extract the last maxDuration seconds, regardless of merged file length
+        log("Extracting last \(maxDuration) seconds from merged file of \(duration) seconds")
+
+        // If merged file is shorter than maxDuration, return the entire file
+        if duration <= maxDuration {
+            log("Merged file (\(duration)s) is shorter than or equal to maxDuration (\(maxDuration)s) - returning entire file")
+            return sourceURL
+        }
+
+        // Create output URL for trimmed file
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let trimmedURL = documentsPath.appendingPathComponent("trimmed_recording_\(Int(Date().timeIntervalSince1970)).m4a")
+        log("Trimmed file URL: \(trimmedURL.path)")
+
+        // Remove existing file if it exists
+        if FileManager.default.fileExists(atPath: trimmedURL.path) {
+            try FileManager.default.removeItem(at: trimmedURL)
+            log("Removed existing trimmed file")
+        }
+
+        // Calculate start time to get the last N seconds (matching Android behavior)
+        let startTime = CMTime(seconds: max(0, duration - maxDuration), preferredTimescale: 600)
+        let endTime = CMTime(seconds: duration, preferredTimescale: 600)
+        let timeRange = CMTimeRange(start: startTime, end: endTime)
+        log("Trim range: \(CMTimeGetSeconds(startTime)) to \(CMTimeGetSeconds(endTime)) seconds")
+
+        // Create export session
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            log("Error: Failed to create export session for trimming")
+            throw SegmentRecordingError.exportSessionCreationFailed
+        }
+
+        exportSession.outputURL = trimmedURL
+        exportSession.outputFileType = .m4a
+        exportSession.timeRange = timeRange
+
+        // Use semaphore for synchronous operation (for compatibility)
+        let semaphore = DispatchSemaphore(value: 0)
+        var exportError: Error?
+        var exportResult: URL?
+
+        log("Starting trim export...")
+        exportSession.exportAsynchronously { [weak exportSession] in
+            guard let exportSession = exportSession else { return }
+
+            switch exportSession.status {
+            case .completed:
+                self.log("Trim export completed successfully")
+                exportResult = trimmedURL
+
+            case .failed:
+                let error = exportSession.error ?? SegmentRecordingError.trimExportFailed("Unknown trim export failure")
+                self.log("Trim export error: \(error.localizedDescription)")
+                exportError = error
+
+            case .cancelled:
+                self.log("Trim export was cancelled")
+                exportError = SegmentRecordingError.trimExportFailed("Trim export was cancelled")
+
+            default:
+                self.log("Trim export failed with status: \(exportSession.status)")
+                exportError = SegmentRecordingError.trimExportFailed("\(exportSession.status)")
+            }
+            semaphore.signal()
+        }
+
+        // Wait for export completion with timeout
+        let timeoutResult = semaphore.wait(timeout: .now() + 30.0)
+
+        if timeoutResult == .timedOut {
+            exportSession.cancelExport()
+            throw SegmentRecordingError.trimExportFailed("Trim export timed out after 30 seconds")
+        }
+
+        if let error = exportError {
+            throw error
+        }
+
+        guard let result = exportResult else {
+            throw SegmentRecordingError.trimExportFailed("Export completed but no result available")
+        }
+
+        log("Successfully trimmed merged file from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds)")
+
+        // Clean up original merged file
+        try FileManager.default.removeItem(at: sourceURL)
+        log("Cleaned up original merged file")
+
+        return result
+    }
+
+    /**
+     * Trim merged file to specified duration (async version with timeout)
+     *
+     * Assumptions in trimming logic:
+     * - The rolling buffer maintains enough segments to ensure we can extract exactly maxDuration seconds
+     * - We keep 1 extra segment beyond the required amount to guarantee sufficient audio for precise trimming
+     * - We always extract the LAST maxDuration seconds from the merged file (not the first)
+     * - This matches Android behavior for consistent cross-platform experience
+     */
+    private func trimMergedFileAsync(_ sourceURL: URL, maxDuration: TimeInterval) async throws -> URL {
         log("Starting trimMergedFile: source=\(sourceURL.lastPathComponent), maxDuration=\(maxDuration)")
 
         let asset = AVAsset(url: sourceURL)
@@ -1215,27 +1343,51 @@ class SegmentRollingManager: NSObject {
         exportSession.outputFileType = .m4a
         exportSession.timeRange = timeRange
 
-        // Use semaphore to wait for export completion
-        let semaphore = DispatchSemaphore(value: 0)
+        // Use async completion with timeout instead of blocking semaphore
+        let trimmedFileURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            self.log("Starting trim export...")
 
-        log("Starting trim export...")
-        exportSession.exportAsynchronously {
-            semaphore.signal()
-        }
+            // Create a flag to track if export completed
+            var exportCompleted = false
 
-        semaphore.wait()
-        log("Trim export completed with status: \(exportSession.status)")
+            // Set up timeout
+            let timeoutTask = DispatchWorkItem {
+                if !exportCompleted {
+                    self.log("Trim export timeout reached - cancelling export")
+                    exportSession.cancelExport()
+                    continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Trim export timed out after 30 seconds"))
+                }
+            }
 
-        // Check for export errors after completion
-        if exportSession.status == .failed {
-            let error = exportSession.error ?? SegmentRecordingError.trimExportFailed("Unknown trim export failure")
-            log("Trim export error: \(error.localizedDescription)")
-            throw error
-        }
+            // Schedule timeout after 30 seconds
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 30.0, execute: timeoutTask)
 
-        if exportSession.status != .completed {
-            log("Trim export failed with status: \(exportSession.status)")
-            throw SegmentRecordingError.trimExportFailed("\(exportSession.status)")
+            exportSession.exportAsynchronously {
+                // Mark export as completed
+                exportCompleted = true
+
+                // Cancel timeout task since export completed
+                timeoutTask.cancel()
+
+                switch exportSession.status {
+                case .completed:
+                    self.log("Trim export completed successfully")
+                    continuation.resume(returning: trimmedURL)
+
+                case .failed:
+                    let error = exportSession.error ?? SegmentRecordingError.trimExportFailed("Unknown trim export failure")
+                    self.log("Trim export error: \(error.localizedDescription)")
+                    continuation.resume(throwing: error)
+
+                case .cancelled:
+                    self.log("Trim export was cancelled")
+                    continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Trim export was cancelled"))
+
+                default:
+                    self.log("Trim export failed with status: \(exportSession.status)")
+                    continuation.resume(throwing: SegmentRecordingError.trimExportFailed("\(exportSession.status)"))
+                }
+            }
         }
 
         log("Successfully trimmed merged file from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds)")
@@ -1244,7 +1396,7 @@ class SegmentRollingManager: NSObject {
         try FileManager.default.removeItem(at: sourceURL)
         log("Cleaned up original merged file")
 
-        return trimmedURL
+        return trimmedFileURL
     }
 
     /**

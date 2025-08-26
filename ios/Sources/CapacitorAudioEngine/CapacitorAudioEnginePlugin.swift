@@ -46,22 +46,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
     ]
 
-    // Add a property for RecordingManager
+    // MARK: - Properties
+
     private var recordingManager: RecordingManager!
-
-    // Add a property for PlaybackManager
     private var playbackManager: PlaybackManager!
-
-    // Add a property for WaveformDataManager
     private var waveformDataManager: WaveformDataManager!
-
-    // Track current recording configuration for waveform defaults
+    private var pendingStopRecordingCall: CAPPluginCall?
+    private var stopRecordingTimeoutTask: DispatchWorkItem?
     private var currentRecordingSampleRate: Int = Int(AudioEngineConstants.defaultSampleRate)
     private var currentRecordingChannels: Int = AudioEngineConstants.defaultChannels
     private var currentRecordingBitrate: Int = AudioEngineConstants.defaultBitrate
-
-    // Add property for pending recording call
-    private var pendingStopRecordingCall: CAPPluginCall?
 
     // MARK: - Thread Safety
 
@@ -178,6 +172,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             log("Initial audio session configured for recording and playback")
         } catch {
             log("Warning: Failed to configure initial audio session: \(error.localizedDescription)")
+        }
+    }
+
+    deinit {
+        // Clean up any pending timeout tasks
+        if let timeoutTask = stopRecordingTimeoutTask {
+            timeoutTask.cancel()
+            log("Stop recording timeout cancelled - plugin deallocated")
         }
     }
 
@@ -317,6 +319,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             return
         }
 
+        // Cancel any pending stop recording timeout
+        if let timeoutTask = stopRecordingTimeoutTask {
+            timeoutTask.cancel()
+            stopRecordingTimeoutTask = nil
+            log("Stop recording timeout cancelled - recording reset")
+        }
+
+        // Clear pending stop recording call
+        pendingStopRecordingCall = nil
+
         // Reset recording manager state (discards segments, duration, keeps config, pauses)
         recordingManager.resetRecording()
 
@@ -329,7 +341,26 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     @objc func stopRecording(_ call: CAPPluginCall) {
         // Store the call to resolve it when recording finishes
         pendingStopRecordingCall = call
+
+        // Set up a timeout to ensure the call is resolved even if trimming takes too long
+        let timeoutTask = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+
+            if let pendingCall = self.pendingStopRecordingCall {
+                self.log("Stop recording timeout reached - resolving call with error")
+                pendingCall.reject("Recording stop operation timed out after 60 seconds")
+                self.pendingStopRecordingCall = nil
+            }
+        }
+
+        // Schedule timeout after 60 seconds
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 60.0, execute: timeoutTask)
+
+        // Start the recording stop process
         recordingManager.stopRecording()
+
+        // Store the timeout task so we can cancel it if recording finishes normally
+        self.stopRecordingTimeoutTask = timeoutTask
     }
 
     @objc func getDuration(_ call: CAPPluginCall) {
@@ -689,6 +720,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     func recordingDidEncounterError(_ error: Error) {
         notifyListeners("error", data: ["message": error.localizedDescription])
 
+        // Cancel the timeout task since recording finished with error
+        if let timeoutTask = stopRecordingTimeoutTask {
+            timeoutTask.cancel()
+            stopRecordingTimeoutTask = nil
+            log("Stop recording timeout cancelled - recording finished with error")
+        }
+
         // Reject the pending stop recording call if there's an error
         if let call = pendingStopRecordingCall {
             call.reject("Recording error: \(error.localizedDescription)")
@@ -700,6 +738,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         // This will be called when recording finishes
         // The info contains the recording response
         log("Recording finished with info: \(info)")
+
+        // Cancel the timeout task since recording finished successfully
+        if let timeoutTask = stopRecordingTimeoutTask {
+            timeoutTask.cancel()
+            stopRecordingTimeoutTask = nil
+            log("Stop recording timeout cancelled - recording completed successfully")
+        }
 
         // Stop waveform data monitoring
         waveformDataManager.stopMonitoring()
