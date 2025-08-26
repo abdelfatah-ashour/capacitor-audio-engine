@@ -1,35 +1,27 @@
 package com.capacitor.audioengine;
 
 import android.Manifest;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.media.MediaRecorder;
-import android.media.MediaPlayer;
-import android.media.MediaMetadataRetriever;
-import android.media.MediaExtractor;
-import android.media.MediaMuxer;
-import android.media.MediaFormat;
-import android.media.MediaCodec;
-import android.media.AudioManager;
+import android.content.ServiceConnection;
 import android.media.AudioDeviceInfo;
-import android.media.AudioRecord;
-import android.media.AudioFormat;
-import android.os.Build;
+import android.media.AudioManager;
 import android.os.Handler;
+import android.os.IBinder;
+import android.provider.Settings;
 import android.os.Looper;
 import android.util.Log;
-import androidx.core.content.ContextCompat;
-import androidx.core.app.ActivityCompat;
+
+import androidx.annotation.RequiresPermission;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Timer;
-import java.util.TimerTask;
 
-import com.getcapacitor.JSObject;
 import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -50,308 +42,378 @@ import com.getcapacitor.annotation.PermissionCallback;
         )
     }
 )
-public class CapacitorAudioEnginePlugin extends Plugin {
+public class CapacitorAudioEnginePlugin extends Plugin implements PermissionManager.PermissionRequestCallback, EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, RecordingServiceListener, AudioInterruptionManager.InterruptionCallback {
     private static final String TAG = "CapacitorAudioEngine";
 
-    // Recording properties
-    private MediaRecorder mediaRecorder;
+    // Core managers
+    private PermissionManager permissionManager;
+    private EventManager eventManager;
+
+    private FileDirectoryManager fileManager;
+    private PlaybackManager playbackManager;
+
+    // Waveform data manager for real-time audio levels
+    private WaveformDataManager waveformDataManager;
+
+    // Background recording service
+    private RecordingService recordingService;
+    private boolean isServiceBound = false;
+
+    // Segment rolling support
+    private SegmentRollingManager segmentRollingManager;
+    private boolean isSegmentRollingEnabled = false;
+
+    // Recording state
     private boolean isRecording = false;
-    private String currentRecordingPath;
-    private double currentDuration = 0.0;
-    private Timer durationTimer;
+    private AudioRecordingConfig recordingConfig;
+    private Integer maxDurationSeconds; // Maximum recording duration in seconds
+
+    // Thread management
     private Handler mainHandler;
-
-    // Segment rolling properties
-    private Integer maxDuration;
-    private Timer segmentTimer;
-    private List<String> segmentFiles = new ArrayList<>();
-    private int currentSegment = 0;
-
-    // Recording settings
-    private int sampleRate = 44100;
-    private int channels = 1;
-    private int bitrate = 128000;
-
-    // Interruption handling
-    private boolean wasRecordingBeforeInterruption = false;
-
-    // Background service for long-running recordings
-    private boolean serviceStarted = false;
-
-    // Playback properties
-    private MediaPlayer mediaPlayer;
-    private boolean isPlaying = false;
-    private String currentPlaybackPath;
-    private Timer playbackProgressTimer;
-    private float playbackSpeed = 1.0f;
-    private float playbackVolume = 1.0f;
-    private boolean isLooping = false;
 
     @Override
     public void load() {
+        super.load();
         mainHandler = new Handler(Looper.getMainLooper());
+
+        // Initialize managers
+        permissionManager = new PermissionManager(getContext(), this);
+        eventManager = new EventManager(this);
+        fileManager = new FileDirectoryManager(getContext());
+
+        // Initialize waveform data manager with event manager callback
+        waveformDataManager = new WaveformDataManager(eventManager);
+
+
+        // Initialize recording configuration with defaults
+        recordingConfig = new AudioRecordingConfig.Builder()
+            .sampleRate(AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE)
+            .channels(AudioEngineConfig.Recording.DEFAULT_CHANNELS)
+            .bitrate(AudioEngineConfig.Recording.DEFAULT_BITRATE)
+            .build();
+
+        // Initialize playback manager
+        playbackManager = new PlaybackManager(getContext(), this);
+
+        // Initialize managers that depend on callbacks
+        initializeCallbackManagers();
+
+        Log.d(TAG, "CapacitorAudioEngine plugin loaded");
+    }
+
+    // Service connection for background recording service
+    private final ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            Log.d(TAG, "AudioRecordingService connected");
+            // Use interface to decouple from concrete service implementation
+            if (service instanceof ServiceBinder binder) {
+              recordingService = binder.getService();
+                recordingService.setRecordingServiceListener(CapacitorAudioEnginePlugin.this);
+                isServiceBound = true;
+            }
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            Log.d(TAG, "AudioRecordingService disconnected");
+            recordingService = null;
+            isServiceBound = false;
+        }
+    };
+
+    private void initializeCallbackManagers() {
+        // Callback managers removed since segment rolling handles its own timing and duration
+        Log.d(TAG, "Segment rolling manager will handle all timing and duration callbacks");
+    }
+
+    /**
+     * Safely gets an integer value from PluginCall, handling potential null returns
+     * to prevent NullPointerException during unboxing.
+     *
+     * @param call The PluginCall instance
+     * @param key The parameter key to retrieve
+     * @param defaultValue The default value to use if null or not present
+     * @return The integer value or default if null
+     */
+    private int getIntegerSafely(PluginCall call, String key, int defaultValue) {
+        Integer value = call.getInt(key);
+        return value != null ? value : defaultValue;
     }
 
     @PluginMethod
-    public void checkPermission(PluginCall call) {
-        boolean audioGranted = ContextCompat.checkSelfPermission(
-            getContext(),
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED;
-
-        boolean notificationGranted = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationGranted = ContextCompat.checkSelfPermission(
-                getContext(),
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED;
-        }
-
-        JSObject result = new JSObject();
-        result.put("granted", audioGranted && notificationGranted);
-        result.put("audioPermission", audioGranted);
-        result.put("notificationPermission", notificationGranted);
+    public void checkPermissions(PluginCall call) {
+        JSObject result = permissionManager.checkPermissions();
         call.resolve(result);
+    }
+
+    @PluginMethod
+    public void requestPermissions(PluginCall call) {
+        permissionManager.requestPermissions(call);
+    }
+
+    // Backward compatibility methods (deprecated)
+    @PluginMethod
+    public void checkPermission(PluginCall call) {
+        checkPermissions(call);
     }
 
     @PluginMethod
     public void requestPermission(PluginCall call) {
-        Log.d(TAG, "requestPermission called");
-
-        boolean audioGranted = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
-            == PackageManager.PERMISSION_GRANTED;
-
-        boolean notificationGranted = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationGranted = ContextCompat.checkSelfPermission(
-                getContext(),
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED;
-        }
-
-        Log.d(TAG, "Current permissions - Audio: " + audioGranted + ", Notifications: " + notificationGranted);
-
-        if (audioGranted && notificationGranted) {
-            Log.d(TAG, "All permissions already granted");
-            JSObject result = new JSObject();
-            result.put("granted", true);
-            result.put("audioPermission", true);
-            result.put("notificationPermission", true);
-            call.resolve(result);
-        } else if (!audioGranted) {
-            // Request audio permission first - this will show Android's default permission dialog
-            Log.d(TAG, "Requesting RECORD_AUDIO permission - this will show system dialog");
-            requestPermissionForAlias("microphone", call, "permissionCallback");
-        } else if (!notificationGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Request notification permission - this will show Android's default permission dialog
-            Log.d(TAG, "Requesting POST_NOTIFICATIONS permission - this will show system dialog");
-            requestPermissionForAlias("notifications", call, "permissionCallback");
-        }
+        requestPermissions(call);
     }
 
     @PermissionCallback
     private void permissionCallback(PluginCall call) {
-        Log.d(TAG, "permissionCallback called");
+        Log.d(TAG, "permissionCallback triggered - handling permission response");
+        // Delegate to the permission manager to handle the callback properly
+        // This ensures proper sequential permission handling (audio first, then notifications)
+        permissionManager.handlePermissionCallback(call);
+    }
 
-        boolean audioGranted = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
-            == PackageManager.PERMISSION_GRANTED;
+  // Implementation of PermissionRequestCallback interface
+    @Override
+    public void requestPermission(String alias, PluginCall call, String callbackMethod) {
+        requestPermissionForAlias(alias, call, callbackMethod);
+    }
 
-        boolean notificationGranted = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationGranted = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
-                == PackageManager.PERMISSION_GRANTED;
-        }
-
-        Log.d(TAG, "Permission callback - Audio: " + audioGranted + ", Notifications: " + notificationGranted);
-
-        // If audio permission was just granted but notification permission is still needed
-        if (audioGranted && !notificationGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Log.d(TAG, "Audio granted, now requesting notification permission");
-            requestPermissionForAlias("notifications", call, "permissionCallback");
-            return;
-        }
-
-        // Return the final result
-        JSObject result = new JSObject();
-        result.put("granted", audioGranted && notificationGranted);
-        result.put("audioPermission", audioGranted);
-        result.put("notificationPermission", notificationGranted);
-        call.resolve(result);
+    // Implementation of EventCallback interface
+    @Override
+    public void notifyListeners(String eventName, JSObject data) {
+        super.notifyListeners(eventName, data);
     }
 
     @PluginMethod
     public void startRecording(PluginCall call) {
-        if (mediaRecorder != null) {
-            call.reject("Recording is already in progress");
+        try {
+            startRecordingInternal(call);
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security error in startRecording", e);
+            call.reject(AudioEngineError.PERMISSION_DENIED.getCode(), e.getMessage());
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Validation error in startRecording", e);
+            call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), e.getMessage());
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start recording", e);
+            cleanupRecordingState();
+
+            JSObject errorData = new JSObject();
+            errorData.put("message", "Failed to start recording: " + e.getMessage());
+            eventManager.emitError(errorData);
+            call.reject(AudioEngineError.INITIALIZATION_FAILED.getCode(),
+                       AudioEngineError.INITIALIZATION_FAILED.getDetailedMessage(e.getMessage()));
+        }
+    }
+
+    /**
+     * Internal method to handle recording start logic
+     */
+    private void startRecordingInternal(PluginCall call) throws Exception {
+        Log.d(TAG, "startRecording called - current state: isRecording=" + isRecording);
+
+        // Validate state - check if segment rolling is already active
+        if (isRecording || (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive())) {
+            call.reject(AudioEngineError.RECORDING_IN_PROGRESS.getCode(),
+                       AudioEngineError.RECORDING_IN_PROGRESS.getMessage());
             return;
         }
 
         // Check permissions
-        if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
-            call.reject("Microphone permission not granted");
-            return;
-        }
+        permissionManager.validateRecordingPermissions();
 
-        // Check notification permission for Android 13+ (required for foreground service)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-                call.reject("Notification permission not granted (required for background recording on Android 13+)");
-                return;
+        // Clean up any leftover state from previous recordings or interruptions
+        cleanupRecordingState();
+
+        // Get and validate recording options
+        String quality = call.getString("quality");
+        int sampleRate = getIntegerSafely(call, "sampleRate", AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE);
+        int channels = getIntegerSafely(call, "channels", AudioEngineConfig.Recording.DEFAULT_CHANNELS);
+        int bitrate = getIntegerSafely(call, "bitrate", AudioEngineConfig.Recording.DEFAULT_BITRATE);
+
+        // Apply quality preset if specified (overrides individual settings)
+        if (quality != null) {
+            switch (quality.toLowerCase()) {
+                case "low":
+                    sampleRate = 16000;  // AudioSampleRate.VOICE_16K
+                    bitrate = 32000;     // AudioBitrate.LOW
+                    Log.d(TAG, "Applied LOW quality preset: 16kHz, 32kbps");
+                    break;
+                case "medium":
+                    sampleRate = 22050;  // AudioSampleRate.STANDARD_22K
+                    bitrate = 64000;     // AudioBitrate.MEDIUM
+                    Log.d(TAG, "Applied MEDIUM quality preset: 22.05kHz, 64kbps");
+                    break;
+                case "high":
+                    sampleRate = 44100;  // AudioSampleRate.CD_44K
+                    bitrate = 128000;    // AudioBitrate.HIGH
+                    Log.d(TAG, "Applied HIGH quality preset: 44.1kHz, 128kbps");
+                    break;
+                default:
+                    Log.w(TAG, "Unknown quality preset: " + quality + ", using individual settings");
+                    break;
             }
         }
 
-        // Reset segment tracking
-        segmentFiles.clear();
-        currentSegment = 0;
-        currentDuration = 0.0;
+        // Create recording configuration
+        recordingConfig = new AudioRecordingConfig.Builder()
+            .sampleRate(sampleRate)
+            .channels(channels)
+            .bitrate(bitrate)
+            .build();
 
-        // Emit initial duration
-        emitDurationChange();
+        Log.d(TAG, "Using config - Quality: " + quality + ", SampleRate: " + sampleRate +
+              ", Channels: " + channels + ", Bitrate: " + bitrate);
 
-        // Get recording options - maxDuration in SECONDS
-        Integer maxDurationSeconds = call.getInt("maxDuration");
-        if (maxDurationSeconds != null && maxDurationSeconds > 0) {
-            // Use seconds directly for internal use
-            maxDuration = maxDurationSeconds;
-            Log.d(TAG, "Setting maxDuration: " + maxDurationSeconds + " seconds");
-        } else {
-            maxDuration = null;
-        }
+        Integer maxDuration = call.getInt("maxDuration"); // Can be null
 
-        sampleRate = call.getInt("sampleRate", 44100);
-        channels = call.getInt("channels", 1);
-        bitrate = call.getInt("bitrate", 128000);
+        // Store maxDuration for use in recording logic
+        maxDurationSeconds = maxDuration;
 
+        // Validate audio parameters
+        ValidationUtils.validateAudioParameters(sampleRate, channels, bitrate);
+
+        Log.d(TAG, "Starting recording with maxDuration: " + maxDuration + " seconds");
+
+        // Always use segment rolling for recording
+        isSegmentRollingEnabled = true;
+        Log.d(TAG, "Using segment rolling mode for recording");
         try {
-            File recordingsDir = getRecordingsDirectory();
-
-            if (maxDuration != null && maxDuration > 0) {
-                // Start circular recording with segments (rolling recording)
-                Log.d(TAG, "Starting circular recording with maxDuration: " + maxDuration + " seconds");
-                startCircularRecording(recordingsDir);
-                call.resolve();
-            } else {
-                // Regular linear recording without segments
-                Log.d(TAG, "Starting linear recording (unlimited duration)");
-                startLinearRecording(recordingsDir);
-                call.resolve();
-            }
+            startSegmentRollingRecording();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to start recording", e);
-            JSObject errorData = new JSObject();
-            errorData.put("message", "Failed to start recording: " + e.getMessage());
-            emitError(errorData);
-            call.reject("Failed to start recording: " + e.getMessage());
+            Log.e(TAG, "Failed to start segment rolling recording", e);
+            cleanupRecordingState();
+            throw e;
         }
+
+        call.resolve();
     }
 
     @PluginMethod
     public void pauseRecording(PluginCall call) {
-        if (mediaRecorder == null || !isRecording) {
-            call.reject("No active recording session to pause");
-            return;
-        }
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                mediaRecorder.pause();
-                stopSegmentTimer();
-                stopDurationMonitoring();
-                pauseRecordingService(); // Update service notification
-                Log.d(TAG, "Recording paused");
-                call.resolve();
-            } else {
-                call.reject("Pause/Resume is not supported on Android versions below API 24");
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to pause recording", e);
-            call.reject("Failed to pause recording: " + e.getMessage());
-        }
+        pauseRecordingInternal(call);
     }
 
     @PluginMethod
     public void resumeRecording(PluginCall call) {
-        if (mediaRecorder == null || !isRecording) {
-            call.reject("No recording session active");
+        resumeRecordingInternal(call);
+    }
+
+    @PluginMethod
+    public void resetRecording(PluginCall call) {
+        // Ensure there is an active recording session context to reset
+        boolean sessionActive = isRecording ||
+            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
+
+        if (!sessionActive) {
+            call.reject("No active recording session to reset");
             return;
         }
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                mediaRecorder.resume();
-
-                // Restart segment timer if maxDuration is set
-                if (maxDuration != null && maxDuration > 0) {
-                    startSegmentTimer(maxDuration);
-                }
-
-                startDurationMonitoring();
-                resumeRecordingService(); // Update service notification
-                Log.d(TAG, "Recording resumed");
-                call.resolve();
-            } else {
-                call.reject("Pause/Resume is not supported on Android versions below API 24");
+            // Discard current recording segments and reset duration inside manager
+            if (segmentRollingManager != null) {
+                segmentRollingManager.resetSegmentRolling();
+                Log.d(TAG, "Segment rolling reset successfully");
             }
+
+            // Discard waves by stopping waveform monitoring (frontend should clear visualization on waveformDestroy)
+            if (waveformDataManager != null) {
+                waveformDataManager.stopMonitoring();
+                Log.d(TAG, "Waveform monitoring stopped (waves discarded)");
+            }
+
+            // Keep recordingConfig/maxDuration for resume; mark session as paused state
+            if (eventManager != null) {
+                JSObject pauseData = new JSObject();
+                pauseData.put("duration", 0.0);
+                pauseData.put("isRecording", true); // Session remains active and resumable
+                pauseData.put("status", "paused");
+                eventManager.emitRecordingStateChange("paused", pauseData);
+            }
+
+            call.resolve();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to resume recording", e);
-            call.reject("Failed to resume recording: " + e.getMessage());
+            Log.e(TAG, "Failed to reset recording", e);
+            call.reject("Failed to reset recording: " + e.getMessage());
         }
     }
 
     @PluginMethod
     public void stopRecording(PluginCall call) {
-        if (mediaRecorder == null || !isRecording) {
-            call.reject("No active recording to stop");
-            return;
-        }
-
         try {
-            // Stop duration monitoring
-            stopDurationMonitoring();
-
-            // Stop segment timer if active
-            stopSegmentTimer();
-
-            // Stop background service
-            stopRecordingService();
-
-            // Stop the actual MediaRecorder
-            mediaRecorder.stop();
-            mediaRecorder.release();
-            isRecording = false;
-
-            String fileToReturn = currentRecordingPath;
-
-            // Handle segments if they exist
-            if (maxDuration != null && maxDuration > 0 && !segmentFiles.isEmpty()) {
-                fileToReturn = processSegments();
-            }
-
-            // Reset segment tracking
-            maxDuration = null;
-            currentSegment = 0;
-
-            // Get file info and return
-            JSObject response = getAudioFileInfo(fileToReturn);
-            call.resolve(response);
-
-            // Cleanup
-            mediaRecorder = null;
-            currentRecordingPath = null;
-
+            JSObject result = stopRecordingInternal();
+            call.resolve(result);
         } catch (Exception e) {
             Log.e(TAG, "Failed to stop recording", e);
             call.reject("Failed to stop recording: " + e.getMessage());
         }
     }
 
+    /**
+     * Internal method to stop recording without requiring a PluginCall
+     * Used by both the public stopRecording method and the max duration callback
+     */
+    private JSObject stopRecordingInternal() throws Exception {
+        // Check if any recording is active
+        boolean hasActiveRecording = isRecording ||
+            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
+
+        if (!hasActiveRecording) {
+            throw new IllegalStateException("No active recording to stop");
+        }
+
+        String fileToReturn;
+
+        Log.d(TAG, "Stopping segment rolling recording...");
+        // Stop segment rolling and merge segments
+        if (segmentRollingManager != null) {
+            File mergedFile = segmentRollingManager.stopSegmentRolling();
+            fileToReturn = mergedFile.getAbsolutePath();
+
+            // Stop recording service as recording is complete
+            stopRecordingService();
+
+            Log.d(TAG, "Segment rolling stopped and merged to: " + mergedFile.getName());
+        } else {
+            Log.e(TAG, "Segment rolling manager is null!");
+            throw new IllegalStateException("Segment rolling manager not initialized");
+        }
+
+        // Stop waveform data monitoring
+        if (waveformDataManager != null) {
+            waveformDataManager.stopMonitoring();
+            Log.d(TAG, "Waveform data monitoring stopped");
+        }
+
+        isRecording = false;
+
+        // Get file info and return - with actual duration calculation
+        // Create response with actual duration calculation
+        JSObject response = createFileInfoWithDuration(fileToReturn);
+        Log.d(TAG, "Recording stopped - File: " + new File(fileToReturn).getName());
+
+        return response;
+    }
+
     @PluginMethod
     public void getDuration(PluginCall call) {
-        if (isRecording || mediaRecorder != null) {
+        boolean hasActiveRecording = isRecording ||
+            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
+
+        if (hasActiveRecording) {
             JSObject result = new JSObject();
-            result.put("duration", currentDuration);
+
+            if (segmentRollingManager != null) {
+                // Use the segment manager's duration which respects the rolling window
+                long segmentDuration = segmentRollingManager.getCurrentDuration();
+                result.put("duration", segmentDuration / 1000.0); // Convert to seconds
+                Log.d(TAG, "Segment rolling current duration: " + (segmentDuration / 1000.0) + " seconds");
+            } else {
+                // If recording session is active but segment manager is null (reset state), return 0
+                result.put("duration", 0.0);
+                Log.d(TAG, "Recording session active but in reset state - duration: 0");
+            }
+
             call.resolve(result);
         } else {
             call.reject("No active recording");
@@ -361,12 +423,16 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     @PluginMethod
     public void getStatus(PluginCall call) {
         String status;
-        boolean sessionActive = isRecording;
+        boolean sessionActive = isRecording ||
+            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
 
-        if (mediaRecorder != null && sessionActive) {
-            // In Android, we can't easily distinguish between recording and paused
-            // without additional state tracking, so we'll use a simple approach
-            status = "recording";
+        if (sessionActive) {
+            // If recording is active but segment manager is null or not active, it's in paused/reset state
+            if (isRecording && (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
+                status = "paused"; // Reset state is effectively paused
+            } else {
+                status = "recording";
+            }
         } else {
             status = "idle";
         }
@@ -374,28 +440,32 @@ public class CapacitorAudioEnginePlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("status", status);
         result.put("isRecording", sessionActive);
-        result.put("currentSegment", currentSegment);
-        result.put("duration", currentDuration);
+
+        if (segmentRollingManager != null) {
+            // Use the segment manager's duration which respects the rolling window
+            long segmentDuration = segmentRollingManager.getCurrentDuration();
+            result.put("duration", segmentDuration / 1000.0); // Convert to seconds
+        } else {
+            result.put("duration", 0.0);
+        }
+
         call.resolve(result);
     }
 
     @PluginMethod
     public void trimAudio(PluginCall call) {
-        String sourcePath = call.getString("uri");
-        Double startTime = call.getDouble("start", 0.0);
-        Double endTime = call.getDouble("end", 0.0);
-
-        if (sourcePath == null) {
-            call.reject("Source URI is required");
-            return;
-        }
-
-        if (endTime <= startTime) {
-            call.reject("End time must be greater than start time");
-            return;
-        }
-
         try {
+            // Validate input parameters
+            String sourcePath = call.getString("uri");
+            if (sourcePath == null) {
+                call.reject(AudioEngineError.INVALID_URI.getCode(),
+                           AudioEngineError.INVALID_URI.getMessage());
+                return;
+            }
+
+            Double startTime = call.getDouble("start", 0.0);
+            Double endTime = call.getDouble("end", 0.0);
+
             // Handle Capacitor file URI format
             String actualPath = sourcePath;
             if (sourcePath.contains("capacitor://localhost/_capacitor_file_")) {
@@ -404,877 +474,941 @@ public class CapacitorAudioEnginePlugin extends Plugin {
                 actualPath = sourcePath.substring(7);
             }
 
-            File sourceFile = new File(actualPath);
-            if (!sourceFile.exists()) {
-                call.reject("Source audio file does not exist at path: " + actualPath);
+            // Validate file exists and is accessible
+            ValidationUtils.validateFileExists(actualPath);
+
+            // Get actual audio duration and clamp end time if needed
+            double audioDuration = AudioFileProcessor.getAudioDuration(actualPath);
+            double actualEndTime = Math.min(endTime, audioDuration);
+
+            // Validate time range with basic checks
+            if (startTime < 0) {
+                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "Start time cannot be negative");
                 return;
             }
 
-            // Create output file
-            File trimmedDir = new File(getContext().getExternalFilesDir(null), "Trimmed");
-            if (!trimmedDir.exists()) {
-                trimmedDir.mkdirs();
+            if (actualEndTime <= startTime) {
+                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "End time must be greater than start time");
+                return;
             }
 
-            long timestamp = System.currentTimeMillis();
-            File outputFile = new File(trimmedDir, "trimmed_" + timestamp + ".m4a");
+            if (startTime >= audioDuration) {
+                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "Start time cannot exceed audio duration (" + audioDuration + " seconds)");
+                return;
+            }
 
-            // Perform trimming using MediaExtractor and MediaMuxer
-            trimAudioFile(sourceFile, outputFile, startTime, endTime);
+            Log.d(TAG, "Trimming audio from " + startTime + "s to " + actualEndTime + "s (original end: " + endTime + "s, duration: " + audioDuration + "s)");
 
-            // Return file info
-            JSObject response = getAudioFileInfo(outputFile.getAbsolutePath());
+            // Create output file
+            File outputFile = fileManager.createProcessedFile("trimmed");
+
+            // Perform trimming using AudioFileProcessor with clamped end time
+            AudioFileProcessor.trimAudioFile(new File(actualPath), outputFile, startTime, actualEndTime);
+
+            // Return file info with base64 data (matching iOS behavior)
+            JSObject response = AudioFileProcessor.getAudioFileInfo(outputFile.getAbsolutePath(), true);
+            call.resolve(response);
+
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security error in trimAudio", e);
+            call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(), e.getMessage());
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Validation error in trimAudio", e);
+            call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), e.getMessage());
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to trim audio", e);
+            call.reject(AudioEngineError.TRIMMING_FAILED.getCode(),
+                       AudioEngineError.TRIMMING_FAILED.getDetailedMessage(e.getMessage()));
+        }
+    }
+
+    @PluginMethod
+    public void getAudioInfo(PluginCall call) {
+        try {
+            String uri = call.getString("uri");
+            if (uri == null) {
+                call.reject(AudioEngineError.INVALID_URI.getCode(),
+                           AudioEngineError.INVALID_URI.getMessage());
+                return;
+            }
+
+            // Handle Capacitor file URI format
+            String actualPath = uri;
+            if (uri.contains("capacitor://localhost/_capacitor_file_")) {
+                actualPath = uri.replace("capacitor://localhost/_capacitor_file_", "");
+            } else if (uri.startsWith("file://")) {
+                actualPath = uri.substring(7);
+            }
+
+            JSObject response = AudioFileProcessor.getAudioFileInfo(actualPath);
             call.resolve(response);
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to trim audio", e);
-            call.reject("Failed to trim audio: " + e.getMessage());
+            Log.e(TAG, "Failed to get audio info", e);
+            call.reject("AUDIO_INFO_ERROR", "Failed to get audio info: " + e.getMessage());
         }
     }
 
-    // Private helper methods
-
-    private File getRecordingsDirectory() throws IOException {
-        File recordingsDir = new File(getContext().getExternalFilesDir(null), "Recordings");
-        if (!recordingsDir.exists()) {
-            if (!recordingsDir.mkdirs()) {
-                throw new IOException("Failed to create recordings directory");
-            }
-        }
-        return recordingsDir;
-    }
-
-    /**
-     * Start linear recording (no max duration limit) - records continuously until stopped
-     */
-    private void startLinearRecording(File recordingsDir) throws IOException {
-        // Start background service for long-running recording
-        startRecordingService();
-
-        long timestamp = System.currentTimeMillis();
-        File audioFile = new File(recordingsDir, "recording_" + timestamp + ".m4a");
-        currentRecordingPath = audioFile.getAbsolutePath();
-
-        setupMediaRecorder(currentRecordingPath);
-        mediaRecorder.start();
-        isRecording = true;
-        startDurationMonitoring();
-        Log.d(TAG, "Started linear recording: " + audioFile.getName());
-    }
-
-    /**
-     * Start circular recording with rolling segments
-     * Memory-efficient approach that only keeps the last maxDuration worth of audio
-     */
-    private void startCircularRecording(File recordingsDir) throws IOException {
-        // Start background service for long-running recording
-        startRecordingService();
-
-        // Calculate segment duration - use 60 seconds or maxDuration/4, whichever is smaller
-        int segmentDurationSeconds = Math.min(60, Math.max(15, maxDuration / 4));
-
-        Log.d(TAG, "Starting circular recording with segment duration: " + segmentDurationSeconds + " seconds");
-
-        // Start first segment
-        startNextSegment(recordingsDir);
-
-        // Start segment timer to rotate segments
-        startSegmentTimer(segmentDurationSeconds);
-
-        isRecording = true;
-        startDurationMonitoring();
-    }
-
-    private void startNextSegment(File recordingsDir) throws IOException {
-        Log.d(TAG, "Starting next segment. Current segment count: " + segmentFiles.size());
-
-        // Stop current recorder if exists
-        if (mediaRecorder != null) {
-            try {
-                long startTime = System.nanoTime();
-                Log.d(TAG, "Stopping previous recorder before starting new segment");
-                mediaRecorder.stop();
-                mediaRecorder.release();
-                long duration = (System.nanoTime() - startTime) / 1_000_000;
-                Log.d(TAG, "MediaRecorder stop/release took: " + duration + " ms");
-            } catch (Exception e) {
-                Log.w(TAG, "Error stopping previous recorder", e);
-            }
-        }
-
-        // Create new segment file
-        long timestamp = System.currentTimeMillis();
-        File segmentFile = new File(recordingsDir, "segment_" + timestamp + ".m4a");
-        Log.d(TAG, "Creating new segment file: " + segmentFile.getName() + " at path: " + segmentFile.getAbsolutePath());
-
-        // Add to segments list
-        segmentFiles.add(segmentFile.getAbsolutePath());
-        currentSegment++;
-        Log.d(TAG, "Current segment number: " + currentSegment + ", total segments: " + segmentFiles.size());
-
-        // Keep segments based on maxDuration - estimate how many segments we need
-        // Add some buffer to ensure we have enough audio
-        int maxSegments = Math.max(3, (maxDuration / 15) + 2); // At least 3 segments, or enough for maxDuration + buffer
-        cleanupOldSegments(maxSegments);
-
-        // Set as current recording path
-        currentRecordingPath = segmentFile.getAbsolutePath();
-        Log.d(TAG, "Set current recording path to: " + currentRecordingPath);
-
-        // Setup and start new recorder
-        long setupStartTime = System.nanoTime();
-        setupMediaRecorder(currentRecordingPath);
-        mediaRecorder.start();
-        long setupDuration = (System.nanoTime() - setupStartTime) / 1_000_000;
-        Log.d(TAG, "MediaRecorder setup/start took: " + setupDuration + " ms");
-
-        Log.d(TAG, "Successfully started recording segment: " + segmentFile.getName());
-
-        // Verify file was created
-        if (segmentFile.exists()) {
-            Log.d(TAG, "Segment file created successfully, initial size: " + segmentFile.length() + " bytes");
-        } else {
-            Log.w(TAG, "Segment file was not created!");
-        }
-    }
-
-    /**
-     * Clean up old segments to keep memory usage under control
-     */
-    private void cleanupOldSegments(int maxSegments) {
-        while (segmentFiles.size() > maxSegments) {
-            String oldSegmentPath = segmentFiles.remove(0);
-            new File(oldSegmentPath).delete();
-            Log.d(TAG, "Removed old segment: " + new File(oldSegmentPath).getName());
-        }
-    }
-
-    /**
-     * Enhanced MediaRecorder setup with optimized settings for background recording
-     */
-    private void setupMediaRecorder(String outputPath) throws IOException {
-        if (mediaRecorder != null) {
-            try {
-                mediaRecorder.release();
-            } catch (Exception e) {
-                Log.w(TAG, "Error releasing existing MediaRecorder", e);
-            }
-        }
-
-        mediaRecorder = new MediaRecorder();
-
-        // Use MIC audio source - most reliable for long recording sessions
-        mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-
-        // Use MPEG_4 container format for M4A output
-        mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-
-        // Use AAC encoder for best compatibility and compression
-        mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-
-        // Set output file path
-        mediaRecorder.setOutputFile(outputPath);
-
-        // Configure audio settings for high quality and efficiency
-        mediaRecorder.setAudioSamplingRate(sampleRate);
-        mediaRecorder.setAudioChannels(channels);
-        mediaRecorder.setAudioEncodingBitRate(bitrate);
-
-        // Set max file size for circular recording segments (optional safety measure)
-        if (maxDuration != null && maxDuration > 0) {
-            // Estimate max file size: (bitrate * segmentDuration * 1.2) / 8 bytes + overhead
-            long estimatedMaxSize = (long) ((bitrate * 70L * 1.2) / 8) + (1024 * 1024); // 70 seconds with 20% buffer + 1MB overhead
-            mediaRecorder.setMaxFileSize(estimatedMaxSize);
-        }
-
-        // Prepare the recorder
-        mediaRecorder.prepare();
-
-        Log.d(TAG, "MediaRecorder configured - Sample Rate: " + sampleRate +
-               ", Channels: " + channels + ", Bitrate: " + bitrate +
-               ", Output: " + outputPath);
-    }
-
-    private void startSegmentTimer(int maxDurationSeconds) {
-        stopSegmentTimer();
-        Log.d(TAG, "Starting segment timer with maxDuration: " + maxDurationSeconds + " seconds");
-
-        segmentTimer = new Timer();
-        segmentTimer.scheduleAtFixedRate(new TimerTask() {
-            @Override
-            public void run() {
-                if (!isRecording) {
-                    Log.d(TAG, "Timer fired but recording is not active, ignoring");
-                    return;
-                }
-
-                Log.d(TAG, "Segment timer fired after " + maxDurationSeconds + " seconds");
-
-                mainHandler.post(() -> {
-                    try {
-                        File recordingsDir = getRecordingsDirectory();
-                        Log.d(TAG, "Creating next segment after timer interval");
-                        startNextSegment(recordingsDir);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to create next segment", e);
-                        JSObject errorData = new JSObject();
-                        errorData.put("message", "Failed to create next segment: " + e.getMessage());
-                        emitError(errorData);
-                    }
-                });
-            }
-        }, maxDurationSeconds * 1000L, maxDurationSeconds * 1000L);
-
-        Log.d(TAG, "Segment timer started successfully");
-    }
-
-    private void stopSegmentTimer() {
-        if (segmentTimer != null) {
-            Log.d(TAG, "Stopping segment timer");
-            segmentTimer.cancel();
-            segmentTimer = null;
-        }
-    }
-
-    private void startDurationMonitoring() {
-        stopDurationMonitoring();
-        Log.d(TAG, "Starting duration monitoring");
-
-        durationTimer = new Timer();
-        durationTimer.scheduleAtFixedRate(new TimerTask() {
-            @Override
-            public void run() {
-                if (!isRecording) {
-                    Log.d(TAG, "Timer fired but recording is not active, skipping");
-                    return;
-                }
-
-                currentDuration += 1.0;
-                Log.d(TAG, "Duration incremented: " + currentDuration + " seconds");
-
-                mainHandler.post(() -> {
-                    Log.d(TAG, "Emitting durationChange event with duration: " + currentDuration);
-                    emitDurationChange();
-                });
-            }
-        }, 1000, 1000);
-
-        Log.d(TAG, "Duration timer started successfully");
-    }
-
-    private void stopDurationMonitoring() {
-        if (durationTimer != null) {
-            Log.d(TAG, "Stopping duration monitoring");
-            durationTimer.cancel();
-            durationTimer = null;
-        }
-    }
-
-    private String processSegments() {
-        Log.d(TAG, "Processing segments. Total segments: " + segmentFiles.size());
-
-        if (segmentFiles.isEmpty()) {
-            Log.d(TAG, "No segments available, using current recording path");
-            return currentRecordingPath;
-        }
-
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    @PluginMethod
+    public void isMicrophoneBusy(PluginCall call) {
         try {
-            if (segmentFiles.size() == 1) {
-                return processSingleSegment();
+            Log.d(TAG, "isMicrophoneBusy called");
+
+            // Check if microphone permission is granted first
+            boolean hasPermission = permissionManager.hasMicrophonePermission();
+            Log.d(TAG, "Microphone permission granted: " + hasPermission);
+
+            // Also log the full permission result for debugging
+            JSObject permissionResult = permissionManager.checkPermissions();
+            Log.d(TAG, "Full permission result: " + permissionResult);
+
+            if (!hasPermission) {
+                Log.d(TAG, "Microphone permission not granted, returning busy=true");
+                JSObject result = new JSObject();
+                result.put("busy", true);
+                result.put("reason", "Microphone permission not granted");
+                call.resolve(result);
+                return;
+            }
+
+            // Check if our own app is currently recording
+            boolean appRecording = isRecording || (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
+            Log.d(TAG, "App currently recording: " + appRecording + " (isRecording: " + isRecording + ", segmentRollingActive: " +
+                  (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive()) + ")");
+
+            if (appRecording) {
+                Log.d(TAG, "App is recording, returning busy=true");
+                JSObject result = new JSObject();
+                result.put("busy", true);
+                result.put("reason", "Recording in progress by this app");
+                call.resolve(result);
+                return;
+            }
+
+            // Test microphone availability by attempting to create and start an AudioRecord
+            Log.d(TAG, "Testing microphone availability...");
+            boolean isBusy = AudioRecordingConfig.checkMicrophoneAvailability();
+            Log.d(TAG, "Microphone availability check result: busy=" + isBusy);
+
+            // If the primary check says it's busy, try a secondary check with different parameters
+            if (isBusy) {
+                Log.d(TAG, "Primary check failed, trying secondary check...");
+                isBusy = AudioRecordingConfig.checkMicrophoneAvailabilitySecondary();
+                Log.d(TAG, "Secondary microphone check result: busy=" + isBusy);
+            }
+
+            JSObject result = new JSObject();
+            result.put("busy", isBusy);
+            if (isBusy) {
+                result.put("reason", "Microphone is being used by another application");
             } else {
-                return processMultipleSegments();
+                result.put("reason", "Microphone is available");
             }
+
+            Log.d(TAG, "isMicrophoneBusy returning: " + result);
+            call.resolve(result);
+
         } catch (Exception e) {
-            Log.e(TAG, "Failed to process segments", e);
-            // Return the last segment as fallback
-            return segmentFiles.isEmpty() ? currentRecordingPath : segmentFiles.get(segmentFiles.size() - 1);
+            Log.e(TAG, "Failed to check microphone status", e);
+            JSObject result = new JSObject();
+            result.put("busy", true);
+            result.put("reason", "Failed to check microphone status: " + e.getMessage());
+            call.resolve(result);
         }
     }
 
-    private String processSingleSegment() {
-        String singleSegment = segmentFiles.get(0);
-        Log.d(TAG, "Processing single segment: " + new File(singleSegment).getName());
-
+    @PluginMethod
+    public void getAvailableMicrophones(PluginCall call) {
         try {
-            SegmentInfo segmentInfo = getSegmentInfo(singleSegment);
-            Log.d(TAG, "Single segment duration: " + segmentInfo.duration + "s, maxDuration: " + maxDuration + "s");
+            JSArray microphones = AudioRecordingConfig.getAvailableMicrophonesArray(getContext());
+            JSObject result = new JSObject();
+            result.put("microphones", microphones);
+            call.resolve(result);
 
-            if (segmentInfo.duration > maxDuration) {
-                // Trim to exactly maxDuration
-                return trimSegmentToMaxDuration(singleSegment, "trimmed_single_");
-            }
-            // Even if the segment is shorter than maxDuration, return it as is
-            // This handles cases where recording was stopped before reaching maxDuration
-            Log.d(TAG, "Single segment is shorter than maxDuration, using as-is");
-            return singleSegment;
         } catch (Exception e) {
-            Log.e(TAG, "Failed to process single segment", e);
-            return singleSegment;
+            Log.e(TAG, "Failed to get available microphones", e);
+            call.reject("MICROPHONES_ERROR", "Failed to get available microphones: " + e.getMessage());
         }
     }
 
-    private String processMultipleSegments() {
-        List<SegmentInfo> segmentInfos = new ArrayList<>();
+    @PluginMethod
+    public void switchMicrophone(PluginCall call) {
+        try {
+            Integer microphoneId = call.getInt("microphoneId");
+            if (microphoneId == null) {
+                call.reject("INVALID_PARAMETER", "Microphone ID is required");
+                return;
+            }
 
-        // Collect segment information
-        for (String segmentPath : segmentFiles) {
+            // Note: Android doesn't provide direct microphone switching like iOS
+            // The system handles microphone selection based on connected devices
+            // and user preferences. We can only suggest preferred devices through AudioManager
+
+            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            if (audioManager == null) {
+                call.reject("AUDIO_MANAGER_ERROR", "Could not access AudioManager");
+                return;
+            }
+
+          AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS);
+
+          for (AudioDeviceInfo device : devices) {
+              if (device.getId() == microphoneId && AudioRecordingConfig.isInputDevice(device)) {
+                  // Found the device, but Android doesn't allow direct switching
+                  // The best we can do is inform that the device is available
+                  Log.d(TAG, "Microphone switching requested for device: " + device.getProductName());
+
+                  JSObject result = new JSObject();
+                  result.put("switched", true);
+                  result.put("microphoneId", microphoneId);
+                  result.put("message", "Android handles microphone selection automatically");
+                  call.resolve(result);
+                  return;
+              }
+          }
+
+          call.reject("MICROPHONE_NOT_FOUND", "Microphone with ID " + microphoneId + " not found");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to switch microphone", e);
+            call.reject("SWITCH_ERROR", "Failed to switch microphone: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void configureWaveform(PluginCall call) {
+        try {
+            // Derive current recording parameters
+            int sr = (recordingConfig != null) ? recordingConfig.getSampleRate() : AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
+            int ch = (recordingConfig != null) ? recordingConfig.getChannels() : AudioEngineConfig.Recording.DEFAULT_CHANNELS;
+            int br = (recordingConfig != null) ? recordingConfig.getBitrate() : AudioEngineConfig.Recording.DEFAULT_BITRATE;
+
+            // Quality-aware defaults based on recording config
+            boolean lowQuality = (sr <= 16000) || (br <= 32000);
+
+            // Waveform visualization settings with quality-based defaults
+            Integer numberOfBars = call.getInt("numberOfBars", lowQuality ? 64 : 128);
+            Double debounceTime = call.getDouble("debounceTime", lowQuality ? 0.1 : 0.05);
+
+            // Convert debounceTime to seconds if it's a preset enum value
+            float debounceInSeconds = debounceTime.floatValue();
+            if (debounceInSeconds > 10.0f) {
+                // Handle enum values (they will be larger numbers)
+                debounceInSeconds = debounceInSeconds / 1000.0f; // Convert from ms to seconds
+            }
+
+            // Speech detection settings
+            JSObject speechDetection = call.getObject("speechDetection");
+            boolean speechEnabled = false;
+            float speechThreshold = 0.01f;
+            int calibrationDuration = 1000;
+
+            if (speechDetection != null) {
+                speechEnabled = speechDetection.has("enabled") ? speechDetection.getBool("enabled") : false;
+                double threshold = speechDetection.has("threshold") ? speechDetection.getDouble("threshold") : 0.01;
+                speechThreshold = (float) threshold;
+                calibrationDuration = speechDetection.has("calibrationDuration") ? speechDetection.getInt("calibrationDuration") : 1000;
+
+                // Handle enum values for threshold
+                if (speechThreshold > 1.0f) {
+                    speechThreshold = speechThreshold / 1000.0f; // Convert from enum to actual value
+                }
+            }
+
+            // VAD settings
+            JSObject vad = call.getObject("vad");
+            boolean vadEnabled = false;
+            int vadWindowSize = 5;
+            boolean enableVoiceFilter = true;
+
+            if (vad != null) {
+                vadEnabled = vad.has("enabled") ? vad.getBool("enabled") : false;
+                vadWindowSize = vad.has("windowSize") ? vad.getInt("windowSize") : 5;
+                enableVoiceFilter = vad.has("enableVoiceFilter") ? vad.getBool("enableVoiceFilter") : true;
+            }
+
+            if (waveformDataManager != null) {
+                // Ensure waveform manager is tuned for current recording configuration
+                waveformDataManager.configureForRecording(sr, ch, speechThreshold);
+
+                // Configure waveform visualization
+                waveformDataManager.configureWaveform(debounceInSeconds, numberOfBars);
+
+                // Configure speech detection if provided
+                if (speechDetection != null) {
+                    // Explicitly use the boolean/int version to avoid ambiguity
+                    waveformDataManager.configureSpeechDetection(speechEnabled, speechThreshold, vadEnabled, calibrationDuration);
+                }
+
+                // Configure VAD if provided
+                if (vad != null) {
+                    // Explicitly use the wrapper types version to avoid ambiguity
+                    Boolean vadEnabledObj = Boolean.valueOf(vadEnabled);
+                    Integer vadWindowSizeObj = Integer.valueOf(vadWindowSize);
+                    Boolean enableVoiceFilterObj = Boolean.valueOf(enableVoiceFilter);
+                    waveformDataManager.configureAdvancedVAD(vadEnabledObj, vadWindowSizeObj, enableVoiceFilterObj);
+                }
+
+                Log.d(TAG, "Unified waveform configured - bars: " + numberOfBars +
+                     ", interval: " + debounceInSeconds + "s" +
+                     ", speech: " + speechEnabled + " (threshold: " + speechThreshold + ")" +
+                     ", VAD: " + vadEnabled + " (window: " + vadWindowSize + ")");
+
+                // Build comprehensive result
+                JSObject result = new JSObject();
+                result.put("success", true);
+
+                JSObject configuration = new JSObject();
+                configuration.put("numberOfBars", numberOfBars);
+                configuration.put("debounceTimeMs", (int)(debounceInSeconds * 1000));
+
+                JSObject speechConfig = new JSObject();
+                speechConfig.put("enabled", speechEnabled);
+                speechConfig.put("threshold", speechThreshold);
+                speechConfig.put("calibrationDuration", calibrationDuration);
+                configuration.put("speechDetection", speechConfig);
+
+                JSObject vadConfig = new JSObject();
+                vadConfig.put("enabled", vadEnabled);
+                vadConfig.put("windowSize", vadWindowSize);
+                vadConfig.put("estimatedLatencyMs", vadWindowSize * 50);
+                vadConfig.put("enableVoiceFilter", enableVoiceFilter);
+                configuration.put("vad", vadConfig);
+
+                result.put("configuration", configuration);
+                call.resolve(result);
+
+                // Start monitoring if not already active
+                try {
+                    if (!waveformDataManager.isMonitoring()) {
+                        waveformDataManager.startMonitoring();
+                        Log.d(TAG, "Waveform data monitoring started via configureWaveform");
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Unable to start waveform monitoring from configureWaveform", e);
+                }
+            } else {
+                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to configure waveform", e);
+            call.reject("CONFIGURE_ERROR", "Failed to configure waveform: " + e.getMessage());
+        }
+    }
+
+
+    @PluginMethod
+    public void setGainFactor(PluginCall call) {
+        try {
+            Float gainFactor = call.getFloat("gainFactor", 18.0f); // Tuned default down to better align with iOS
+
+            // Validate gain factor range - increased upper bound to allow more amplification
+            float validatedGain = Math.max(5.0f, Math.min(50.0f, gainFactor));
+
+            if (waveformDataManager != null) {
+                // Set gain factor
+                waveformDataManager.setGainFactor(validatedGain);
+                Log.d(TAG, "Gain factor set to: " + validatedGain);
+
+                JSObject result = new JSObject();
+                result.put("success", true);
+                result.put("gainFactor", validatedGain);
+                call.resolve(result);
+            } else {
+                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to set gain factor", e);
+            call.reject("GAIN_FACTOR_ERROR", "Failed to set gain factor: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void destroyWaveform(PluginCall call) {
+        try {
+            if (waveformDataManager != null) {
+                // Stop monitoring if active
+                if (waveformDataManager.isMonitoring()) {
+                    Log.d(TAG, "Stopping waveform monitoring before destruction");
+                }
+
+                // Cleanup waveform resources
+                waveformDataManager.cleanup();
+                Log.d(TAG, "Waveform configuration destroyed and resources cleaned up");
+
+                call.resolve();
+            } else {
+                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to destroy waveform", e);
+            call.reject("DESTROY_ERROR", "Failed to destroy waveform: " + e.getMessage());
+        }
+    }
+
+    // Helper methods for the refactored implementation
+
+    private void startSegmentRollingRecording() throws IOException {
+        // Initialize segment rolling manager if needed
+        if (segmentRollingManager == null) {
+            File baseDirectory = fileManager.getRecordingsDirectory();
+            // Initialize segment rolling manager with context for interruption handling
+            segmentRollingManager = new SegmentRollingManager(getContext(), baseDirectory);
+
+
+
+        }
+
+        // Set maximum duration in segment rolling manager for rolling window management
+        if (maxDurationSeconds != null && maxDurationSeconds > 0) {
+            segmentRollingManager.setMaxDuration(maxDurationSeconds * 1000); // Convert to milliseconds
+            Log.d(TAG, "Segment rolling will maintain a rolling window of " + maxDurationSeconds + " seconds");
+        }
+
+        // Set duration change callback for segment rolling to emit events
+        segmentRollingManager.setDurationChangeCallback(durationMs -> {
+            // Emit duration change event for consistency with linear recording
+            if (eventManager != null) {
+                double durationSeconds = durationMs / 1000.0;
+                eventManager.emitDurationChange(durationSeconds);
+                Log.d(TAG, "Segment rolling duration change: " + durationSeconds + "s");
+            }
+        });
+
+        // Configure enhanced features for production robustness
+        segmentRollingManager.configureSafetyMargins(1.5, 4); // 50% memory margin, 4 extra segments for 30s precision
+        segmentRollingManager.setSegmentCompressionEnabled(false); // Disable compression by default
+        segmentRollingManager.setPersistentIndexingEnabled(true); // Enable crash recovery
+
+        // Start foreground service for background recording
+        startRecordingService();
+
+        // Start segment rolling
+        segmentRollingManager.startSegmentRolling(recordingConfig);
+
+        // Start waveform data monitoring for real-time audio levels
+        if (waveformDataManager != null) {
+            // Apply a 2x boost for specific high-quality mono configuration (48kHz, 128kbps, mono)
             try {
-                SegmentInfo info = getSegmentInfo(segmentPath);
-                segmentInfos.add(info);
-                Log.d(TAG, "Segment " + new File(segmentPath).getName() +
-                      ": duration=" + info.duration + "s, size=" + info.fileSize + " bytes");
+                int sr = recordingConfig != null ? recordingConfig.getSampleRate() : AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
+                int ch = recordingConfig != null ? recordingConfig.getChannels() : AudioEngineConfig.Recording.DEFAULT_CHANNELS;
+                int br = recordingConfig != null ? recordingConfig.getBitrate() : AudioEngineConfig.Recording.DEFAULT_BITRATE;
+                if (sr == 48000 && ch == 1 && br == 128000) {
+                    // configureForRecording uses 22.0 at 48kHz mono; double to 44.0
+                    waveformDataManager.setGainFactor(44.0f);
+                    Log.d(TAG, "Applied 2x waveform gain boost for 48kHz/128kbps mono (gain=44.0)");
+                }
             } catch (Exception e) {
-                Log.e(TAG, "Failed to get info for segment: " + segmentPath, e);
+                Log.w(TAG, "Unable to apply conditional gain boost", e);
             }
+
+            waveformDataManager.startMonitoring();
+            Log.d(TAG, "Waveform data monitoring started");
         }
 
-        if (segmentInfos.size() < 2) {
-            return segmentFiles.get(segmentFiles.size() - 1);
-        }
+        isRecording = true;
 
-        return processSegmentsByStrategy(segmentInfos);
+        Log.d(TAG, "Started segment rolling recording with rolling window: " + maxDurationSeconds + " seconds");
+
+        // Emit recording state change event
+        JSObject stateData = new JSObject();
+        eventManager.emitRecordingStateChange("recording", stateData);
     }
 
-    private String processSegmentsByStrategy(List<SegmentInfo> segmentInfos) {
-        SegmentInfo lastSegment = segmentInfos.get(segmentInfos.size() - 1);
-        SegmentInfo previousSegment = segmentInfos.get(segmentInfos.size() - 2);
-
-        Log.d(TAG, "Last segment duration: " + lastSegment.duration + "s, Previous: " + previousSegment.duration + "s");
-
-        // Calculate total duration of all segments
-        double totalDuration = 0;
-        for (SegmentInfo info : segmentInfos) {
-            totalDuration += info.duration;
-        }
-        Log.d(TAG, "Total duration of all segments: " + totalDuration + "s, maxDuration: " + maxDuration + "s");
-
-        // Strategy 1: Last segment is exactly maxDuration (within tolerance)
-        if (Math.abs(lastSegment.duration - maxDuration) <= 0.1) {
-            return handleExactDurationSegment(lastSegment, previousSegment);
-        }
-
-        // Strategy 2: Last segment is shorter, merge with trimmed previous if possible
-        if (lastSegment.duration < maxDuration) {
-            // If total recording time is still less than maxDuration, just merge what we have
-            if (totalDuration <= maxDuration) {
-                Log.d(TAG, "Total recording time (" + totalDuration + "s) is less than maxDuration (" +
-                      maxDuration + "s), using last segment: " + lastSegment.duration + "s");
-                return lastSegment.filePath;
-            }
-            return handleShortLastSegment(lastSegment, previousSegment);
-        }
-
-        // Strategy 3: Last segment is longer, trim to exact duration
-        return handleLongLastSegment(lastSegment, previousSegment);
-    }
-
-    private String handleExactDurationSegment(SegmentInfo lastSegment, SegmentInfo previousSegment) {
-        Log.d(TAG, "Last segment duration equals maxDuration, cleaning up previous segment");
-
-        // Delete the previous segment as we only need the last one
-        new File(previousSegment.filePath).delete();
-        Log.d(TAG, "Deleted previous segment: " + new File(previousSegment.filePath).getName());
-
-        // Clean up segment list, keep only the last segment
-        segmentFiles.clear();
-        segmentFiles.add(lastSegment.filePath);
-
-        return lastSegment.filePath;
-    }
-
-    private String handleShortLastSegment(SegmentInfo lastSegment, SegmentInfo previousSegment) {
-        Log.d(TAG, "Last segment is shorter than maxDuration, merging with trimmed previous segment");
-
+    private void cleanupRecordingState() {
         try {
-            File recordingsDir = getRecordingsDirectory();
-            long timestamp = System.currentTimeMillis();
-            File mergedFile = new File(recordingsDir, "merged_" + timestamp + ".m4a");
+            Log.d(TAG, "Cleaning up recording state...");
 
-            // Calculate required duration from previous segment
-            double requiredFromPrevious = maxDuration - lastSegment.duration;
-            double actualRequiredDuration = Math.min(requiredFromPrevious, previousSegment.duration);
-
-            Log.d(TAG, "Required from previous: " + requiredFromPrevious + "s, actual: " + actualRequiredDuration + "s");
-
-            // Merge segments
-            mergeSegmentsForRolling(new File(previousSegment.filePath), new File(lastSegment.filePath),
-                                  mergedFile, actualRequiredDuration);
-
-            // Clean up original segments
-            cleanupProcessedSegments(previousSegment.filePath, lastSegment.filePath);
-            segmentFiles.clear();
-            segmentFiles.add(mergedFile.getAbsolutePath());
-
-            Log.d(TAG, "Successfully merged segments into: " + mergedFile.getName());
-            return mergedFile.getAbsolutePath();
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to merge segments", e);
-            return lastSegment.filePath;
-        }
-    }
-
-    private String handleLongLastSegment(SegmentInfo lastSegment, SegmentInfo previousSegment) {
-        Log.d(TAG, "Last segment is longer than maxDuration, trimming to exact duration");
-
-        try {
-            String trimmedPath = trimSegmentToMaxDuration(lastSegment.filePath, "trimmed_");
-
-            // Clean up original segments
-            cleanupProcessedSegments(previousSegment.filePath, lastSegment.filePath);
-            segmentFiles.clear();
-            segmentFiles.add(trimmedPath);
-
-            Log.d(TAG, "Successfully trimmed last segment to: " + new File(trimmedPath).getName());
-            return trimmedPath;
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to trim segment", e);
-            return lastSegment.filePath;
-        }
-    }
-
-    private String trimSegmentToMaxDuration(String segmentPath, String prefix) throws Exception {
-        File recordingsDir = getRecordingsDirectory();
-        long timestamp = System.currentTimeMillis();
-        File trimmedFile = new File(recordingsDir, prefix + timestamp + ".m4a");
-
-        // For circular recording, we want the LAST maxDuration seconds (most recent audio)
-        // Calculate the start time to get the last maxDuration seconds
-        double segmentDuration = getAudioDuration(segmentPath);
-        double startTime = Math.max(0, segmentDuration - maxDuration);
-
-        Log.d(TAG, "Trimming segment: duration=" + segmentDuration + "s, startTime=" + startTime + "s, maxDuration=" + maxDuration + "s");
-
-        trimAudioFile(new File(segmentPath), trimmedFile, startTime, segmentDuration);
-        return trimmedFile.getAbsolutePath();
-    }
-
-    private void cleanupProcessedSegments(String... segmentPaths) {
-        for (String path : segmentPaths) {
-            if (new File(path).delete()) {
-                Log.d(TAG, "Deleted processed segment: " + new File(path).getName());
-            }
-        }
-    }
-
-    private SegmentInfo getSegmentInfo(String filePath) throws Exception {
-        double duration = getAudioDuration(filePath);
-        long fileSize = new File(filePath).length();
-        return new SegmentInfo(filePath, duration, fileSize);
-    }
-
-    private double getAudioDuration(String filePath) {
-        MediaMetadataRetriever retriever = null;
-        try {
-            retriever = new MediaMetadataRetriever();
-            retriever.setDataSource(filePath);
-            String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-            return durationStr != null ? Double.parseDouble(durationStr) / 1000.0 : 0.0;
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to get audio duration", e);
-            return 0.0;
-        } finally {
-            if (retriever != null) {
+            // Stop and release segment rolling manager
+            if (segmentRollingManager != null) {
                 try {
-                    retriever.release();
+                    segmentRollingManager.release();
                 } catch (Exception e) {
-                    Log.w(TAG, "Error releasing MediaMetadataRetriever", e);
+                    Log.w(TAG, "Error releasing segment rolling manager during cleanup", e);
+                }
+                segmentRollingManager = null;
+            }
+
+            // Stop waveform data monitoring
+            if (waveformDataManager != null) {
+                try {
+                    waveformDataManager.stopMonitoring();
+                    Log.d(TAG, "Waveform data monitoring cleaned up");
+                } catch (Exception e) {
+                    Log.w(TAG, "Error cleaning up waveform data manager", e);
                 }
             }
+
+            // Stop recording service
+            stopRecordingService();
+
+            // Reset all recording state flags
+            isRecording = false;
+            isSegmentRollingEnabled = false;
+
+            Log.d(TAG, "Recording state cleaned up successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Error during cleanup", e);
+            // Force reset state even if cleanup partially failed
+            isRecording = false;
+            isSegmentRollingEnabled = false;
         }
     }
 
     /**
-     * Merge segments for rolling recording: take required duration from end of first file
-     * and combine with entire second file to create seamless recording
+     * Create quick file info for fast stop recording response without expensive metadata operations
      */
-    private void mergeSegmentsForRolling(File firstFile, File secondFile, File outputFile, double requiredDurationFromFirst) throws IOException {
-        Log.d(TAG, "Starting segment merge: firstFile=" + firstFile.getName() +
-              ", secondFile=" + secondFile.getName() + ", requiredDuration=" + requiredDurationFromFirst);
-
-        // First, trim the first file to get only the required duration from the end
-        File tempTrimmedFirst = new File(outputFile.getParent(), "temp_trimmed_first_" + System.currentTimeMillis() + ".m4a");
-
-        try {
-            // Get first file duration
-            double firstFileDuration = getAudioDuration(firstFile.getAbsolutePath());
-            double startTimeForFirst = Math.max(0, firstFileDuration - requiredDurationFromFirst);
-
-            Log.d(TAG, "First file duration: " + firstFileDuration + "s, start time: " + startTimeForFirst + "s");
-
-            // Trim the first file to get the required portion from the end
-            trimAudioFile(firstFile, tempTrimmedFirst, startTimeForFirst, firstFileDuration);
-
-            // Verify the trimmed duration
-            double trimmedDuration = getAudioDuration(tempTrimmedFirst.getAbsolutePath());
-            Log.d(TAG, "Trimmed first file duration: " + trimmedDuration + "s");
-
-            // Now concatenate the trimmed first file with the complete second file
-            concatenateAudioFiles(tempTrimmedFirst, secondFile, outputFile);
-
-            // Verify final duration
-            double finalDuration = getAudioDuration(outputFile.getAbsolutePath());
-            Log.d(TAG, "Final merged file duration: " + finalDuration + "s");
-
-        } finally {
-            // Clean up temp file
-            if (tempTrimmedFirst.exists()) {
-                tempTrimmedFirst.delete();
-            }
-        }
-    }
-
-    /**
-     * Concatenate two audio files using MediaExtractor and MediaMuxer
-     */
-    private void concatenateAudioFiles(File firstFile, File secondFile, File outputFile) throws IOException {
-        MediaExtractor firstExtractor = null;
-        MediaExtractor secondExtractor = null;
-        MediaMuxer muxer = null;
-
-        try {
-            // Setup extractors
-            firstExtractor = new MediaExtractor();
-            firstExtractor.setDataSource(firstFile.getAbsolutePath());
-
-            secondExtractor = new MediaExtractor();
-            secondExtractor.setDataSource(secondFile.getAbsolutePath());
-
-            // Find audio tracks
-            int firstAudioTrack = findAudioTrack(firstExtractor);
-            int secondAudioTrack = findAudioTrack(secondExtractor);
-
-            if (firstAudioTrack == -1 || secondAudioTrack == -1) {
-                throw new IOException("Audio track not found in one or both files");
-            }
-
-            // Get audio format
-            MediaFormat audioFormat = firstExtractor.getTrackFormat(firstAudioTrack);
-            firstExtractor.selectTrack(firstAudioTrack);
-            secondExtractor.selectTrack(secondAudioTrack);
-
-            // Create muxer
-            muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-            int muxerTrack = muxer.addTrack(audioFormat);
-            muxer.start();
-
-            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(1024 * 1024);
-            android.media.MediaCodec.BufferInfo bufferInfo = new android.media.MediaCodec.BufferInfo();
-            long presentationTimeUs = 0;
-
-            // Copy first file
-            Log.d(TAG, "Copying first file data...");
-            while (true) {
-                int sampleSize = firstExtractor.readSampleData(buffer, 0);
-                if (sampleSize < 0) break;
-
-                bufferInfo.offset = 0;
-                bufferInfo.size = sampleSize;
-                bufferInfo.presentationTimeUs = presentationTimeUs;
-                bufferInfo.flags = convertExtractorFlags(firstExtractor.getSampleFlags());
-
-                muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
-
-                // Use the actual sample time difference for accurate timing
-                long currentSampleTime = firstExtractor.getSampleTime();
-                firstExtractor.advance();
-                long nextSampleTime = firstExtractor.getSampleTime();
-
-                if (nextSampleTime >= 0) {
-                    presentationTimeUs += (nextSampleTime - currentSampleTime);
-                } else {
-                    // End of first file, estimate last frame duration
-                    presentationTimeUs += 23220; // ~23ms for AAC at 44.1kHz (typical frame duration)
-                }
-            }
-
-            // Copy second file, continuing the timeline
-            Log.d(TAG, "Copying second file data...");
-            secondExtractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
-            long secondFileStartTime = presentationTimeUs;
-
-            while (true) {
-                int sampleSize = secondExtractor.readSampleData(buffer, 0);
-                if (sampleSize < 0) break;
-
-                long originalTime = secondExtractor.getSampleTime();
-
-                bufferInfo.offset = 0;
-                bufferInfo.size = sampleSize;
-                bufferInfo.presentationTimeUs = secondFileStartTime + originalTime;
-                bufferInfo.flags = convertExtractorFlags(secondExtractor.getSampleFlags());
-
-                muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
-                secondExtractor.advance();
-            }
-
-            Log.d(TAG, "Successfully concatenated audio files");
-
-        } finally {
-            if (muxer != null) {
-                try {
-                    muxer.stop();
-                    muxer.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing muxer", e);
-                }
-            }
-            if (firstExtractor != null) {
-                try {
-                    firstExtractor.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing first extractor", e);
-                }
-            }
-            if (secondExtractor != null) {
-                try {
-                    secondExtractor.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing second extractor", e);
-                }
-            }
-        }
-    }
-
-    /**
-     * Find audio track in MediaExtractor
-     */
-    private int findAudioTrack(MediaExtractor extractor) {
-        for (int i = 0; i < extractor.getTrackCount(); i++) {
-            MediaFormat format = extractor.getTrackFormat(i);
-            String mime = format.getString(MediaFormat.KEY_MIME);
-            if (mime != null && mime.startsWith("audio/")) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private void mergeAudioFiles(File firstFile, File secondFile, File outputFile, double requiredDuration) throws IOException {
-        // For simplicity, we'll just copy the second file as the merge result
-        // A full implementation would use MediaExtractor and MediaMuxer to properly merge
-        // This is a simplified version - in production, you'd want proper audio merging
-
-        try {
-            // Use MediaExtractor and MediaMuxer for proper merging
-            // This is a basic implementation that prioritizes the second file
-            // In a real scenario, you'd extract and merge audio tracks properly
-
-            if (secondFile.exists()) {
-                // Copy second file to output
-                java.nio.file.Files.copy(secondFile.toPath(), outputFile.toPath());
-                Log.d(TAG, "Audio files merged (simplified implementation)");
-            }
-        } catch (Exception e) {
-            throw new IOException("Failed to merge audio files: " + e.getMessage());
-        }
-    }
-
-    private void trimAudioFile(File sourceFile, File outputFile, double startTime, double endTime) throws IOException {
-        MediaExtractor extractor = null;
-        MediaMuxer muxer = null;
-
-        try {
-            extractor = new MediaExtractor();
-            extractor.setDataSource(sourceFile.getAbsolutePath());
-
-            // Find audio track
-            int audioTrack = -1;
-            MediaFormat audioFormat = null;
-            for (int i = 0; i < extractor.getTrackCount(); i++) {
-                MediaFormat format = extractor.getTrackFormat(i);
-                String mime = format.getString(MediaFormat.KEY_MIME);
-                if (mime != null && mime.startsWith("audio/")) {
-                    audioTrack = i;
-                    audioFormat = format;
-                    break;
-                }
-            }
-
-            if (audioTrack == -1) {
-                throw new IOException("No audio track found in source file");
-            }
-
-            extractor.selectTrack(audioTrack);
-
-            // Create muxer
-            muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-            int muxerTrack = muxer.addTrack(audioFormat);
-            muxer.start();
-
-            // Seek to start time
-            extractor.seekTo((long)(startTime * 1000000), MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
-
-            // Extract and write data
-            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(1024 * 1024);
-            android.media.MediaCodec.BufferInfo bufferInfo = new android.media.MediaCodec.BufferInfo();
-
-            long endTimeUs = (long)(endTime * 1000000);
-
-            while (true) {
-                int sampleSize = extractor.readSampleData(buffer, 0);
-                if (sampleSize < 0) break;
-
-                long sampleTime = extractor.getSampleTime();
-                if (sampleTime > endTimeUs) break;
-
-                bufferInfo.offset = 0;
-                bufferInfo.size = sampleSize;
-                bufferInfo.presentationTimeUs = sampleTime - (long)(startTime * 1000000);
-                bufferInfo.flags = convertExtractorFlags(extractor.getSampleFlags());
-
-                muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
-                extractor.advance();
-            }
-
-            Log.d(TAG, "Audio trimmed successfully");
-
-        } finally {
-            if (muxer != null) {
-                try {
-                    muxer.stop();
-                    muxer.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing muxer", e);
-                }
-            }
-            if (extractor != null) {
-                try {
-                    extractor.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing extractor", e);
-                }
-            }
-        }
-    }
-
-    private JSObject getAudioFileInfo(String filePath) {
+    private JSObject createQuickFileInfo(String filePath) {
         File file = new File(filePath);
         JSObject info = new JSObject();
 
         try {
-            // Basic file info
-            info.put("path", filePath);
+            // Basic file info only - no expensive MediaMetadataRetriever operations
             info.put("uri", "file://" + filePath);
-            info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
-            info.put("mimeType", "audio/m4a");
+            info.put("path", filePath);
+            info.put("name", file.getName());
             info.put("size", file.length());
-            info.put("createdAt", System.currentTimeMillis());
-            info.put("filename", file.getName());
+            info.put("exists", file.exists());
+            info.put("mimeType", "audio/mp4"); // Default for M4A files
+            info.put("duration", 0); // Set to 0 for quick response, can be calculated later if needed
 
-            // Add base64 encoding of the audio file with MIME prefix (Data URI format)
-            try {
-                byte[] audioBytes = java.nio.file.Files.readAllBytes(file.toPath());
-                String base64Audio = android.util.Base64.encodeToString(audioBytes, android.util.Base64.NO_WRAP);
-                String dataUri = "data:audio/m4a;base64," + base64Audio;
-                info.put("base64", dataUri);
-            } catch (Exception e) {
-                Log.w(TAG, "Failed to encode audio file to base64", e);
-                info.put("base64", null);
+            // Use the current recording config for quick response
+            if (recordingConfig != null) {
+                info.put("sampleRate", recordingConfig.getSampleRate());
+                info.put("channels", recordingConfig.getChannels());
+                info.put("bitrate", recordingConfig.getBitrate());
+            } else {
+                // Fallback to defaults
+                info.put("sampleRate", 22050);
+                info.put("channels", 1);
+                info.put("bitrate", 64000);
             }
 
-            // Audio metadata
-            MediaMetadataRetriever retriever = null;
-            try {
-                retriever = new MediaMetadataRetriever();
-                retriever.setDataSource(filePath);
-
-                String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-                double duration = durationStr != null ? Double.parseDouble(durationStr) / 1000.0 : 0.0;
-                info.put("duration", Math.round(duration * 10.0) / 10.0);
-
-                // Use recording settings as metadata might not be available
-                info.put("sampleRate", sampleRate);
-                info.put("channels", channels);
-                info.put("bitrate", bitrate);
-
-            } finally {
-                if (retriever != null) {
-                    try {
-                        retriever.release();
-                    } catch (Exception e) {
-                        Log.w(TAG, "Error releasing MediaMetadataRetriever", e);
-                    }
-                }
-            }
+            Log.d(TAG, "Created quick file info for: " + file.getName() + " (size: " + file.length() + " bytes)");
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to get audio file info", e);
-            // Return basic info even if metadata extraction fails
-            info.put("duration", 0.0);
-            info.put("sampleRate", sampleRate);
-            info.put("channels", channels);
-            info.put("bitrate", bitrate);
-            info.put("base64", null);
+            Log.e(TAG, "Error creating quick file info", e);
+            info.put("error", e.getMessage());
         }
 
         return info;
     }
 
-    // Event emission methods
-    private void emitDurationChange() {
-        JSObject data = new JSObject();
-        data.put("duration", currentDuration);
-        notifyListeners("durationChange", data);
-    }
+    /**
+     * Create file info with actual duration calculation for stop recording response
+     */
+    private JSObject createFileInfoWithDuration(String filePath) {
+        File file = new File(filePath);
+        JSObject info = new JSObject();
 
-    private void emitError(JSObject errorData) {
-        notifyListeners("error", errorData);
-    }
+        try {
+            // Basic file info - matching iOS format
+            info.put("path", filePath);
+            info.put("uri", "file://" + filePath);
+            info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
+            info.put("filename", file.getName());
+            info.put("size", file.length());
+            info.put("mimeType", "audio/m4a"); // Default for M4A files
+            info.put("createdAt", file.lastModified());
 
-    private void emitInterruption(String message) {
-        JSObject data = new JSObject();
-        data.put("message", message);
-        notifyListeners("recordingInterruption", data);
-    }
+            // Calculate duration
+            double actualDuration = 0.0;
 
-    // App lifecycle handling for interruptions
-    @Override
-    protected void handleOnPause() {
-        super.handleOnPause();
-        handleAppStateChange(true);
-    }
-
-    @Override
-    protected void handleOnResume() {
-        super.handleOnResume();
-        handleAppStateChange(false);
-    }
-
-    private void handleAppStateChange(boolean isBackground) {
-        if (isBackground) {
-            if (isRecording) {
-                wasRecordingBeforeInterruption = true;
-                try {
-                    stopSegmentTimer();
-                    stopDurationMonitoring();
-                    if (mediaRecorder != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        mediaRecorder.pause();
-                    }
-                    pauseRecordingService(); // Update service for background state
-                    emitInterruption("App went to background, recording paused");
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed to handle app state change to background", e);
-                }
+            // Handle empty files (created after reset with no recording)
+            if (file.length() == 0) {
+                Log.d(TAG, "Empty file detected (created after reset), setting duration to 0");
+                actualDuration = 0.0;
+            } else {
+                // Calculate actual duration using AudioFileProcessor
+                actualDuration = AudioFileProcessor.getAudioDuration(filePath);
+                Log.d(TAG, "Calculated duration: " + actualDuration + " seconds for file: " + file.getName());
             }
+
+            info.put("duration", actualDuration);
+
+            // Use the current recording config
+            if (recordingConfig != null) {
+                info.put("sampleRate", recordingConfig.getSampleRate());
+                info.put("channels", recordingConfig.getChannels());
+                info.put("bitrate", recordingConfig.getBitrate());
+            } else {
+                // Fallback to defaults
+                info.put("sampleRate", 22050);
+                info.put("channels", 1);
+                info.put("bitrate", 64000);
+            }
+
+            // Generate base64 data for the file
+            try {
+                String base64 = AudioFileProcessor.generateBase64FromFile(file);
+                info.put("base64", base64);
+                Log.d(TAG, "Generated base64 data for: " + file.getName());
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to generate base64 for file", e);
+                info.put("base64", ""); // Fallback to empty string on error
+            }
+
+            Log.d(TAG, "Created file info with duration: " + actualDuration + "s for: " + file.getName() +
+                  " (size: " + file.length() + " bytes)");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error creating file info with duration", e);
+            info.put("error", e.getMessage());
+            info.put("duration", 0); // Fallback to 0 on error
+        }
+
+        return info;
+    }
+
+    // ==================== PLAYBACK METHODS ====================
+
+    @PluginMethod
+    public void preloadTracks(PluginCall call) {
+        try {
+            JSArray tracksArray = call.getArray("tracks");
+            if (tracksArray == null) {
+                call.reject("Invalid tracks array - expected array of URLs");
+                return;
+            }
+
+            // Get preloadNext option (default to true for backwards compatibility)
+            boolean preloadNext = call.getBoolean("preloadNext", true);
+
+            List<String> trackUrls = new ArrayList<>();
+
+            for (int i = 0; i < tracksArray.length(); i++) {
+                String url = tracksArray.getString(i);
+                if (url == null || url.trim().isEmpty()) {
+                    call.reject("Invalid track URL at index " + i);
+                    return;
+                }
+                trackUrls.add(url);
+            }
+
+            // Pass preloadNext parameter to PlaybackManager
+            List<JSObject> trackResults = playbackManager.preloadTracks(trackUrls);
+
+            // Convert List<JSObject> to JSArray to ensure proper JSON serialization
+            JSArray resultTracksArray = new JSArray();
+            for (JSObject trackResult : trackResults) {
+                resultTracksArray.put(trackResult);
+            }
+
+            JSObject result = new JSObject();
+            result.put("tracks", resultTracksArray);
+            call.resolve(result);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to preload tracks", e);
+            call.reject("Failed to preload tracks: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void playAudio(PluginCall call) {
+        try {
+            String url = call.getString("url");
+            if (url != null) {
+                // Play specific preloaded track by URL
+                playbackManager.playByUrl(url);
+            } else {
+                // Play current track
+                playbackManager.play();
+            }
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to play audio", e);
+            call.reject("Failed to play audio: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void pauseAudio(PluginCall call) {
+        try {
+            String url = call.getString("url");
+            if (url != null) {
+                // Pause specific preloaded track by URL
+                playbackManager.pauseByUrl(url);
+            } else {
+                // Pause current track
+                playbackManager.pause();
+            }
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to pause audio", e);
+            call.reject("Failed to pause audio: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void resumeAudio(PluginCall call) {
+        try {
+            String url = call.getString("url");
+            if (url != null) {
+                // Resume specific preloaded track by URL
+                playbackManager.resumeByUrl(url);
+            } else {
+                // Resume current track
+                playbackManager.resume();
+            }
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to resume audio", e);
+            call.reject("Failed to resume audio: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void stopAudio(PluginCall call) {
+        try {
+            String url = call.getString("url");
+            if (url != null) {
+                // Stop specific preloaded track by URL
+                playbackManager.stopByUrl(url);
+            } else {
+                // Stop current track
+                playbackManager.stop();
+            }
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to stop audio", e);
+            call.reject("Failed to stop audio: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void seekAudio(PluginCall call) {
+        Double seconds = call.getDouble("seconds");
+        if (seconds == null) {
+            call.reject("Missing seconds parameter");
+            return;
+        }
+
+        String url = call.getString("url");
+        if (url != null) {
+            // Seek in specific preloaded track by URL
+            playbackManager.seekByUrl(url, seconds);
         } else {
-            if (wasRecordingBeforeInterruption) {
-                try {
-                    if (mediaRecorder != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        mediaRecorder.resume();
+            // Seek in current track
+            playbackManager.seekTo(seconds);
+        }
+        call.resolve();
+    }
 
-                        if (maxDuration != null && maxDuration > 0) {
-                            startSegmentTimer(maxDuration);
-                        }
+    @PluginMethod
+    public void skipToNext(PluginCall call) {
+        playbackManager.skipToNext();
+        call.resolve();
+    }
 
-                        startDurationMonitoring();
-                        resumeRecordingService(); // Update service for foreground state
-                        emitInterruption("App resumed from background, recording resumed");
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed to resume recording after app state change", e);
-                }
+    @PluginMethod
+    public void skipToPrevious(PluginCall call) {
+        playbackManager.skipToPrevious();
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void skipToIndex(PluginCall call) {
+        Integer index = call.getInt("index");
+        if (index == null) {
+            call.reject("Missing index parameter");
+            return;
+        }
+
+        playbackManager.skipToIndex(index);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getPlaybackInfo(PluginCall call) {
+        // Ensure we're on the main thread since ExoPlayer methods need to be called from main thread
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(() -> getPlaybackInfo(call));
+            return;
+        }
+
+        try {
+            JSObject result = new JSObject();
+
+            AudioTrack currentTrack = playbackManager.getCurrentTrack();
+            if (currentTrack != null) {
+                result.put("currentTrack", currentTrack.toJSON());
+            } else {
+                result.put("currentTrack", JSObject.NULL);
             }
-            wasRecordingBeforeInterruption = false;
+
+            result.put("currentIndex", playbackManager.getCurrentIndex());
+            result.put("currentPosition", playbackManager.getCurrentPosition());
+            result.put("duration", playbackManager.getDuration());
+            result.put("isPlaying", playbackManager.isPlaying());
+            result.put("status", statusToString(playbackManager.getStatus()));
+
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("Failed to get playback info: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void openSettings(PluginCall call) {
+        try {
+            String packageName = getContext().getPackageName();
+            Log.d(TAG, "Attempting to open app settings for package: " + packageName);
+
+            // Primary approach: Direct app info/permissions page (works on all Android versions)
+            try {
+                Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.setData(android.net.Uri.parse("package:" + packageName));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+
+                // Verify the intent can be resolved
+                if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+                    getContext().startActivity(intent);
+                    Log.d(TAG, "Successfully opened app settings using ACTION_APPLICATION_DETAILS_SETTINGS");
+                    call.resolve(createSuccessResponse("ACTION_APPLICATION_DETAILS_SETTINGS"));
+                    return;
+                } else {
+                    Log.d(TAG, "ACTION_APPLICATION_DETAILS_SETTINGS intent cannot be resolved");
+                }
+            } catch (Exception e) {
+                Log.d(TAG, "ACTION_APPLICATION_DETAILS_SETTINGS failed: " + e.getMessage());
+            }
+
+            // Fallback approach: Open general device settings if app-specific settings fail
+            try {
+                Intent intent = new Intent(Settings.ACTION_SETTINGS);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+                    getContext().startActivity(intent);
+                    Log.d(TAG, "Successfully opened general settings as fallback");
+                    call.resolve(createSuccessResponse("ACTION_SETTINGS_FALLBACK"));
+                    return;
+                }
+            } catch (Exception e) {
+                Log.d(TAG, "General settings fallback failed: " + e.getMessage());
+            }
+
+            // If all attempts fail, this is highly unlikely on any Android device
+            Log.e(TAG, "All attempts to open settings failed");
+            call.reject("SETTINGS_UNAVAILABLE", "Unable to open device settings - no suitable intent found");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to open app settings", e);
+            call.reject("SETTINGS_ERROR", "Failed to open app settings: " + e.getMessage());
+        }
+    }
+
+    private JSObject createSuccessResponse(String method) {
+        JSObject result = new JSObject();
+        result.put("opened", true);
+        result.put("method", method);
+        result.put("packageName", getContext().getPackageName());
+        return result;
+    }
+
+
+
+    private String statusToString(PlaybackStatus status) {
+      return switch (status) {
+        case LOADING -> "loading";
+        case PLAYING -> "playing";
+        case PAUSED -> "paused";
+        case STOPPED -> "stopped";
+        default -> "idle";
+      };
+    }
+
+    // PlaybackManagerListener implementation
+    @Override
+    public void onTrackChanged(AudioTrack track, int index) {
+        try {
+            JSObject data = new JSObject();
+            data.put("track", track.toJSON());
+            data.put("index", index);
+            notifyListeners("trackChanged", data);
+        } catch (Exception e) {
+            Log.e(TAG, "Error notifying track changed", e);
+        }
+    }
+
+    @Override
+    public void onTrackEnded(AudioTrack track, int index) {
+        try {
+            JSObject data = new JSObject();
+            data.put("track", track.toJSON());
+            data.put("index", index);
+            notifyListeners("trackEnded", data);
+        } catch (Exception e) {
+            Log.e(TAG, "Error notifying track ended", e);
+        }
+    }
+
+    @Override
+    public void onPlaybackStarted(AudioTrack track, int index) {
+        try {
+            JSObject data = new JSObject();
+            data.put("track", track.toJSON());
+            data.put("index", index);
+            notifyListeners("playbackStarted", data);
+        } catch (Exception e) {
+            Log.e(TAG, "Error notifying playback started", e);
+        }
+    }
+
+    @Override
+    public void onPlaybackPaused(AudioTrack track, int index) {
+        try {
+            JSObject data = new JSObject();
+            data.put("track", track.toJSON());
+            data.put("index", index);
+            data.put("position", playbackManager.getCurrentPosition());
+            notifyListeners("playbackPaused", data);
+        } catch (Exception e) {
+            Log.e(TAG, "Error notifying playback paused", e);
+        }
+    }
+
+    @Override
+    public void onPlaybackError(String error) {
+        JSObject data = new JSObject();
+        data.put("message", error);
+        notifyListeners("playbackError", data);
+    }
+
+    @Override
+    public void onPlaybackProgress(AudioTrack track, int index, long currentPosition, long duration, boolean isPlaying) {
+        try {
+            JSObject data = new JSObject();
+            data.put("track", track.toJSON());
+            data.put("index", index);
+            data.put("currentPosition", currentPosition / 1000.0); // Convert to seconds
+            data.put("duration", duration / 1000.0); // Convert to seconds
+            data.put("isPlaying", isPlaying);
+            notifyListeners("playbackProgress", data);
+        } catch (Exception e) {
+            Log.e(TAG, "Error notifying playback progress", e);
+        }
+    }
+
+    @Override
+    public void onPlaybackStatusChanged(AudioTrack track, int index, PlaybackStatus status, long currentPosition, long duration, boolean isPlaying) {
+        try {
+            JSObject data = new JSObject();
+            if (track != null) {
+                data.put("track", track.toJSON());
+            } else {
+                data.put("track", JSObject.NULL);
+            }
+            data.put("index", index);
+            data.put("status", status.name().toLowerCase());
+            data.put("currentPosition", currentPosition / 1000.0); // Convert to seconds
+            data.put("duration", duration / 1000.0); // Convert to seconds
+            data.put("isPlaying", isPlaying);
+            notifyListeners("playbackStatusChanged", data);
+        } catch (Exception e) {
+            Log.e(TAG, "Error notifying playback status changed", e);
         }
     }
 
@@ -1282,672 +1416,254 @@ public class CapacitorAudioEnginePlugin extends Plugin {
     protected void handleOnDestroy() {
         super.handleOnDestroy();
 
-        // Clean up resources
-        stopDurationMonitoring();
-        stopSegmentTimer();
+        Log.d(TAG, "Plugin destroying - cleaning up all resources");
 
-        if (mediaRecorder != null) {
-            try {
-                if (isRecording) {
-                    mediaRecorder.stop();
-                }
-                mediaRecorder.release();
-            } catch (Exception e) {
-                Log.w(TAG, "Error cleaning up MediaRecorder", e);
+        try {
+            // Clean up recording state
+            cleanupRecordingState();
+
+            // Release managers
+            if (playbackManager != null) {
+                playbackManager.release();
+                playbackManager = null;
             }
-            mediaRecorder = null;
-        }
 
-        isRecording = false;
+            if (permissionManager != null) {
+                permissionManager = null;
+            }
 
-        // Clean up segment files
-        for (String segmentPath : segmentFiles) {
-            new File(segmentPath).delete();
+            if (eventManager != null) {
+                eventManager = null;
+            }
+
+            if (fileManager != null) {
+                fileManager = null;
+            }
+
+            // Clean up waveform data manager
+            if (waveformDataManager != null) {
+                waveformDataManager.cleanup();
+                waveformDataManager = null;
+            }
+
+            // Unbind recording service
+            unbindRecordingService();
+
+            // Clear main handler
+            if (mainHandler != null) {
+                mainHandler.removeCallbacksAndMessages(null);
+                mainHandler = null;
+            }
+
+            Log.i(TAG, "CapacitorAudioEngine plugin destroyed - all resources cleaned up");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error during plugin destruction", e);
         }
-        segmentFiles.clear();
     }
 
-    // Background service management methods
+    // MARK: - Background Recording Service Integration
+
+    /**
+     * Bind to the background recording service
+     */
+    private void bindRecordingService() {
+        if (!isServiceBound) {
+            Intent intent = new Intent(getContext(), AudioRecordingService.class);
+            getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+            Log.d(TAG, "Binding to AudioRecordingService");
+        }
+    }
+
+    /**
+     * Unbind from the background recording service
+     */
+    private void unbindRecordingService() {
+        if (isServiceBound) {
+            try {
+                getContext().unbindService(serviceConnection);
+                isServiceBound = false;
+                recordingService = null;
+                Log.d(TAG, "Unbound from AudioRecordingService");
+            } catch (Exception e) {
+                Log.w(TAG, "Error unbinding from recording service", e);
+            }
+        }
+    }
+
+    /**
+     * Start foreground service for background recording
+     */
     private void startRecordingService() {
-        if (!serviceStarted) {
-            Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-            serviceIntent.setAction(AudioRecordingService.ACTION_START_RECORDING);
+        Intent intent = new Intent(getContext(), AudioRecordingService.class);
+        intent.setAction("START_RECORDING");
+        getContext().startForegroundService(intent);
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                getContext().startForegroundService(serviceIntent);
-            } else {
-                getContext().startService(serviceIntent);
-            }
-
-            serviceStarted = true;
-            Log.d(TAG, "Started background recording service");
-        }
+        // Bind to service for communication
+        bindRecordingService();
     }
 
-    private void pauseRecordingService() {
-        if (serviceStarted) {
-            Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-            serviceIntent.setAction(AudioRecordingService.ACTION_PAUSE_RECORDING);
-            getContext().startService(serviceIntent);
-            Log.d(TAG, "Paused background recording service");
-        }
-    }
-
-    private void resumeRecordingService() {
-        if (serviceStarted) {
-            Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-            serviceIntent.setAction(AudioRecordingService.ACTION_RESUME_RECORDING);
-            getContext().startService(serviceIntent);
-            Log.d(TAG, "Resumed background recording service");
-        }
-    }
-
+    /**
+     * Stop foreground service
+     */
     private void stopRecordingService() {
-        if (serviceStarted) {
-            Intent serviceIntent = new Intent(getContext(), AudioRecordingService.class);
-            serviceIntent.setAction(AudioRecordingService.ACTION_STOP_RECORDING);
-            getContext().startService(serviceIntent);
-            serviceStarted = false;
-            Log.d(TAG, "Stopped background recording service");
+        if (recordingService != null) {
+            recordingService.stopForegroundRecording();
+        }
+        unbindRecordingService();
+    }
+
+    // MARK: - AudioRecordingService.RecordingServiceListener Implementation
+
+    @Override
+    public void onScreenLocked() {
+        Log.d(TAG, "Screen locked - segment rolling manager handles its own state");
+        // Segment rolling manager handles screen lock internally
+    }
+
+    @Override
+    public void onScreenUnlocked() {
+        Log.d(TAG, "Screen unlocked - segment rolling manager handles its own state");
+        // Segment rolling manager handles screen unlock internally
+    }
+
+    @Override
+    public void onRecordingStateChanged(boolean isRecording) {
+        Log.d(TAG, "Recording service state changed: " + (isRecording ? "started" : "stopped"));
+
+        // Could emit events to frontend if needed
+        if (eventManager != null) {
+            JSObject eventData = new JSObject();
+            eventData.put("serviceState", isRecording ? "started" : "stopped");
+            eventManager.emitRecordingStateChange("service", eventData);
         }
     }
 
-    /**
-     * Convert MediaExtractor sample flags to MediaCodec buffer flags
-     * This is necessary because MediaExtractor and MediaCodec use different flag constants
-     */
-    private int convertExtractorFlags(int extractorFlags) {
-        int bufferFlags = 0;
+    // MARK: - AudioInterruptionManager.InterruptionCallback Implementation
 
-        // Convert sync frame flag
-        if ((extractorFlags & MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
-            bufferFlags |= MediaCodec.BUFFER_FLAG_KEY_FRAME;
-        }
-
-        // Convert partial frame flag
-        if ((extractorFlags & MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME) != 0) {
-            bufferFlags |= MediaCodec.BUFFER_FLAG_PARTIAL_FRAME;
-        }
-
-        // Note: MediaExtractor.SAMPLE_FLAG_ENCRYPTED doesn't have a direct MediaCodec equivalent
-        // so we don't convert it (encrypted samples would need special handling anyway)
-
-        return bufferFlags;
+    @Override
+    public void onInterruptionBegan(AudioInterruptionManager.InterruptionType type) {
+        Log.d(TAG, "Audio interruption began: " + type);
+        // Segment rolling handles its own interruptions, so no action needed here
     }
 
+    @Override
+    public void onInterruptionEnded(AudioInterruptionManager.InterruptionType type, boolean shouldResume) {
+        Log.d(TAG, "Audio interruption ended: " + type + ", should resume: " + shouldResume);
+        // Segment rolling handles its own interruptions, so no action needed here
+    }
 
-
-    /**
-     * Check if microphone is currently busy/in use by another application
-     */
-    @PluginMethod
-    public void isMicrophoneBusy(PluginCall call) {
-        try {
-            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-
-            boolean isBusy = false;
-
-            // Check if we can create an AudioRecord instance
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                AudioRecord audioRecord = null;
-                try {
-                    audioRecord = new AudioRecord(
-                        android.media.MediaRecorder.AudioSource.MIC,
-                        44100,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        AudioRecord.getMinBufferSize(44100, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                    );
-
-                    if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-                        isBusy = true;
-                    } else {
-                        // Try to start recording briefly to check if microphone is available
-                        try {
-                            audioRecord.startRecording();
-                            if (audioRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-                                isBusy = true;
-                            }
-                            audioRecord.stop();
-                        } catch (Exception e) {
-                            isBusy = true;
-                        }
-                    }
-                } catch (Exception e) {
-                    isBusy = true;
-                } finally {
-                    if (audioRecord != null) {
-                        audioRecord.release();
-                    }
-                }
-            }
-
-            JSObject result = new JSObject();
-            result.put("busy", isBusy);
-            result.put("reason", isBusy ? "Microphone is currently in use by another application" : "Microphone is available");
-            call.resolve(result);
-
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to check microphone status", e);
-            call.reject("Failed to check microphone status: " + e.getMessage());
-        }
+    @Override
+    public void onAudioRouteChanged(String reason) {
+        Log.d(TAG, "Audio route changed: " + reason);
+        // Handle audio route changes if needed
     }
 
     /**
-     * Get list of available microphones (internal and external)
+     * Internal pause recording method that can be called without PluginCall
      */
-    @PluginMethod
-    public void getAvailableMicrophones(PluginCall call) {
-        try {
-            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-            JSArray microphones = new JSArray();
-
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS);
-
-                // Track if we've added a built-in microphone to avoid duplicates
-                boolean builtinMicAdded = false;
-                AudioDeviceInfo primaryBuiltinMic = null;
-
-                // First pass: find the primary built-in microphone and external devices
-                for (AudioDeviceInfo device : devices) {
-                    if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_MIC) {
-                        // Keep the first built-in mic as primary
-                        if (!builtinMicAdded) {
-                            primaryBuiltinMic = device;
-                            builtinMicAdded = true;
-                        }
-                    } else if (device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-                               device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                               device.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                               device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET ||
-                               device.getType() == AudioDeviceInfo.TYPE_USB_DEVICE) {
-
-                        // Add external microphones immediately
-                        JSObject micInfo = new JSObject();
-                        micInfo.put("id", device.getId());
-                        micInfo.put("name", getDeviceName(device));
-                        micInfo.put("type", getDeviceType(device));
-                        micInfo.put("isConnected", true);
-                        microphones.put(micInfo);
-                    }
-                }
-
-                // Add the primary built-in microphone if found
-                if (primaryBuiltinMic != null) {
-                    JSObject micInfo = new JSObject();
-                    micInfo.put("id", primaryBuiltinMic.getId());
-                    micInfo.put("name", "Built-in Microphone");
-                    micInfo.put("type", "internal");
-                    micInfo.put("isConnected", true);
-                    microphones.put(micInfo);
-                }
-            } else {
-                // For older Android versions, provide basic built-in microphone
-                JSObject micInfo = new JSObject();
-                micInfo.put("id", 0);
-                micInfo.put("name", "Built-in Microphone");
-                micInfo.put("type", "internal");
-                micInfo.put("isConnected", true);
-                microphones.put(micInfo);
-            }
-
-            JSObject result = new JSObject();
-            result.put("microphones", microphones);
-            call.resolve(result);
-
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to get available microphones", e);
-            call.reject("Failed to get available microphones: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Switch to a different microphone while keeping recording active
-     */
-    @PluginMethod
-    public void switchMicrophone(PluginCall call) {
-        Integer microphoneId = call.getInt("microphoneId");
-        if (microphoneId == null) {
-            call.reject("Microphone ID is required");
+    private void pauseRecordingInternal(PluginCall call) {
+        if (!isRecording && (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
+            if (call != null) call.reject("No active recording session to pause");
             return;
         }
 
         try {
-            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            // Pause segment rolling
+            if (segmentRollingManager != null) {
+                segmentRollingManager.pauseSegmentRolling();
+                Log.d(TAG, "Segment rolling recording paused");
 
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS);
-                AudioDeviceInfo targetDevice = null;
-
-                // Find the device with the matching ID
-                for (AudioDeviceInfo device : devices) {
-                    if (device.getId() == microphoneId) {
-                        targetDevice = device;
-                        break;
-                    }
+                // Pause waveform data monitoring
+                if (waveformDataManager != null) {
+                    waveformDataManager.pauseMonitoring();
+                    Log.d(TAG, "Waveform data monitoring paused");
                 }
 
-                if (targetDevice == null) {
-                    call.reject("Microphone not found with ID: " + microphoneId);
-                    return;
+                // Emit pause state change event for consistency
+                if (eventManager != null) {
+                    JSObject pauseData = new JSObject();
+                    long currentDuration = segmentRollingManager.getCurrentDuration();
+                    pauseData.put("duration", currentDuration / 1000.0);
+                    pauseData.put("isRecording", true); // Session is still active
+                    pauseData.put("status", "paused");
+                    eventManager.emitRecordingStateChange("paused", pauseData);
                 }
 
-                // Check if recording is currently active
-                boolean wasRecording = isRecording && mediaRecorder != null;
+                if (call != null) call.resolve();
+            } else {
+                if (call != null) call.reject("Segment rolling manager not initialized");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to pause recording", e);
+            if (call != null) call.reject("Failed to pause recording: " + e.getMessage());
+        }
+    }
 
-                if (wasRecording) {
-                    // For seamless switching during recording, we need to:
-                    // 1. Pause current recording
-                    // 2. Switch audio routing
-                    // 3. Resume recording
+    /**
+     * Internal resume recording method that can be called without PluginCall
+     */
+    private void resumeRecordingInternal(PluginCall call) {
+        if (!isRecording) {
+            if (call != null) call.reject("No recording session active");
+            return;
+        }
 
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        mediaRecorder.pause();
-                        stopDurationMonitoring();
-
-                        // Switch audio routing preference
-                        // Note: Android doesn't provide direct microphone switching during recording
-                        // This is a limitation of the Android MediaRecorder API
-                        Log.d(TAG, "Attempting to switch to microphone: " + getDeviceName(targetDevice));
-
-                        // Resume recording
-                        mediaRecorder.resume();
-                        startDurationMonitoring();
-
-                        JSObject result = new JSObject();
-                        result.put("success", true);
-                        result.put("microphoneId", microphoneId);
-                        result.put("message", "Microphone preference updated for next recording session");
-                        call.resolve(result);
-                    } else {
-                        call.reject("Microphone switching during recording requires Android N (API 24) or higher");
-                    }
+        try {
+            // Resume segment rolling
+            if (segmentRollingManager != null) {
+                if (segmentRollingManager.isSegmentRollingActive()) {
+                    // Normal resume case - manager is active (including after reset with paused segment)
+                    segmentRollingManager.resumeSegmentRolling();
+                    Log.d(TAG, "Segment rolling recording resumed from pause/reset state");
                 } else {
-                    // Not currently recording, just store preference for next recording
-                    JSObject result = new JSObject();
-                    result.put("success", true);
-                    result.put("microphoneId", microphoneId);
-                    result.put("message", "Microphone preference set for next recording session");
-                    call.resolve(result);
+                    // Legacy case - manager exists but not active, need to restart fresh
+                    Log.d(TAG, "Segment rolling not active (legacy state), restarting segment rolling");
+                    segmentRollingManager.startSegmentRolling(recordingConfig);
+                    Log.d(TAG, "Fresh segment rolling started after legacy reset");
                 }
-            } else {
-                call.reject("Microphone switching requires Android M (API 23) or higher");
-            }
 
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to switch microphone", e);
-            call.reject("Failed to switch microphone: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Helper method to get human-readable device name
-     */
-    private String getDeviceName(AudioDeviceInfo device) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-            CharSequence productName = device.getProductName();
-            if (productName != null && productName.length() > 0) {
-                return productName.toString();
-            }
-        }
-
-        // Fallback to device type-based naming
-        switch (device.getType()) {
-            case AudioDeviceInfo.TYPE_BUILTIN_MIC:
-                return "Built-in Microphone";
-            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
-                return "Wired Headset";
-            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
-                return "Wired Headphones";
-            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
-                return "Bluetooth Headset";
-            case AudioDeviceInfo.TYPE_USB_HEADSET:
-                return "USB Headset";
-            case AudioDeviceInfo.TYPE_USB_DEVICE:
-                return "USB Audio Device";
-            default:
-                return "Unknown Audio Device";
-        }
-    }
-
-    /**
-     * Helper method to categorize device type
-     */
-    private String getDeviceType(AudioDeviceInfo device) {
-        switch (device.getType()) {
-            case AudioDeviceInfo.TYPE_BUILTIN_MIC:
-                return "internal";
-            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
-            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
-            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
-            case AudioDeviceInfo.TYPE_USB_HEADSET:
-            case AudioDeviceInfo.TYPE_USB_DEVICE:
-                return "external";
-            default:
-                return "unknown";
-        }
-    }
-
-    // Helper class for segment information
-    private static class SegmentInfo {
-        String filePath;
-        double duration;
-        long fileSize;
-
-        SegmentInfo(String filePath, double duration, long fileSize) {
-            this.filePath = filePath;
-            this.duration = duration;
-            this.fileSize = fileSize;
-        }
-    }
-
-    // ========== AUDIO PLAYBACK METHODS ==========
-
-    @PluginMethod
-    public void preload(PluginCall call) {
-        String uri = call.getString("uri");
-        if (uri == null) {
-            call.reject("URI is required");
-            return;
-        }
-
-        Boolean prepare = call.getBoolean("prepare", true);
-
-        try {
-            // Stop any current playback
-            if (mediaPlayer != null) {
-                mediaPlayer.release();
-                mediaPlayer = null;
-            }
-
-            mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(uri);
-
-            if (prepare) {
-                mediaPlayer.setOnPreparedListener(mp -> {
-                    JSObject ret = new JSObject();
-                    ret.put("success", true);
-                    call.resolve(ret);
-                });
-
-                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                    call.reject("Failed to preload audio: " + what + ", " + extra);
-                    return true;
-                });
-
-                mediaPlayer.prepareAsync();
-            } else {
-                call.resolve();
-            }
-
-            currentPlaybackPath = uri;
-
-        } catch (Exception e) {
-            call.reject("Failed to preload audio", e);
-        }
-    }
-
-    @PluginMethod
-    public void startPlayback(PluginCall call) {
-        String uri = call.getString("uri");
-        if (uri == null) {
-            call.reject("URI is required");
-            return;
-        }
-
-        try {
-            // Stop any current playback
-            if (mediaPlayer != null) {
-                mediaPlayer.release();
-                mediaPlayer = null;
-            }
-
-            mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(uri);
-
-            // Set playback options
-            Float speed = call.getFloat("speed", 1.0f);
-            Float volume = call.getFloat("volume", 1.0f);
-            Boolean loop = call.getBoolean("loop", false);
-            Integer startTime = call.getInt("startTime", 0);
-
-            playbackSpeed = speed;
-            playbackVolume = volume;
-            isLooping = loop;
-
-            mediaPlayer.setVolume(volume, volume);
-            mediaPlayer.setLooping(loop);
-
-            // Set playback speed (API 23+)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                mediaPlayer.setPlaybackParams(mediaPlayer.getPlaybackParams().setSpeed(speed));
-            }
-
-            mediaPlayer.setOnPreparedListener(mp -> {
-                if (startTime > 0) {
-                    mp.seekTo(startTime * 1000);
-                }
-                mp.start();
-                isPlaying = true;
-
-                // Start progress monitoring
-                startPlaybackProgressTimer();
-
-                // Notify listeners
-                JSObject eventData = new JSObject();
-                eventData.put("status", "playing");
-                eventData.put("currentTime", mp.getCurrentPosition() / 1000.0);
-                eventData.put("duration", mp.getDuration() / 1000.0);
-                notifyListeners("playbackStatusChange", eventData);
-
-                call.resolve();
-            });
-
-            mediaPlayer.setOnCompletionListener(mp -> {
-                isPlaying = false;
-                stopPlaybackProgressTimer();
-
-                // Notify listeners
-                JSObject eventData = new JSObject();
-                eventData.put("status", "completed");
-                eventData.put("duration", mp.getDuration() / 1000.0);
-                notifyListeners("playbackCompleted", eventData);
-                notifyListeners("playbackStatusChange", eventData);
-            });
-
-            mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                isPlaying = false;
-                stopPlaybackProgressTimer();
-
-                // Notify listeners
-                JSObject eventData = new JSObject();
-                eventData.put("message", "Playback error: " + what + ", " + extra);
-                eventData.put("code", what);
-                notifyListeners("playbackError", eventData);
-
-                return true;
-            });
-
-            mediaPlayer.prepareAsync();
-            currentPlaybackPath = uri;
-
-        } catch (Exception e) {
-            call.reject("Failed to start playback", e);
-        }
-    }
-
-    @PluginMethod
-    public void pausePlayback(PluginCall call) {
-        if (mediaPlayer == null || !isPlaying) {
-            call.reject("No active playback to pause");
-            return;
-        }
-
-        try {
-            mediaPlayer.pause();
-            isPlaying = false;
-            stopPlaybackProgressTimer();
-
-            // Notify listeners
-            JSObject eventData = new JSObject();
-            eventData.put("status", "paused");
-            eventData.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
-            eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
-            notifyListeners("playbackStatusChange", eventData);
-
-            call.resolve();
-        } catch (Exception e) {
-            call.reject("Failed to pause playback", e);
-        }
-    }
-
-    @PluginMethod
-    public void resumePlayback(PluginCall call) {
-        if (mediaPlayer == null) {
-            call.reject("No active playback to resume");
-            return;
-        }
-
-        if (isPlaying) {
-            call.reject("Playback is already active");
-            return;
-        }
-
-        try {
-            mediaPlayer.start();
-            isPlaying = true;
-            startPlaybackProgressTimer();
-
-            // Notify listeners
-            JSObject eventData = new JSObject();
-            eventData.put("status", "playing");
-            eventData.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
-            eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
-            notifyListeners("playbackStatusChange", eventData);
-
-            call.resolve();
-        } catch (Exception e) {
-            call.reject("Failed to resume playback", e);
-        }
-    }
-
-    @PluginMethod
-    public void stopPlayback(PluginCall call) {
-        if (mediaPlayer == null) {
-            call.reject("No active playback to stop");
-            return;
-        }
-
-        try {
-            mediaPlayer.stop();
-            isPlaying = false;
-            stopPlaybackProgressTimer();
-
-            // Notify listeners
-            JSObject eventData = new JSObject();
-            eventData.put("status", "stopped");
-            eventData.put("currentTime", 0);
-            if (mediaPlayer.getDuration() > 0) {
-                eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
-            }
-            notifyListeners("playbackStatusChange", eventData);
-
-            call.resolve();
-        } catch (Exception e) {
-            call.reject("Failed to stop playback", e);
-        }
-    }
-
-    @PluginMethod
-    public void seekTo(PluginCall call) {
-        Integer timeMs = call.getInt("time");
-        if (timeMs == null) {
-            call.reject("Time is required");
-            return;
-        }
-
-        if (mediaPlayer == null) {
-            call.reject("No active playback for seeking");
-            return;
-        }
-
-        try {
-            mediaPlayer.seekTo(timeMs * 1000);
-
-            // Notify listeners
-            JSObject eventData = new JSObject();
-            eventData.put("currentTime", timeMs);
-            eventData.put("duration", mediaPlayer.getDuration() / 1000.0);
-            notifyListeners("playbackProgress", eventData);
-
-            call.resolve();
-        } catch (Exception e) {
-            call.reject("Failed to seek", e);
-        }
-    }
-
-    @PluginMethod
-    public void getPlaybackStatus(PluginCall call) {
-        JSObject ret = new JSObject();
-
-        if (mediaPlayer == null) {
-            ret.put("status", "idle");
-            ret.put("currentTime", 0);
-            ret.put("duration", 0);
-        } else {
-            try {
-                String status = isPlaying ? "playing" : "paused";
-                ret.put("status", status);
-                ret.put("currentTime", mediaPlayer.getCurrentPosition() / 1000.0);
-                ret.put("duration", mediaPlayer.getDuration() / 1000.0);
-                ret.put("speed", playbackSpeed);
-                ret.put("volume", playbackVolume);
-                ret.put("isLooping", isLooping);
-                ret.put("uri", currentPlaybackPath);
-            } catch (Exception e) {
-                ret.put("status", "error");
-                ret.put("currentTime", 0);
-                ret.put("duration", 0);
-            }
-        }
-
-        call.resolve(ret);
-    }
-
-    private void startPlaybackProgressTimer() {
-        stopPlaybackProgressTimer();
-
-        playbackProgressTimer = new Timer();
-        playbackProgressTimer.scheduleAtFixedRate(new TimerTask() {
-            @Override
-            public void run() {
-                if (mediaPlayer != null && isPlaying) {
+                // Ensure waveform data monitoring restarts fresh if it was stopped by reset
+                if (waveformDataManager != null) {
                     try {
-                        double currentTime = mediaPlayer.getCurrentPosition() / 1000.0;
-                        double duration = mediaPlayer.getDuration() / 1000.0;
-                        double position = duration > 0 ? (currentTime / duration) * 100 : 0;
-
-                        JSObject eventData = new JSObject();
-                        eventData.put("currentTime", currentTime);
-                        eventData.put("duration", duration);
-                        eventData.put("position", position);
-
-                        mainHandler.post(() -> {
-                            notifyListeners("playbackProgress", eventData);
-                        });
+                        if (!waveformDataManager.isMonitoring()) {
+                            waveformDataManager.startMonitoring();
+                            Log.d(TAG, "Waveform data monitoring started");
+                        } else {
+                            waveformDataManager.resumeMonitoring();
+                            Log.d(TAG, "Waveform data monitoring resumed");
+                        }
                     } catch (Exception e) {
-                        Log.e(TAG, "Error in playback progress timer", e);
+                        Log.w(TAG, "Unable to start/resume waveform monitoring", e);
                     }
                 }
-            }
-        }, 0, 1000); // Update every second
-    }
 
-    private void stopPlaybackProgressTimer() {
-        if (playbackProgressTimer != null) {
-            playbackProgressTimer.cancel();
-            playbackProgressTimer = null;
+                // Emit recording state change event for consistency
+                if (eventManager != null) {
+                    JSObject resumeData = new JSObject();
+                    long currentDuration = segmentRollingManager.getCurrentDuration();
+                    resumeData.put("duration", currentDuration / 1000.0);
+                    resumeData.put("isRecording", true);
+                    resumeData.put("status", "recording");
+                    eventManager.emitRecordingStateChange("recording", resumeData);
+                }
+
+                if (call != null) call.resolve();
+            } else {
+                // If segment rolling manager is null, recreate it
+                Log.d(TAG, "Segment rolling manager not initialized, recreating for resume");
+                try {
+                    startSegmentRollingRecording();
+                    Log.d(TAG, "Segment rolling recording resumed with fresh session");
+                    if (call != null) call.resolve();
+                } catch (Exception ex) {
+                    Log.e(TAG, "Failed to start fresh segment rolling session", ex);
+                    if (call != null) call.reject("Failed to resume recording: " + ex.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to resume recording", e);
+            if (call != null) call.reject("Failed to resume recording: " + e.getMessage());
         }
     }
 }

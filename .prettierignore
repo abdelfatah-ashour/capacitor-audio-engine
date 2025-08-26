@@ -1,1 +1,7 @@
-example-app
+example-app/node_modules/
+example-app/dist/
+example-app/www/
+example-app/build/
+example-app/coverage/
+example-app/android/
+example-app/ios/

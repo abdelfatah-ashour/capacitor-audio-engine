@@ -1,0 +1,13 @@
+{
+	"appId": "io.ionic.starter",
+	"appName": "example-app",
+	"webDir": "www",
+	"packageClassList": [
+		"AppPlugin",
+		"FilesystemPlugin",
+		"HapticsPlugin",
+		"KeyboardPlugin",
+		"CapacitorAudioEnginePlugin",
+		"StatusBarPlugin"
+	]
+}

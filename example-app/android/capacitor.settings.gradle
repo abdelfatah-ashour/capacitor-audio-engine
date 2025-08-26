@@ -15,7 +15,7 @@ include ':capacitor-keyboard'
 project(':capacitor-keyboard').projectDir = new File('../node_modules/@capacitor/keyboard/android')
 
 include ':capacitor-audio-engine'
-project(':capacitor-audio-engine').projectDir = new File('../node_modules/capacitor-audio-engine/android')
+project(':capacitor-audio-engine').projectDir = new File('../../android')
 
 include ':capacitor-status-bar'
 project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacitor/status-bar/android')

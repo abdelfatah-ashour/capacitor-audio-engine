@@ -7,22 +7,22 @@ let package = Package(
     products: [
         .library(
             name: "CaapcitorNativeAudio",
-            targets: ["NativeAudioPlugin"])
+            targets: ["CapacitorAudioEngine"])
     ],
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", from: "7.0.0")
     ],
     targets: [
         .target(
-            name: "NativeAudioPlugin",
+            name: "CapacitorAudioEngine",
             dependencies: [
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm")
             ],
-            path: "ios/Sources/NativeAudioPlugin"),
+            path: "ios/Sources/CapacitorAudioEngine"),
         .testTarget(
             name: "NativeAudioPluginTests",
-            dependencies: ["NativeAudioPlugin"],
+            dependencies: ["CapacitorAudioEngine"],
             path: "ios/Tests/NativeAudioPluginTests")
     ]
 )

@@ -5,172 +5,181 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ServiceInfo;
-import android.os.Build;
+import android.content.IntentFilter;
+import android.content.BroadcastReceiver;
+import android.os.Binder;
 import android.os.IBinder;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
 
 /**
- * Background service for long-running audio recording operations.
- * This service ensures that recording can continue even when the app is in the background.
- *
- * Features:
- * - Foreground service for uninterrupted recording
- * - Handles Android 10+ background restrictions
- * - Manages recording state across app lifecycle
+ * Foreground service for continuous audio recording even when screen is locked
+ * Handles screen lock/unlock events to maintain proper recording state
  */
-public class AudioRecordingService extends Service {
+public class AudioRecordingService extends Service implements RecordingService {
     private static final String TAG = "AudioRecordingService";
-    private static final String CHANNEL_ID = "audio_recording_channel";
+    private static final String CHANNEL_ID = "AudioRecordingChannel";
     private static final int NOTIFICATION_ID = 1001;
 
-    public static final String ACTION_START_RECORDING = "com.capacitor.audioengine.START_RECORDING";
-    public static final String ACTION_STOP_RECORDING = "com.capacitor.audioengine.STOP_RECORDING";
-    public static final String ACTION_PAUSE_RECORDING = "com.capacitor.audioengine.PAUSE_RECORDING";
-    public static final String ACTION_RESUME_RECORDING = "com.capacitor.audioengine.RESUME_RECORDING";
+    // Interface moved to separate file to avoid circular dependencies
 
+    private final IBinder binder = new LocalBinder();
+    private RecordingServiceListener listener;
+    private BroadcastReceiver screenStateReceiver;
+    private boolean isScreenLocked = false;
     private boolean isRecordingActive = false;
+
+    public class LocalBinder extends Binder implements ServiceBinder {
+        @Override
+        public RecordingService getService() {
+            return AudioRecordingService.this;
+        }
+    }
 
     @Override
     public void onCreate() {
         super.onCreate();
         Log.d(TAG, "AudioRecordingService created");
         createNotificationChannel();
+        registerScreenStateReceiver();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && intent.getAction() != null) {
-            String action = intent.getAction();
-            Log.d(TAG, "Service received action: " + action);
+        Log.d(TAG, "AudioRecordingService started");
 
-            switch (action) {
-                case ACTION_START_RECORDING:
-                    startForegroundRecording();
-                    break;
-                case ACTION_STOP_RECORDING:
-                    stopRecording();
-                    break;
-                case ACTION_PAUSE_RECORDING:
-                    pauseRecording();
-                    break;
-                case ACTION_RESUME_RECORDING:
-                    resumeRecording();
-                    break;
-            }
+        String action = intent != null ? intent.getAction() : null;
+        if ("START_RECORDING".equals(action)) {
+            startForegroundRecording();
+        } else if ("STOP_RECORDING".equals(action)) {
+            stopForegroundRecording();
         }
 
-        // Return START_NOT_STICKY so service doesn't restart if killed during recording
-        // The plugin will manage service lifecycle appropriately
-        return START_NOT_STICKY;
+        return START_STICKY; // Restart if killed
     }
 
     @Override
     public IBinder onBind(Intent intent) {
-        // This service doesn't provide binding
-        return null;
+        return binder;
     }
 
     @Override
     public void onDestroy() {
-        super.onDestroy();
         Log.d(TAG, "AudioRecordingService destroyed");
-        isRecordingActive = false;
+        unregisterScreenStateReceiver();
+        super.onDestroy();
     }
 
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "Audio Recording Service",
-                NotificationManager.IMPORTANCE_LOW
-            );
-            channel.setDescription("Handles background audio recording operations");
-            channel.setSound(null, null); // No sound for recording notifications
-            channel.enableVibration(false);
-
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
-            }
-        }
+    public void setRecordingServiceListener(RecordingServiceListener listener) {
+        this.listener = listener;
     }
 
-    private void startForegroundRecording() {
+    public void startForegroundRecording() {
         Log.d(TAG, "Starting foreground recording service");
         isRecordingActive = true;
 
-        Notification notification = createRecordingNotification("Recording audio...");
+        Notification notification = createRecordingNotification();
+        startForeground(NOTIFICATION_ID, notification);
 
-        // Use FOREGROUND_SERVICE_TYPE_MICROPHONE for Android 10+ (API 29+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 10+ (API 29+) - all versions use the same approach
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
-        } else {
-            // Android 9 and below
-            startForeground(NOTIFICATION_ID, notification);
+        if (listener != null) {
+            listener.onRecordingStateChanged(true);
         }
     }
 
-    private void pauseRecording() {
-        Log.d(TAG, "Pausing recording service");
-        if (isRecordingActive) {
-            Notification notification = createRecordingNotification("Recording paused");
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.notify(NOTIFICATION_ID, notification);
-            }
-        }
-    }
-
-    private void resumeRecording() {
-        Log.d(TAG, "Resuming recording service");
-        if (isRecordingActive) {
-            Notification notification = createRecordingNotification("Recording resumed...");
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.notify(NOTIFICATION_ID, notification);
-            }
-        }
-    }
-
-    private void stopRecording() {
-        Log.d(TAG, "Stopping recording service");
+    public void stopForegroundRecording() {
+        Log.d(TAG, "Stopping foreground recording service");
         isRecordingActive = false;
+
         stopForeground(true);
         stopSelf();
-    }
 
-    private Notification createRecordingNotification(String contentText) {
-        // Create intent to return to app when notification is tapped
-        Intent intent = new Intent();
-        intent.setAction(Intent.ACTION_MAIN);
-        intent.addCategory(Intent.CATEGORY_LAUNCHER);
-        intent.setPackage(getPackageName());
-
-        PendingIntent pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            intent,
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ?
-                PendingIntent.FLAG_IMMUTABLE : PendingIntent.FLAG_UPDATE_CURRENT
-        );
-
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Audio Recording")
-            .setContentText(contentText)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now) // Use system microphone icon
-            .setContentIntent(pendingIntent)
-            .setOngoing(true) // Cannot be dismissed by user
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .build();
+        if (listener != null) {
+            listener.onRecordingStateChanged(false);
+        }
     }
 
     public boolean isRecordingActive() {
         return isRecordingActive;
+    }
+
+    public boolean isScreenLocked() {
+        return isScreenLocked;
+    }
+
+    private void createNotificationChannel() {
+        NotificationManager notificationManager = getSystemService(NotificationManager.class);
+
+        if (notificationManager.getNotificationChannel(CHANNEL_ID) == null) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "Audio Recording",
+                NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Ongoing audio recording");
+            channel.setSound(null, null); // Silent
+            notificationManager.createNotificationChannel(channel);
+        }
+    }
+
+    private Notification createRecordingNotification() {
+        // Create intent to return to app when notification is tapped
+        Intent intent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Audio Recording")
+            .setContentText("Recording in progress...")
+            .setSmallIcon(android.R.drawable.ic_media_play) // Use system icon
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setSilent(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build();
+    }
+
+    private void registerScreenStateReceiver() {
+        screenStateReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String action = intent.getAction();
+
+                if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                    Log.d(TAG, "Screen locked - maintaining recording in background");
+                    isScreenLocked = true;
+                    if (listener != null) {
+                        listener.onScreenLocked();
+                    }
+                } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
+                    Log.d(TAG, "Screen unlocked - recording continues");
+                    isScreenLocked = false;
+                    if (listener != null) {
+                        listener.onScreenUnlocked();
+                    }
+                }
+            }
+        };
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        registerReceiver(screenStateReceiver, filter);
+
+        Log.d(TAG, "Screen state receiver registered");
+    }
+
+    private void unregisterScreenStateReceiver() {
+        if (screenStateReceiver != null) {
+            try {
+                unregisterReceiver(screenStateReceiver);
+                Log.d(TAG, "Screen state receiver unregistered");
+            } catch (Exception e) {
+                Log.w(TAG, "Error unregistering screen state receiver", e);
+            }
+            screenStateReceiver = null;
+        }
     }
 }
