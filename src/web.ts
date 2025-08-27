@@ -67,7 +67,6 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   /**
    * Start recording audio from the device's microphone.
    * @param options - Recording options
-
    * @returns Promise that resolves when recording starts successfully
    * @platform web Not supported
    */

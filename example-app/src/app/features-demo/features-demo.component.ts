@@ -216,16 +216,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     bitrate: 128000, // AudioBitrate.HIGH
   });
 
-  // Quality preset signal for easy configuration
-  protected readonly selectedQualityPreset = signal<string | undefined>(undefined);
-
-  // Computed property for selected quality preset description
-  protected readonly selectedQualityDescription = computed(() => {
-    const preset = this.selectedQualityPreset();
-    if (!preset) return 'Use individual settings below for custom configuration';
-    return this.qualityPresetOptions.find(p => p.value === preset)?.description || '';
-  });
-
   // Segment rolling signals
   protected readonly isSegmentRollingEnabled = signal(false);
   protected readonly maxDurationSeconds = signal<number | undefined>(undefined);
@@ -349,7 +339,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   // Option arrays for button groups (using enum values)
   // For usage with TypeScript, import and use:
-  // import { AudioSampleRate, AudioChannels, AudioBitrate, AudioQuality } from 'capacitor-audio-engine';
+  // import { AudioSampleRate, AudioChannels, AudioBitrate } from 'capacitor-audio-engine';
   protected readonly sampleRateOptions = [
     { value: 8000, label: '8k', enum: 'VOICE_8K' }, // AudioSampleRate.VOICE_8K
     { value: 16000, label: '16k', enum: 'VOICE_16K' }, // AudioSampleRate.VOICE_16K
@@ -371,12 +361,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     { value: 256000, label: '256k', enum: 'VERY_HIGH' }, // AudioBitrate.VERY_HIGH
   ];
 
-  protected readonly qualityPresetOptions = [
-    { value: 'low', label: 'Low Quality', description: '16kHz, 32kbps - Voice notes' }, // AudioQuality.LOW
-    { value: 'medium', label: 'Medium Quality', description: '22.05kHz, 64kbps - Balanced' }, // AudioQuality.MEDIUM
-    { value: 'high', label: 'High Quality', description: '44.1kHz, 128kbps - Music' }, // AudioQuality.HIGH
-  ];
-
   protected readonly maxDurationOptions = [
     { value: 5, label: '5s' },
     { value: 30, label: '30s' },
@@ -384,6 +368,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     { value: 120, label: '2m' },
     { value: 300, label: '5m' },
     { value: 600, label: '10m' },
+    { value: 900, label: '15m' },
+    { value: 1200, label: '20m' },
+    { value: 1800, label: '30m' },
   ];
 
   // Computed signals
@@ -553,9 +540,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       await CapacitorAudioEngine.startRecording({
         ...options,
         ...segmentOptions,
-        sampleRate: 48000, // AudioSampleRate.CD_44K
-        channels: 1, // AudioChannels.MONO
-        bitrate: 128000, // AudioBitrate.HIGH
       });
 
       this.recordingStatus.set('recording');
@@ -1204,49 +1188,14 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Recording options update methods
   updateSampleRate(value: number): void {
     this.recordingOptions.update(opts => ({ ...opts, sampleRate: value }));
-    this.selectedQualityPreset.set(undefined); // Clear preset when manually changed
   }
 
   updateChannels(value: number): void {
     this.recordingOptions.update(opts => ({ ...opts, channels: value }));
-    this.selectedQualityPreset.set(undefined); // Clear preset when manually changed
   }
 
   updateBitrate(value: number): void {
     this.recordingOptions.update(opts => ({ ...opts, bitrate: value }));
-    this.selectedQualityPreset.set(undefined); // Clear preset when manually changed
-  }
-
-  updateQualityPreset(preset: string): void {
-    this.selectedQualityPreset.set(preset);
-
-    // Apply quality preset values to recording options
-    switch (preset) {
-      case 'low':
-        this.recordingOptions.update(opts => ({
-          ...opts,
-          sampleRate: 16000, // AudioSampleRate.VOICE_16K
-          bitrate: 32000, // AudioBitrate.LOW
-          quality: preset as any, // Ensure compatibility with enum type
-        }));
-        break;
-      case 'medium':
-        this.recordingOptions.update(opts => ({
-          ...opts,
-          sampleRate: 22050, // AudioSampleRate.STANDARD_22K
-          bitrate: 64000, // AudioBitrate.MEDIUM
-          quality: preset as any, // Ensure compatibility with enum type
-        }));
-        break;
-      case 'high':
-        this.recordingOptions.update(opts => ({
-          ...opts,
-          sampleRate: 44100, // AudioSampleRate.CD_44K
-          bitrate: 128000, // AudioBitrate.HIGH
-          quality: preset as any, // Ensure compatibility with enum type
-        }));
-        break;
-    }
   }
 
   updateMaxDuration(value: number): void {
@@ -1380,6 +1329,10 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       position: 'bottom',
     });
     await toast.present();
+  }
+
+  async removeAllFiles(): Promise<void> {
+    this.recordedFiles.set([]);
   }
 
   // Lifecycle

@@ -151,15 +151,6 @@ export enum AudioBitrate {
   VERY_HIGH = 256000,
 }
 
-export enum AudioQuality {
-  /** Low quality: 16kHz, 32kbps - smallest files, suitable for voice notes */
-  LOW = 'low',
-  /** Medium quality: 22.05kHz, 64kbps - balanced quality/size (default) */
-  MEDIUM = 'medium',
-  /** High quality: 44.1kHz, 128kbps - higher quality, larger files */
-  HIGH = 'high',
-}
-
 export interface RecordingOptions {
   /**
    * Audio sample rate (Hz). Default: AudioSampleRate.STANDARD_22K (optimized for smaller file sizes)
@@ -173,13 +164,7 @@ export interface RecordingOptions {
    * Audio bitrate (bps). Default: AudioBitrate.MEDIUM (optimized for smaller file sizes)
    */
   bitrate?: AudioBitrate | number;
-  /**
-   * Audio quality preset. If specified, overrides individual sampleRate and bitrate settings.
-   * - AudioQuality.LOW: 16kHz, 32kbps - smallest files, suitable for voice notes
-   * - AudioQuality.MEDIUM: 22.05kHz, 64kbps - balanced quality/size (default)
-   * - AudioQuality.HIGH: 44.1kHz, 128kbps - higher quality, larger files
-   */
-  quality?: AudioQuality;
+
   /**
    * Maximum recording duration in seconds.
    * When set, enables segment rolling mode:

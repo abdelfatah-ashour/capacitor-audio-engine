@@ -216,34 +216,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         cleanupRecordingState();
 
         // Get and validate recording options
-        String quality = call.getString("quality");
         int sampleRate = getIntegerSafely(call, "sampleRate", AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE);
         int channels = getIntegerSafely(call, "channels", AudioEngineConfig.Recording.DEFAULT_CHANNELS);
         int bitrate = getIntegerSafely(call, "bitrate", AudioEngineConfig.Recording.DEFAULT_BITRATE);
-
-        // Apply quality preset if specified (overrides individual settings)
-        if (quality != null) {
-            switch (quality.toLowerCase()) {
-                case "low":
-                    sampleRate = 16000;  // AudioSampleRate.VOICE_16K
-                    bitrate = 32000;     // AudioBitrate.LOW
-                    Log.d(TAG, "Applied LOW quality preset: 16kHz, 32kbps");
-                    break;
-                case "medium":
-                    sampleRate = 22050;  // AudioSampleRate.STANDARD_22K
-                    bitrate = 64000;     // AudioBitrate.MEDIUM
-                    Log.d(TAG, "Applied MEDIUM quality preset: 22.05kHz, 64kbps");
-                    break;
-                case "high":
-                    sampleRate = 44100;  // AudioSampleRate.CD_44K
-                    bitrate = 128000;    // AudioBitrate.HIGH
-                    Log.d(TAG, "Applied HIGH quality preset: 44.1kHz, 128kbps");
-                    break;
-                default:
-                    Log.w(TAG, "Unknown quality preset: " + quality + ", using individual settings");
-                    break;
-            }
-        }
 
         // Create recording configuration
         recordingConfig = new AudioRecordingConfig.Builder()
@@ -252,7 +227,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             .bitrate(bitrate)
             .build();
 
-        Log.d(TAG, "Using config - Quality: " + quality + ", SampleRate: " + sampleRate +
+        Log.d(TAG, "Using config - SampleRate: " + sampleRate +
               ", Channels: " + channels + ", Bitrate: " + bitrate);
 
         Integer maxDuration = call.getInt("maxDuration"); // Can be null
@@ -675,12 +650,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             int ch = (recordingConfig != null) ? recordingConfig.getChannels() : AudioEngineConfig.Recording.DEFAULT_CHANNELS;
             int br = (recordingConfig != null) ? recordingConfig.getBitrate() : AudioEngineConfig.Recording.DEFAULT_BITRATE;
 
-            // Quality-aware defaults based on recording config
-            boolean lowQuality = (sr <= 16000) || (br <= 32000);
-
-            // Waveform visualization settings with quality-based defaults
-            int numberOfBars = lowQuality ? 64 : 128;
-            double debounceTime = lowQuality ? 0.1 : 0.05;
+            // Waveform visualization settings (defaults)
+            int numberOfBars = 128;
+            double debounceTime = 0.05;
             float debounceInSeconds = (float) debounceTime;
 
             // Speech detection settings (defaults)

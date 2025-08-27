@@ -241,30 +241,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             return
         }
 
-        // Apply quality preset if specified
-        var sampleRate = call.getInt("sampleRate") ?? Int(AudioEngineConstants.defaultSampleRate)
-        var bitrate = call.getInt("bitrate") ?? AudioEngineConstants.defaultBitrate
-
-        if let quality = call.getString("quality") {
-            switch quality.lowercased() {
-            case "low":
-                sampleRate = 16000   // AudioSampleRate.VOICE_16K
-                bitrate = 32000      // AudioBitrate.LOW
-                log("Applied LOW quality preset: 16kHz, 32kbps")
-            case "medium":
-                sampleRate = 22050   // AudioSampleRate.STANDARD_22K
-                bitrate = 64000      // AudioBitrate.MEDIUM
-                log("Applied MEDIUM quality preset: 22.05kHz, 64kbps")
-            case "high":
-                sampleRate = 44100   // AudioSampleRate.CD_44K
-                bitrate = 128000     // AudioBitrate.HIGH
-                log("Applied HIGH quality preset: 44.1kHz, 128kbps")
-            default:
-                // Keep user-specified or default values
-                log("Unknown quality preset: \(quality), using individual settings")
-                break
-            }
-        }
+        // Get recording settings
+        let sampleRate = call.getInt("sampleRate") ?? Int(AudioEngineConstants.defaultSampleRate)
+        let bitrate = call.getInt("bitrate") ?? AudioEngineConstants.defaultBitrate
 
         let settings: [String: Any] = [
             "sampleRate": sampleRate,
@@ -426,12 +405,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     @objc func configureWaveform(_ call: CAPPluginCall) {
-        // Derive quality-based defaults from current recording configuration
-        let lowQuality = (currentRecordingSampleRate <= 16000) || (currentRecordingBitrate <= 32000)
-
-        // Waveform visualization settings (quality-aware defaults)
-        let numberOfBars = lowQuality ? 64 : 128
-        let debounceTime = lowQuality ? 0.1 : 0.05
+        // Waveform visualization settings (defaults)
+        let numberOfBars = 128
+        let debounceTime = 0.05
         let debounceInSeconds = Float(debounceTime)
 
         // Speech detection settings (defaults)

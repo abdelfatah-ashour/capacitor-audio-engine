@@ -47,24 +47,5 @@ internal struct AudioEngineConstants {
         static let playback = "PlaybackManager"
     }
 
-    // MARK: - Quality Presets
-    struct QualityPresets {
-        struct Low {
-            static let sampleRate: Double = 16000
-            static let bitrate = 32000
-            static let channels = 1
-        }
 
-        struct Medium {
-            static let sampleRate: Double = 22050
-            static let bitrate = 64000
-            static let channels = 1
-        }
-
-        struct High {
-            static let sampleRate: Double = 44100
-            static let bitrate = 128000
-            static let channels = 1
-        }
-    }
 }

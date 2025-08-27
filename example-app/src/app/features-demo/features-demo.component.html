@@ -194,39 +194,6 @@
                 <ion-card-title>Recording Options</ion-card-title>
               </ion-card-header>
               <ion-card-content>
-                <!-- Quality Presets -->
-                <ion-item>
-                  <ion-label>Quality Presets</ion-label>
-                  <ion-note>{{ selectedQualityPreset() || 'Custom' }}</ion-note>
-                </ion-item>
-                <ion-item>
-                  <ion-grid>
-                    <ion-row>
-                      @for (preset of qualityPresetOptions; track preset.value) {
-                        <ion-col size="4">
-                          <ion-button
-                            size="small"
-                            [fill]="selectedQualityPreset() === preset.value ? 'solid' : 'outline'"
-                            [color]="
-                              selectedQualityPreset() === preset.value ? 'primary' : 'medium'
-                            "
-                            (click)="updateQualityPreset(preset.value)"
-                          >
-                            {{ preset.label }}
-                          </ion-button>
-                        </ion-col>
-                      }
-                    </ion-row>
-                    <ion-row>
-                      <ion-col>
-                        <ion-note class="ion-text-center">
-                          {{ selectedQualityDescription() }}
-                        </ion-note>
-                      </ion-col>
-                    </ion-row>
-                  </ion-grid>
-                </ion-item>
-
                 <ion-item>
                   <ion-label>Sample Rate (Hz)</ion-label>
                   <ion-note>{{ recordingOptions().sampleRate }} Hz</ion-note>
@@ -356,7 +323,11 @@
               </ion-card-content>
             </ion-card>
           }
-
+          <!-- Remove all files -->
+          <ion-button expand="block" fill="outline" (click)="removeAllFiles()">
+            <ion-icon name="trash"></ion-icon>
+            Remove All Files
+          </ion-button>
           <!-- Recorded Files -->
           @if (recordedFiles().length > 0) {
             <ion-card>
