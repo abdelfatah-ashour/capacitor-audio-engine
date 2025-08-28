@@ -66,10 +66,9 @@ public class AudioRecordingConfig {
      * Builder pattern for creating AudioRecordingConfig instances
      */
     public static class Builder {
-        private int sampleRate = 22050;  // Reduced from 44100 for smaller files
+        private int sampleRate = 48000;
         private int channels = 1;
-        private int bitrate = 64000;      // Reduced from 128000 for smaller files
-
+        private int bitrate = 128000;
 
         private String outputFormat = "m4a";
 

@@ -206,19 +206,19 @@ export interface RecordingOptions {
   /**
    * Maximum recording duration in seconds.
    * When set, enables segment rolling mode:
-   * - Records in 30-second segments
-   * - Maintains rolling buffer of last 10 minutes (20 segments)
-   * - Automatically merges segments when recording stops
-   * If not set, uses linear recording mode.
+   * - Records in multi-minute segments (default 5 minutes each)
+   * - Maintains a rolling buffer based on the specified max duration
+   * - Prior segments are already finalized; stop only closes the current segment for minimal latency
+   * If not set, segment rolling still records in segments and the final file will include the full session.
    */
   maxDuration?: number;
   /**
    * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
    *
    * Enhanced Recording Features:
-   * - Automatic segment rolling (30-second segments) for improved reliability
-   * - Rolling window retention (10 minutes max) for efficient memory usage
-   * - Automatic segment merging when recording stops
+   * - Automatic segment rolling (multi-minute segments, default 5 minutes) for improved reliability and minimal stop latency
+   * - Rolling window retention based on maxDuration for efficient memory usage
+   * - Automatic segment merging when needed (most stops only close the current segment)
    * - Better handling of long recording sessions and interruptions
    */
 }
@@ -1237,10 +1237,10 @@ await CapacitorAudioEngine.startRecording({
 
 When `maxDuration` is set:
 
-- Records in 30-second segments
-- Maintains a rolling buffer of the last 10 minutes
-- Automatically merges segments when recording stops
-- Improves reliability for long recording sessions
+- Records in multi-minute segments (default 5 minutes each)
+- Maintains a rolling buffer based on the specified maxDuration
+- Prior segments are already finalized; stop typically only closes the current segment for near-instant stop
+- Improves reliability and keeps UI responsive for long recording sessions
 
 ```
 await recorder.startRecording();

@@ -256,9 +256,16 @@ class SegmentRollingManager: NSObject {
         log("Getting audio session instance")
         let audioSession = AVAudioSession.sharedInstance()
         log("Setting audio session category")
+        // Configure category and mode for recording per checklist
         try audioSession.setCategory(.playAndRecord,
-                                   mode: .measurement,
-                                   options: [.allowBluetooth, .defaultToSpeaker, .mixWithOthers, .duckOthers])
+                                   mode: .default,
+                                   options: [.allowBluetooth, .duckOthers])
+        // Apply preferred hardware parameters
+        if let sr = recordingSettings[AVSampleRateKey] as? Double {
+            try? audioSession.setPreferredSampleRate(sr)
+        }
+        // 10–20 ms IO buffer for low latency and stable CPU
+        try? audioSession.setPreferredIOBufferDuration(0.02)
         log("Activating audio session")
         try audioSession.setActive(true)
         recordingSession = audioSession
@@ -291,13 +298,13 @@ class SegmentRollingManager: NSObject {
         try startNewSegment()
         log("startNewSegment() completed successfully")
 
-        // Start segment timer for rotating segments every 5 minutes
+        // Start segment timer for rotating segments every segmentDuration (default 10 minutes)
         DispatchQueue.main.async {
             self.segmentTimer = Timer.scheduledTimer(withTimeInterval: AudioEngineConstants.segmentDuration, repeats: true) { _ in
                 self.rotateSegment()
             }
         }
-        log("Started segment rolling with 5-minute intervals")
+        log("Started segment rolling with 10-minute intervals")
     }
 
     /**
@@ -440,10 +447,10 @@ class SegmentRollingManager: NSObject {
                 throw SegmentRecordingError.noRecordingToStop
             }
 
-            // Stop timer
-            DispatchQueue.main.sync {
-                segmentTimer?.invalidate()
-                segmentTimer = nil
+            // Stop timer (async on main to avoid potential deadlocks when called from main thread)
+            DispatchQueue.main.async {
+                self.segmentTimer?.invalidate()
+                self.segmentTimer = nil
             }
 
             // Stop current segment recording with aggressive cleanup
@@ -986,7 +993,7 @@ class SegmentRollingManager: NSObject {
             guard self.isActive else { return }
 
             let totalElapsed = self.recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
-            self.throttledLog("Rotating segment \(self.segmentCounter) after 5min (total elapsed: \(totalElapsed)s)",
+            self.throttledLog("Rotating segment \(self.segmentCounter) after 10min (total elapsed: \(totalElapsed)s)",
                             throttleKey: "segment_rotation", maxFrequency: 5.0)
 
             // Stop current segment with aggressive cleanup
@@ -1057,8 +1064,8 @@ class SegmentRollingManager: NSObject {
             effectiveMaxSegments = segmentsNeeded
             log("Max duration: \(maxDuration)s, segments needed: \(segmentsNeeded) (includes trimming buffer)")
         } else {
-            // Fallback to default (should not happen in segment rolling mode)
-            effectiveMaxSegments = AudioEngineConstants.maxSegments
+            // Unlimited when no maxDuration is provided (keep all segments)
+            effectiveMaxSegments = Int.max
         }
 
         // Batch remove oldest segments if over limit to minimize filesystem overhead

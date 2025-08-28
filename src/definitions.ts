@@ -168,19 +168,19 @@ export interface RecordingOptions {
   /**
    * Maximum recording duration in seconds.
    * When set, enables segment rolling mode:
-   * - Records in 30-second segments
-   * - Maintains rolling buffer of last 10 minutes (20 segments)
-   * - Automatically merges segments when recording stops
-   * If not set, uses linear recording mode.
+   * - Records in multi-minute segments (2–5 minutes each, default 5 minutes)
+   * - Maintains a rolling buffer based on the specified max duration
+   * - Automatically finalizes prior segments; stop only closes the current segment for minimal latency
+   * If not set, segment rolling still improves performance by recording in segments, and the final file will include the full session.
    */
   maxDuration?: number;
   /**
    * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
    *
    * Enhanced Recording Features:
-   * - Automatic segment rolling (30-second segments) for improved reliability
-   * - Rolling window retention (10 minutes max) for efficient memory usage
-   * - Automatic segment merging when recording stops
+   * - Automatic segment rolling (multi-minute segments, default 5 minutes) for improved reliability and minimal stop latency
+   * - Rolling window retention based on maxDuration for efficient memory usage
+   * - Automatic segment merging when needed (most stops only close the current segment)
    * - Better handling of long recording sessions and interruptions
    */
 }

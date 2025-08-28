@@ -372,7 +372,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
                 // Generate base64 data for the trimmed file
                 let audioData = try Data(contentsOf: trimmedURL)
-                let base64String = try await audioData.base64StringWithOptionalCompression(useCompression: true)
+                let base64String = try await audioData.base64StringWithOptionalCompression(useCompression: false)
                 audioInfo["base64"] = base64String
 
                 call.resolve(audioInfo)

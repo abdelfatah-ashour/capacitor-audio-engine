@@ -834,8 +834,34 @@ class RecordingManager: NSObject {
                 // Check if task was cancelled before expensive operation
                 try Task.checkCancellation()
 
-                // Generate compressed base64 asynchronously
-                let compressedBase64 = try await self.generateCompressedBase64Async(from: fileToReturn)
+                // Generate compressed base64 asynchronously (non-fatal)
+                var compressedBase64: String = ""
+                do {
+                    compressedBase64 = try await self.generateCompressedBase64Async(from: fileToReturn)
+                } catch let recErr as RecordingError {
+                    switch recErr {
+                    case .memoryPressure:
+                        self.log("Base64 generation skipped due to memory pressure; proceeding without base64")
+                        compressedBase64 = ""
+                    case .compressionFailed(let underlying):
+                        if let underlyingRecErr = underlying as? RecordingError, case .memoryPressure = underlyingRecErr {
+                            self.log("Base64 generation skipped (compression failed due to memory pressure); proceeding without base64")
+                            compressedBase64 = ""
+                        } else {
+                            // For other compression failures, log and proceed without base64
+                            self.log("Base64 generation failed: \(recErr.localizedDescription). Proceeding without base64")
+                            compressedBase64 = ""
+                        }
+                    default:
+                        // For other recording errors, log and proceed without base64 to avoid failing stopRecording
+                        self.log("Base64 generation encountered error: \(recErr.localizedDescription). Proceeding without base64")
+                        compressedBase64 = ""
+                    }
+                } catch {
+                    // Any other errors: log and proceed without base64
+                    self.log("Base64 generation threw unexpected error: \(error.localizedDescription). Proceeding without base64")
+                    compressedBase64 = ""
+                }
 
                 // Check if task was cancelled before creating response
                 try Task.checkCancellation()
@@ -923,7 +949,7 @@ class RecordingManager: NSObject {
                     // Generate base64 with optional compression
                     Task {
                         do {
-                            let base64String = try await audioData.base64StringWithOptionalCompression(useCompression: true)
+                            let base64String = try await audioData.base64StringWithOptionalCompression(useCompression: false)
                             let processingTime = CFAbsoluteTimeGetCurrent() - startTime
 
                             print("[RecordingManager] Base64 generation completed in \(String(format: "%.3f", processingTime))s")
