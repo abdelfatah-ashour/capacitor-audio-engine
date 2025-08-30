@@ -370,10 +370,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
                 audioInfo["uri"] = trimmedURL.absoluteString
                 audioInfo["webPath"] = "capacitor://localhost/_capacitor_file_" + trimmedURL.path
 
-                // Generate base64 data for the trimmed file
-                let audioData = try Data(contentsOf: trimmedURL)
-                let base64String = try await audioData.base64StringWithOptionalCompression(useCompression: false)
-                audioInfo["base64"] = base64String
 
                 call.resolve(audioInfo)
             } catch {

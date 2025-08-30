@@ -13,7 +13,7 @@ protocol RecordingManagerDelegate: AnyObject {
     func recordingDidEncounterError(_ error: Error)
 
     /// Called when recording finishes and file processing is complete
-    /// - Parameter info: Dictionary containing file information, base64 data, and metadata
+    /// - Parameter info: Dictionary containing file information and metadata
     func recordingDidFinish(_ info: [String: Any])
 
     /// Called when recording state changes (recording, paused, stopped)
@@ -27,12 +27,11 @@ protocol RecordingManagerDelegate: AnyObject {
  * RecordingManager handles audio recording operations with support for:
  * - Segment rolling for all recordings with automatic cleanup
  * - Asynchronous file processing to prevent UI blocking
- * - Compressed base64 generation with memory management
+ * - File processing and metadata generation
  * - Proper resource cleanup and error handling
  *
  * Performance characteristics:
  * - Non-blocking stopRecording() with async processing
- * - Memory-efficient base64 generation with streaming for large files
  * - Automatic resource cleanup on deallocation
  * - Thread-safe operations using dedicated dispatch queue
  */
@@ -497,15 +496,14 @@ class RecordingManager: NSObject {
      * Performance Characteristics:
      * - Returns immediately (non-blocking)
      * - File processing happens asynchronously
-     * - Base64 generation uses streaming for memory efficiency
+    * - File processing happens asynchronously
      * - Supports cancellation of in-progress operations
      *
      * Processing Steps:
      * 1. Stop recording (segment rolling or linear)
      * 2. Merge segments if using segment rolling mode
      * 3. Calculate actual duration from audio file
-     * 4. Generate compressed base64 data asynchronously
-     * 5. Create response with file info and metadata
+     * 4. Create response with file info and metadata
      *
      * Thread Safety: State changes are synchronized on state queue
      *
@@ -516,7 +514,6 @@ class RecordingManager: NSObject {
      * Error Conditions:
      * - No active recording
      * - File processing failure
-     * - Compression/base64 generation failure
      * - Memory pressure during processing
      */
     func stopRecording() {
@@ -851,45 +848,16 @@ class RecordingManager: NSObject {
                 // Check if task was cancelled before expensive operation
                 try Task.checkCancellation()
 
-                // Generate compressed base64 asynchronously (non-fatal)
-                var compressedBase64: String = ""
-                do {
-                    compressedBase64 = try await self.generateCompressedBase64Async(from: fileToReturn)
-                } catch let recErr as RecordingError {
-                    switch recErr {
-                    case .memoryPressure:
-                        self.log("Base64 generation skipped due to memory pressure; proceeding without base64")
-                        compressedBase64 = ""
-                    case .compressionFailed(let underlying):
-                        if let underlyingRecErr = underlying as? RecordingError, case .memoryPressure = underlyingRecErr {
-                            self.log("Base64 generation skipped (compression failed due to memory pressure); proceeding without base64")
-                            compressedBase64 = ""
-                        } else {
-                            // For other compression failures, log and proceed without base64
-                            self.log("Base64 generation failed: \(recErr.localizedDescription). Proceeding without base64")
-                            compressedBase64 = ""
-                        }
-                    default:
-                        // For other recording errors, log and proceed without base64 to avoid failing stopRecording
-                        self.log("Base64 generation encountered error: \(recErr.localizedDescription). Proceeding without base64")
-                        compressedBase64 = ""
-                    }
-                } catch {
-                    // Any other errors: log and proceed without base64
-                    self.log("Base64 generation threw unexpected error: \(error.localizedDescription). Proceeding without base64")
-                    compressedBase64 = ""
-                }
 
                 // Check if task was cancelled before creating response
                 try Task.checkCancellation()
 
-                // Create response with actual duration and compressed base64
+                // Create response with actual duration
                 let response = self.createRecordingResponseWithDuration(
                     fileToReturn: fileToReturn,
                     fileSize: fileSize,
                     modificationDate: modificationDate,
-                    durationInSeconds: durationInSeconds,
-                    compressedBase64: compressedBase64
+                    durationInSeconds: durationInSeconds
                 )
 
                 self.log("Created response with duration: \(durationInSeconds)s")
@@ -918,16 +886,6 @@ class RecordingManager: NSObject {
 
         let roundedDuration = round(durationInSeconds * AudioEngineConstants.durationRoundingFactor) / AudioEngineConstants.durationRoundingFactor
 
-        var base64Audio: String?
-        do {
-            let audioData = try Data(contentsOf: fileToReturn)
-            let base64String = audioData.base64EncodedString()
-            base64Audio = "data:audio/m4a;base64," + base64String
-        } catch {
-            log("Failed to encode audio file to base64: \(error.localizedDescription)")
-            base64Audio = nil
-        }
-
         return [
             "path": fileToReturn.path,
             "uri": fileToReturn.absoluteString,
@@ -939,58 +897,15 @@ class RecordingManager: NSObject {
             "channels": channels,
             "bitrate": bitrate,
             "createdAt": Int(modificationDate.timeIntervalSince1970 * AudioEngineConstants.timestampMultiplier),
-            "filename": fileToReturn.lastPathComponent,
-            "base64": base64Audio ?? ""
+            "filename": fileToReturn.lastPathComponent
         ]
-    }
-
-        /**
-     * Generate compressed base64 string asynchronously from audio file
-     * This provides faster response while maintaining quality
-     */
-    private func generateCompressedBase64Async(from fileURL: URL) async throws -> String {
-        let startTime = CFAbsoluteTimeGetCurrent()
-
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    // Read audio data efficiently
-                    let audioData = try Data(contentsOf: fileURL)
-                    let originalSize = audioData.count
-
-                    // Check memory pressure
-                    if originalSize > AudioEngineConstants.maxMemoryUsage {
-                        throw RecordingError.memoryPressure
-                    }
-
-                    // Generate base64 with optional compression
-                    Task {
-                        do {
-                            let base64String = try await audioData.base64StringWithOptionalCompression(useCompression: false)
-                            let processingTime = CFAbsoluteTimeGetCurrent() - startTime
-
-                            print("[RecordingManager] Base64 generation completed in \(String(format: "%.3f", processingTime))s")
-
-                            continuation.resume(returning: base64String)
-                        } catch {
-                            continuation.resume(throwing: error)
-                        }
-                    }
-
-                } catch {
-                    print("[RecordingManager] Failed to generate compressed base64: \(error.localizedDescription)")
-                    continuation.resume(throwing: RecordingError.compressionFailed(underlying: error))
-                }
-            }
-        }
     }
 
     private func createRecordingResponseWithDuration(
         fileToReturn: URL,
         fileSize: Int64,
         modificationDate: Date,
-        durationInSeconds: Double,
-        compressedBase64: String
+        durationInSeconds: Double
     ) -> [String: Any] {
         let sampleRate = getSampleRate()
         let channels = getChannels()
@@ -1009,8 +924,7 @@ class RecordingManager: NSObject {
             "channels": channels,
             "bitrate": bitrate,
             "createdAt": Int(modificationDate.timeIntervalSince1970 * AudioEngineConstants.timestampMultiplier),
-            "filename": fileToReturn.lastPathComponent,
-            "base64": compressedBase64
+            "filename": fileToReturn.lastPathComponent
         ]
     }
 

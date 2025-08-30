@@ -33,7 +33,6 @@ internal struct AudioEngineConstants {
     static let minValidFileSize: Int64 = 100  // Minimum file size to consider valid
     static let compressionThreshold: Int = 1024 * 1024  // 1MB - compress files larger than this
     static let maxMemoryUsage: Int = 30 * 1024 * 1024  // 30MB max memory usage
-    static let base64ChunkSize: Int = 1024 * 1024  // 1MB chunks for streaming
     static let compressionBufferSize: Int = 8192  // 8KB compression buffer
 
     // MARK: - Performance Thresholds

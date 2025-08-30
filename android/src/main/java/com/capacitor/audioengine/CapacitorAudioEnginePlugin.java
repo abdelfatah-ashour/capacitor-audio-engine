@@ -471,8 +471,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             // Perform trimming using AudioFileProcessor with clamped end time
             AudioFileProcessor.trimAudioFile(new File(actualPath), outputFile, startTime, actualEndTime);
 
-            // Return file info with base64 data (matching iOS behavior)
-            JSObject response = AudioFileProcessor.getAudioFileInfo(outputFile.getAbsolutePath(), true);
+            JSObject response = AudioFileProcessor.getAudioFileInfo(outputFile.getAbsolutePath());
             call.resolve(response);
 
         } catch (SecurityException e) {
@@ -932,16 +931,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 info.put("sampleRate", 22050);
                 info.put("channels", 1);
                 info.put("bitrate", 64000);
-            }
-
-            // Generate base64 data for the file
-            try {
-                String base64 = AudioFileProcessor.generateBase64FromFile(file);
-                info.put("base64", base64);
-                Log.d(TAG, "Generated base64 data for: " + file.getName());
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to generate base64 for file", e);
-                info.put("base64", ""); // Fallback to empty string on error
             }
 
             Log.d(TAG, "Created file info with duration: " + actualDuration + "s for: " + file.getName() +

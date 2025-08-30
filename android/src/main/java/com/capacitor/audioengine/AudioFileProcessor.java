@@ -131,13 +131,6 @@ public class AudioFileProcessor {
      * Get audio file information
      */
     public static JSObject getAudioFileInfo(String filePath) {
-        return getAudioFileInfo(filePath, false);
-    }
-
-    /**
-     * Get audio file information with optional base64 generation
-     */
-    public static JSObject getAudioFileInfo(String filePath, boolean includeBase64) {
         File file = new File(filePath);
         JSObject info = new JSObject();
 
@@ -180,19 +173,6 @@ public class AudioFileProcessor {
                 } catch (Exception e) {
                     Log.w(TAG, "Error with MediaMetadataRetriever", e);
                 }
-
-                // Generate base64 if requested
-                if (includeBase64) {
-                    try {
-                        String base64 = generateBase64FromFile(file);
-                        info.put("base64", base64);
-                    } catch (Exception e) {
-                        Log.w(TAG, "Failed to generate base64 for file: " + filePath, e);
-                        info.put("base64", ""); // Fallback to empty string
-                    }
-                } else {
-                    info.put("base64", ""); // Empty for performance
-                }
             }
         } catch (Exception e) {
             Log.e(TAG, "Error getting audio file info", e);
@@ -200,23 +180,6 @@ public class AudioFileProcessor {
         }
 
         return info;
-    }
-
-    /**
-     * Generate base64 data URI from audio file
-     */
-    public static String generateBase64FromFile(File file) throws Exception {
-        try (FileInputStream fis = new FileInputStream(file)) {
-            byte[] audioBytes = new byte[(int) file.length()];
-            int bytesRead = fis.read(audioBytes);
-
-            if (bytesRead != file.length()) {
-                throw new IOException("Failed to read complete file");
-            }
-
-            String base64Data = android.util.Base64.encodeToString(audioBytes, android.util.Base64.NO_WRAP);
-            return "data:audio/m4a;base64," + base64Data;
-        }
     }
 
     /**

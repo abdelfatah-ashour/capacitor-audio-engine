@@ -81,7 +81,7 @@ import type {
   WaveformData,
 } from 'capacitor-audio-engine';
 import { IntelligentWaveformComponent } from '../components/intelligent-waveform.component';
-
+import { Filesystem } from '@capacitor/filesystem';
 // Extended interface for demo to track segment rolling metadata
 interface AudioFileInfoWithMetadata extends AudioFileInfo {
   isSegmentRolled?: boolean;
@@ -581,7 +581,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
     try {
       const result = await CapacitorAudioEngine.stopRecording();
-
+      console.log('🚀 ~ FeaturesDemoComponent ~ stopRecording ~ result:', result);
       // Add metadata for segment rolling demo
       const fileWithMetadata: AudioFileInfoWithMetadata = {
         ...result,

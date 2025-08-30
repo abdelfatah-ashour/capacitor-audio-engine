@@ -197,17 +197,6 @@ export interface AudioFileInfo {
   bitrate: number;
   createdAt: number;
   filename: string;
-  /**
-   * Base64-encoded audio data with MIME prefix (Data URI format)
-   *
-   * iOS may return compressed data for better performance:
-   * - Compressed: "data:audio/m4a;base64,lzfse:<compressed-base64-data>"
-   * - Uncompressed: "data:audio/m4a;base64,<base64-data>"
-   *
-   * Use compression-utils.ts helpers to parse and handle compressed data.
-   * Compression is lossless LZFSE algorithm optimized for iOS.
-   */
-  base64?: string;
 }
 
 export interface MicrophoneInfo {
