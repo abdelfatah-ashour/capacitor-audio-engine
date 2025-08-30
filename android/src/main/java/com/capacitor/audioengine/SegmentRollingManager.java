@@ -36,9 +36,102 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private static final String TAG = "SegmentRollingManager";
 
     // Segment rolling constants
-    private static final int SEGMENT_DURATION_MS = 300000; // 5 minutes (improved performance)
+    private static final int DEFAULT_SEGMENT_DURATION_MS = 300000; // 5 minutes (legacy default)
+    private volatile int segmentDurationMs = DEFAULT_SEGMENT_DURATION_MS; // instance-configurable segment duration
     private static final int MAX_RETENTION_DURATION_MS = 600000; // 10 minutes
-    private static final int MAX_SEGMENTS = MAX_RETENTION_DURATION_MS / SEGMENT_DURATION_MS; // 2 segments
+    private static final int MAX_SEGMENTS = MAX_RETENTION_DURATION_MS / DEFAULT_SEGMENT_DURATION_MS; // used only for default estimation
+
+    /**
+     * Set the per-segment duration (ms). Recommended range: 250 - 60000 ms.
+     */
+    public void setSegmentDurationMs(int ms) {
+        int bounded = Math.max(250, Math.min(ms, 60000));
+        if (bounded != ms) {
+            Log.w(TAG, "Requested segmentDurationMs out of bounds, clamped to " + bounded + "ms");
+        }
+        this.segmentDurationMs = bounded;
+        Log.d(TAG, "segmentDurationMs set to " + this.segmentDurationMs + "ms");
+    }
+
+    /**
+     * Fast-trim an m4a file using MediaExtractor + MediaMuxer by copying samples within range.
+     * Returns true if the fast path succeeded; false means caller should fall back to re-encoding/trimming.
+     */
+    private boolean fastTrimFile(File inputFile, File outputFile, double startSec, double endSec) {
+        if (inputFile == null || !inputFile.exists()) return false;
+        if (endSec <= startSec) return false;
+
+        MediaExtractor extractor = new MediaExtractor();
+        MediaMuxer muxer = null;
+        try {
+            extractor.setDataSource(inputFile.getAbsolutePath());
+
+            int trackCount = extractor.getTrackCount();
+            int outTrack = -1;
+            int sampleRate = -1;
+            MediaFormat format = null;
+
+            for (int i = 0; i < trackCount; i++) {
+                MediaFormat mf = extractor.getTrackFormat(i);
+                String mime = mf.getString(MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("audio/")) {
+                    extractor.selectTrack(i);
+                    format = mf;
+                    outTrack = i;
+                    break;
+                }
+            }
+
+            if (format == null) {
+                Log.w(TAG, "fastTrimFile: no audio track found, falling back");
+                return false;
+            }
+
+            // Create muxer
+            muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            int writeTrackIndex = muxer.addTrack(format);
+            muxer.start();
+
+            // Seek to start
+            long startUs = (long) (startSec * 1_000_000.0);
+            long endUs = (long) (endSec * 1_000_000.0);
+            extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+
+            ByteBuffer inputBuffer = ByteBuffer.allocate(256 * 1024);
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+
+            while (true) {
+                bufferInfo.offset = 0;
+                bufferInfo.size = extractor.readSampleData(inputBuffer, 0);
+                if (bufferInfo.size < 0) break;
+
+                long sampleTime = extractor.getSampleTime();
+                if (sampleTime < 0 || sampleTime > endUs) break;
+
+                bufferInfo.presentationTimeUs = sampleTime - startUs; // rebase
+                bufferInfo.flags = extractor.getSampleFlags();
+
+                muxer.writeSampleData(writeTrackIndex, inputBuffer, bufferInfo);
+
+                extractor.advance();
+            }
+
+            muxer.stop();
+            muxer.release();
+            extractor.release();
+
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "fastTrimFile failed, falling back: " + e.getMessage());
+            try {
+                extractor.release();
+            } catch (Exception ignore) {}
+            if (muxer != null) {
+                try { muxer.release(); } catch (Exception ignore) {}
+            }
+            return false;
+        }
+    }
 
     // Callback interface for max duration events
     public interface MaxDurationCallback {
@@ -189,7 +282,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 public void run() {
                     rotateSegment();
                 }
-            }, SEGMENT_DURATION_MS, SEGMENT_DURATION_MS);
+            }, segmentDurationMs, segmentDurationMs);
 
             // Schedule duration update timer for client-side duration updates
             durationUpdateTimer = new Timer("DurationUpdateTimer", true);
@@ -309,8 +402,8 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             }
 
             // Restart segment timer - calculate remaining time to next rotation
-            long elapsedInCurrentSegment = (System.currentTimeMillis() - recordingStartTime - pausedDurationOffset - manualPausedDurationOffset) % SEGMENT_DURATION_MS;
-            long timeToNextRotation = SEGMENT_DURATION_MS - elapsedInCurrentSegment;
+            long elapsedInCurrentSegment = (System.currentTimeMillis() - recordingStartTime - pausedDurationOffset - manualPausedDurationOffset) % segmentDurationMs;
+            long timeToNextRotation = segmentDurationMs - elapsedInCurrentSegment;
 
             segmentTimer = new Timer("SegmentRotationTimer", true);
             segmentTimer.scheduleAtFixedRate(new TimerTask() {
@@ -318,7 +411,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 public void run() {
                     rotateSegment();
                 }
-            }, timeToNextRotation, SEGMENT_DURATION_MS);
+            }, timeToNextRotation, segmentDurationMs);
 
             // Restart duration update timer
             durationUpdateTimer = new Timer("DurationUpdateTimer", true);
@@ -508,7 +601,10 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                                     "trimmed_continuous_" + System.currentTimeMillis() + ".m4a");
 
                             // Precision trim to keep the last maxDuration window
-                            AudioFileProcessor.trimAudioFile(mergedFile, trimmed, startTrimSec, actualDurationSec);
+                            boolean fastOk = fastTrimFile(mergedFile, trimmed, startTrimSec, actualDurationSec);
+                            if (!fastOk) {
+                                AudioFileProcessor.trimAudioFile(mergedFile, trimmed, startTrimSec, actualDurationSec);
+                            }
 
                             // Replace original with trimmed result
                             boolean deleted = mergedFile.delete();
@@ -648,9 +744,9 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         }
 
         // Warn if maxDuration is very small (less than 2 segments)
-        if (maxDurationMs < SEGMENT_DURATION_MS * 2) {
+    if (maxDurationMs < segmentDurationMs * 2) {
             Log.w(TAG, "Very small maxDuration: " + (maxDurationMs / 1000) + "s (less than 2 segments). " +
-                  "Minimum recommended duration is " + (SEGMENT_DURATION_MS * 2 / 1000) + "s for optimal rolling buffer performance.");
+                  "Minimum recommended duration is " + (segmentDurationMs * 2 / 1000) + "s for optimal rolling buffer performance.");
         }
 
         // Warn if maxDuration is extremely large (more than 2 hours)
@@ -661,7 +757,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
         this.maxDurationMs = maxDurationMs;
         Log.d(TAG, "Set max duration to " + (maxDurationMs / 1000) + " seconds (" +
-              Math.ceil((double) maxDurationMs / SEGMENT_DURATION_MS) + " segments)");
+              Math.ceil((double) maxDurationMs / segmentDurationMs) + " segments)");
     }
 
     /**
@@ -933,9 +1029,9 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         // Optimize memory usage with smart rolling window management
         if (maxDurationMs != null && maxDurationMs > 0) {
             // Enhanced validation: Ensure maxDurationMs is reasonable
-            if (maxDurationMs < SEGMENT_DURATION_MS) {
+            if (maxDurationMs < segmentDurationMs) {
                 Log.w(TAG, "maxDuration (" + maxDurationMs + "ms) is smaller than segment duration (" +
-                      SEGMENT_DURATION_MS + "ms). Using minimum of 1 segment.");
+                      segmentDurationMs + "ms). Using minimum of 1 segment.");
             }
 
             // Calculate the MINIMUM number of segments needed to guarantee target duration
@@ -946,7 +1042,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             // - One complete segment (30s)
             // - One potentially partial current segment
             // This ensures we can always provide exactly 30 seconds
-            int minSegmentsNeeded = (int) Math.ceil((double) maxDurationMs / SEGMENT_DURATION_MS);
+            int minSegmentsNeeded = (int) Math.ceil((double) maxDurationMs / segmentDurationMs);
 
             // Always keep at least one extra segment to ensure we have overlapping audio
             // This is crucial for rolling recording to work properly
@@ -959,7 +1055,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                   minSegmentsNeeded + ", keeping max=" + maxSegmentsToKeep + " segments");
 
             // For very short durations, ensure we keep at least a reasonable number of segments
-            if (maxDurationMs < SEGMENT_DURATION_MS * 2) {
+            if (maxDurationMs < segmentDurationMs * 2) {
                 maxSegmentsToKeep = Math.max(maxSegmentsToKeep, 3); // Keep at least 3 for very short durations
                 Log.d(TAG, "Short duration detected, ensuring minimum 3 segments");
             }
@@ -981,7 +1077,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             // Only remove segments if we have more than the maximum allowed AND
             // we're not in the early stages of recording where segments might be incomplete
             long recordingTimeMs = System.currentTimeMillis() - recordingStartTime;
-            boolean isEarlyRecording = recordingTimeMs < (maxDurationMs + SEGMENT_DURATION_MS); // Give extra time
+                boolean isEarlyRecording = recordingTimeMs < (maxDurationMs + segmentDurationMs); // Give extra time
 
             if (!isEarlyRecording && currentBufferSize > maxSegmentsToKeep) {
                 Log.d(TAG, "Removing excess segments (not early recording phase)");
@@ -1028,7 +1124,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             double maxDurationSeconds = maxDurationMs / 1000.0;
 
             // Calculate how much audio we can actually provide
-            double availableAudioSeconds = Math.min(totalRecordingSeconds, segmentBuffer.size() * (SEGMENT_DURATION_MS / 1000.0));
+            double availableAudioSeconds = Math.min(totalRecordingSeconds, segmentBuffer.size() * (segmentDurationMs / 1000.0));
             double targetAudioSeconds = Math.min(maxDurationSeconds, totalRecordingSeconds);
 
             if (availableAudioSeconds < targetAudioSeconds && totalRecordingSeconds > maxDurationSeconds) {
@@ -1116,7 +1212,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                     Log.d(TAG, "Segment " + i + " actual duration: " + String.format("%.3f", segmentDurationSeconds) + "s");
                 } catch (IOException e) {
                     // Fallback to estimated duration if we can't read the file
-                    double fallbackDuration = SEGMENT_DURATION_MS / 1000.0;
+                    double fallbackDuration = segmentDurationMs / 1000.0;
                     if (i == segmentList.size() - 1) {
                         // For the last segment, use more accurate estimation
                         long totalRecordingMs = System.currentTimeMillis() - recordingStartTime;
@@ -1128,12 +1224,12 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                             for (int j = 0; j < i; j++) {
                                 remainingDuration -= segmentDurations.get(j);
                             }
-                            fallbackDuration = Math.max(0.1, Math.min(remainingDuration, SEGMENT_DURATION_MS / 1000.0));
+                            fallbackDuration = Math.max(0.1, Math.min(remainingDuration, segmentDurationMs / 1000.0));
                             Log.d(TAG, "Last segment estimated duration (maxDuration mode): " + String.format("%.3f", fallbackDuration) + "s");
                         } else {
                             // Standard elapsed-time calculation for rolling recordings
-                            long currentSegmentElapsed = (totalRecordingMs % SEGMENT_DURATION_MS);
-                            fallbackDuration = Math.min(currentSegmentElapsed / 1000.0, SEGMENT_DURATION_MS / 1000.0);
+                            long currentSegmentElapsed = (totalRecordingMs % segmentDurationMs);
+                            fallbackDuration = Math.min(currentSegmentElapsed / 1000.0, segmentDurationMs / 1000.0);
                             Log.d(TAG, "Last segment estimated duration (elapsed time): " + String.format("%.3f", fallbackDuration) + "s");
                         }
                     }
@@ -1394,7 +1490,10 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
                         // Use AudioFileProcessor for final precision trimming
                         try {
-                            AudioFileProcessor.trimAudioFile(outputFile, precisionTrimmedFile, 0.0, targetDurationSeconds);
+                            boolean fastOk2 = fastTrimFile(outputFile, precisionTrimmedFile, 0.0, targetDurationSeconds);
+                            if (!fastOk2) {
+                                AudioFileProcessor.trimAudioFile(outputFile, precisionTrimmedFile, 0.0, targetDurationSeconds);
+                            }
 
                             // Verify the trimmed file
                             long trimmedDurationMs = getAudioFileDuration(precisionTrimmedFile);
@@ -1592,7 +1691,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
         // Calculate expected segments for current duration
         long recordingDurationMs = System.currentTimeMillis() - recordingStartTime;
-        int expectedSegments = (int) Math.ceil((double) recordingDurationMs / SEGMENT_DURATION_MS);
+    int expectedSegments = (int) Math.ceil((double) recordingDurationMs / segmentDurationMs);
 
         // Log memory status
         Log.d(TAG, String.format("Memory Status: %.2f MB total, %d segments (avg %.2f MB each), expected %d segments for %ds recording",
@@ -1603,7 +1702,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
         if (maxDurationMs != null && maxDurationMs > 0 && avgSegmentMB > 0) {
             // Calculate expected maximum memory usage based on maxDuration using configurable safety margin
-            int maxExpectedSegments = (int) Math.ceil((double) maxDurationMs / SEGMENT_DURATION_MS) + segmentSafetyBuffer;
+            int maxExpectedSegments = (int) Math.ceil((double) maxDurationMs / segmentDurationMs) + segmentSafetyBuffer;
             double expectedMaxMB = maxExpectedSegments * avgSegmentMB * memorySafetyMargin;
 
             // Use the higher of baseline (100MB) or calculated expected maximum
@@ -1648,7 +1747,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         // Calculate efficiency metrics
         String efficiency = "";
         if (maxDurationMs != null && maxDurationMs > 0) {
-            int maxExpectedSegments = (int) Math.ceil((double) maxDurationMs / SEGMENT_DURATION_MS) + 1;
+            int maxExpectedSegments = (int) Math.ceil((double) maxDurationMs / segmentDurationMs) + 1;
             double maxExpectedMB = maxExpectedSegments * avgSegmentMB;
             double efficiencyPercent = maxExpectedMB > 0 ? (totalMB / maxExpectedMB) * 100 : 0;
             efficiency = String.format(", Efficiency: %.1f%% (using %.1f/%.1f MB)",
@@ -1673,17 +1772,17 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
         long recordingDurationMs = recordingStartTime > 0 ? System.currentTimeMillis() - recordingStartTime : 0;
         double recordingMinutes = recordingDurationMs / 60000.0;
-        int expectedSegments = (int) Math.ceil((double) recordingDurationMs / SEGMENT_DURATION_MS);
+    int expectedSegments = (int) Math.ceil((double) recordingDurationMs / segmentDurationMs);
 
         stats.append("=== Segment Rolling Statistics ===\n");
         stats.append(String.format("Recording Duration: %.1f minutes (%.0f seconds)\n", recordingMinutes, recordingDurationMs / 1000.0));
         stats.append(String.format("Total Memory Usage: %.2f MB\n", totalMB));
         stats.append(String.format("Segment Count: %d (expected: %d)\n", segmentCount, expectedSegments));
         stats.append(String.format("Average Segment Size: %.2f MB\n", avgSegmentMB));
-        stats.append(String.format("Segment Duration: %d seconds (5 minutes)\n", SEGMENT_DURATION_MS / 1000));
+    stats.append(String.format("Segment Duration: %d seconds\n", segmentDurationMs / 1000));
 
         if (maxDurationMs != null && maxDurationMs > 0) {
-            int maxExpectedSegments = (int) Math.ceil((double) maxDurationMs / SEGMENT_DURATION_MS) + 1;
+            int maxExpectedSegments = (int) Math.ceil((double) maxDurationMs / segmentDurationMs) + 1;
             double maxExpectedMB = maxExpectedSegments * avgSegmentMB;
             double memoryEfficiency = maxExpectedMB > 0 ? (totalMB / maxExpectedMB) * 100 : 0;
 
@@ -1895,7 +1994,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             "- Persistent Indexing: %s\n" +
             "- Max Deletion Retries: %d\n" +
             "- Deletion Retry Delay: %dms",
-            SEGMENT_DURATION_MS / 1000,
+            segmentDurationMs / 1000,
             memorySafetyMargin,
             segmentSafetyBuffer,
             enableSegmentCompression ? "Yes" : "No",
@@ -1915,20 +2014,20 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
         long currentTime = System.currentTimeMillis();
         long recordingDuration = currentTime - recordingStartTime;
-        long currentSegmentElapsed = recordingDuration % SEGMENT_DURATION_MS;
-        int expectedSegments = (int) Math.ceil((double) recordingDuration / SEGMENT_DURATION_MS);
+    long currentSegmentElapsed = recordingDuration % segmentDurationMs;
+    int expectedSegments = (int) Math.ceil((double) recordingDuration / segmentDurationMs);
 
         StringBuilder debug = new StringBuilder();
         debug.append("=== Segment Rolling Debug Info ===\n");
         debug.append(String.format("Recording Duration: %.1fs\n", recordingDuration / 1000.0));
         debug.append(String.format("Current Segment: %d (elapsed: %.1fs/%.1fs = 5min)\n",
-                    segmentCounter.get(), currentSegmentElapsed / 1000.0, SEGMENT_DURATION_MS / 1000.0));
+                    segmentCounter.get(), currentSegmentElapsed / 1000.0, segmentDurationMs / 1000.0));
         debug.append(String.format("Buffer Size: %d segments\n", segmentBuffer.size()));
         debug.append(String.format("Expected Segments: %d\n", expectedSegments));
 
         if (maxDurationMs != null) {
             debug.append(String.format("Max Duration: %.1fs\n", maxDurationMs / 1000.0));
-            int minSegmentsNeeded = Math.max(2, (int) Math.ceil((double) maxDurationMs / SEGMENT_DURATION_MS));
+            int minSegmentsNeeded = Math.max(2, (int) Math.ceil((double) maxDurationMs / segmentDurationMs));
             int maxSegmentsToKeep = minSegmentsNeeded + segmentSafetyBuffer;
             debug.append(String.format("Min Segments Needed: %d, Max to Keep: %d\n", minSegmentsNeeded, maxSegmentsToKeep));
         }
