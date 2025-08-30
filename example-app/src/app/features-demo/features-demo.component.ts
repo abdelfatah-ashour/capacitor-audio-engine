@@ -818,7 +818,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   private setupPlaybackEventListeners(): void {
     CapacitorAudioEngine.addListener('trackChanged', async (event: TrackChangedData) => {
-      console.log('Track changed to:', event.track.title);
       if (event.track?.url) {
         await this.updateTrackPlaybackInfo(event.track.url);
       }
@@ -826,21 +825,18 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     });
 
     CapacitorAudioEngine.addListener('trackEnded', async (event: TrackEndedData) => {
-      console.log('Track ended:', event.track.title);
       if (event.track?.url) {
         await this.updateTrackPlaybackInfo(event.track.url);
       }
     });
 
     CapacitorAudioEngine.addListener('playbackStarted', async (event: PlaybackStartedData) => {
-      console.log('Playback started:', event.track.title);
       if (event.track?.url) {
         await this.updateTrackPlaybackInfo(event.track.url);
       }
     });
 
     CapacitorAudioEngine.addListener('playbackPaused', async (event: PlaybackPausedData) => {
-      console.log('Playback paused:', event.track.title);
       if (event.track?.url) {
         await this.updateTrackPlaybackInfo(event.track.url);
       }
@@ -853,8 +849,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
     // Listen for real-time progress updates
     CapacitorAudioEngine.addListener('playbackProgress' as any, (event: any) => {
-      console.log(`Progress: ${event.currentPosition}/${event.duration} seconds`);
-
       // Indicate that real-time updates are working
       this.realtimeUpdatesActive.set(true);
 
@@ -881,8 +875,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
     // Listen for status changes
     CapacitorAudioEngine.addListener('playbackStatusChanged' as any, (event: any) => {
-      console.log(`Status changed to: ${event.status}, Playing: ${event.isPlaying}`);
-
       // Update track-specific playback info in real-time without API call
       if (event.track?.url) {
         this.trackPlaybackStates.update(states => {
@@ -906,8 +898,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   private setupWaveformEventListeners(): void {
     // Listen for waveform data
     CapacitorAudioEngine.addListener('waveformData', (event: WaveformData) => {
-      console.log('Waveform level received:', event.level);
-
       // Track emission statistics
       const currentTime = Date.now();
       this.lastEmissionTime.set(currentTime);
@@ -1105,7 +1095,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     this.durationChangeListener = CapacitorAudioEngine.addListener(
       'durationChange',
       (event: { duration: number }) => {
-        console.log('Duration updated:', event.duration);
         this.recordingDuration.set(event.duration);
       }
     );
@@ -1118,8 +1107,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     // Fallback timer with longer interval since we have real-time events
     try {
       await CapacitorAudioEngine.addListener('durationChange', event => {
-        console.log('🚀 ~ FeaturesDemoComponent ~ startDurationTimer ~ event:', event);
-        console.log('Duration updated:', event.duration);
         this.recordingDuration.set(event.duration);
       });
     } catch (error: any) {

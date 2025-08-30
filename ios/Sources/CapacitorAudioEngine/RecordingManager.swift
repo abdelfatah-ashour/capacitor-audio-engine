@@ -189,7 +189,7 @@ class RecordingManager: NSObject {
 
         // Use segment rolling for all recordings
         log("Starting segment rolling recording (maxDuration: \(maxDuration?.description ?? "unlimited"))")
-        startSegmentRollingRecording(with: settings)
+    startSegmentRollingRecording(with: settings)
     }
 
     private func startSegmentRollingRecording(with settings: [String: Any]) {
@@ -200,7 +200,17 @@ class RecordingManager: NSObject {
             if self.segmentRollingManager == nil {
                 self.log("Creating new SegmentRollingManager")
                 self.log("About to call SegmentRollingManager() constructor")
-                self.segmentRollingManager = SegmentRollingManager()
+                // Allow configuration of segmentDuration via settings
+                let sd: TimeInterval? = {
+                    if let d = settings["segmentDuration"] as? Double { return d }
+                    if let i = settings["segmentDuration"] as? Int { return TimeInterval(i) }
+                    return nil
+                }()
+                if let sdVal = sd {
+                    self.segmentRollingManager = SegmentRollingManager(segmentDuration: sdVal)
+                } else {
+                    self.segmentRollingManager = SegmentRollingManager()
+                }
                 self.log("SegmentRollingManager() constructor completed")
                 self.log("SegmentRollingManager created successfully")
             }
@@ -212,6 +222,13 @@ class RecordingManager: NSObject {
             } else {
                 self.log("No maxDuration set - using unlimited segment rolling mode")
                 self.segmentRollingManager?.setMaxDuration(nil)
+            }
+
+            // Also configure per-segment duration if provided at runtime
+            if let sdVal = settings["segmentDuration"] as? Double {
+                self.segmentRollingManager?.setSegmentDuration(sdVal)
+            } else if let sdInt = settings["segmentDuration"] as? Int {
+                self.segmentRollingManager?.setSegmentDuration(TimeInterval(sdInt))
             }
 
             // Create recording settings for segment rolling

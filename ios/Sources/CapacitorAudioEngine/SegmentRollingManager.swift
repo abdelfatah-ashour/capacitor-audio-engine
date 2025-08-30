@@ -2,6 +2,79 @@ import Foundation
 import UIKit
 @preconcurrency import AVFoundation
 
+// Small, efficient circular buffer for URLs used to store segment file paths.
+// Provides O(1) append and pop-front operations and Sequence conformance for iteration.
+fileprivate struct CircularBuffer<Element>: Sequence {
+    private var buffer: [Element?]
+    private var head: Int = 0
+    private var tail: Int = 0
+    private(set) var count: Int = 0
+
+    init(capacity: Int = 16) {
+        let cap = Swift.max(1, capacity)
+        buffer = Array<Element?>(repeating: nil, count: cap)
+    }
+
+    var isEmpty: Bool {
+        return count == 0
+    }
+
+    mutating func append(_ element: Element) {
+        if count == buffer.count {
+            // grow
+            let newCap = buffer.count * 2
+            var newBuf = Array<Element?>(repeating: nil, count: newCap)
+            for i in 0..<count {
+                newBuf[i] = buffer[(head + i) % buffer.count]
+            }
+            buffer = newBuf
+            head = 0
+            tail = count % buffer.count
+        }
+        buffer[tail] = element
+        tail = (tail + 1) % buffer.count
+        count += 1
+    }
+
+    @discardableResult
+    mutating func removeFirst() -> Element? {
+        guard count > 0 else { return nil }
+        let element = buffer[head]
+        buffer[head] = nil
+        head = (head + 1) % buffer.count
+        count -= 1
+        return element
+    }
+
+    mutating func removeAll() {
+        buffer = Array<Element?>(repeating: nil, count: Swift.max(16, buffer.count))
+        head = 0
+        tail = 0
+        count = 0
+    }
+
+    func makeIterator() -> AnyIterator<Element> {
+        var idx = 0
+        return AnyIterator {
+            if idx >= self.count { return nil }
+            let val = self.buffer[(self.head + idx) % self.buffer.count]!
+            idx += 1
+            return val
+        }
+    }
+
+    func toArray() -> [Element] {
+        var out: [Element] = []
+        out.reserveCapacity(count)
+        var idx = 0
+        while idx < count {
+            out.append(buffer[(head + idx) % buffer.count]!)
+            idx += 1
+        }
+        return out
+    }
+}
+
 /**
  * Manages segment rolling audio recording with automatic cleanup
  * Features:
@@ -17,7 +90,7 @@ class SegmentRollingManager: NSObject {
 
     // MARK: - Properties
 
-    private var segmentBuffer: [URL] = []
+    private var segmentBuffer = CircularBuffer<URL>(capacity: 16)
     private var segmentTimer: Timer?
     private var currentSegmentRecorder: AVAudioRecorder?
     // Continuous full-session recorder for 0s merge at stop
@@ -37,6 +110,8 @@ class SegmentRollingManager: NSObject {
 
     // Duration control
     private var maxDuration: TimeInterval?
+    // Per-instance segment duration (seconds). Default set from constants but configurable at runtime.
+    private var segmentDuration: TimeInterval = AudioEngineConstants.segmentDuration
 
     // Total recording duration tracking (never resets)
     private var totalRecordingDuration: TimeInterval = 0
@@ -228,6 +303,14 @@ class SegmentRollingManager: NSObject {
         log("SegmentRollingManager.init() - Initialization completed successfully")
     }
 
+    /// Initialize with optional per-segment duration (seconds)
+    convenience init(segmentDuration: TimeInterval?) {
+        self.init()
+        if let sd = segmentDuration, sd > 0 {
+            self.setSegmentDuration(sd)
+        }
+    }
+
     // MARK: - Public Methods
 
     /**
@@ -277,7 +360,7 @@ class SegmentRollingManager: NSObject {
 
         // Reset state
         segmentCounter = 0
-        segmentBuffer.removeAll()
+    segmentBuffer.removeAll()
         isActive = true
         totalRecordingDuration = 0
         recordingStartTime = Date()
@@ -298,13 +381,13 @@ class SegmentRollingManager: NSObject {
         try startNewSegment()
         log("startNewSegment() completed successfully")
 
-        // Start segment timer for rotating segments every segmentDuration (default 10 minutes)
+        // Start segment timer for rotating segments every segmentDuration
         DispatchQueue.main.async {
-            self.segmentTimer = Timer.scheduledTimer(withTimeInterval: AudioEngineConstants.segmentDuration, repeats: true) { _ in
+            self.segmentTimer = Timer.scheduledTimer(withTimeInterval: self.segmentDuration, repeats: true) { _ in
                 self.rotateSegment()
             }
         }
-        log("Started segment rolling with 10-minute intervals")
+        log("Started segment rolling with segmentDuration = \(self.segmentDuration) seconds")
     }
 
     /**
@@ -364,7 +447,7 @@ class SegmentRollingManager: NSObject {
 
             // Restart segment timer
             DispatchQueue.main.async {
-                self.segmentTimer = Timer.scheduledTimer(withTimeInterval: AudioEngineConstants.segmentDuration, repeats: true) { _ in
+                self.segmentTimer = Timer.scheduledTimer(withTimeInterval: self.segmentDuration, repeats: true) { _ in
                     self.rotateSegment()
                 }
             }
@@ -400,6 +483,7 @@ class SegmentRollingManager: NSObject {
             }
 
             // Clear all segments from buffer and file system
+            // Iterate and remove files
             for segmentURL in segmentBuffer {
                 do {
                     try FileManager.default.removeItem(at: segmentURL)
@@ -537,7 +621,7 @@ class SegmentRollingManager: NSObject {
                 return actualRecordingTime
             } else {
                 // Fallback to old calculation if startTime is somehow nil
-                let segmentsDuration = Double(segmentBuffer.count) * AudioEngineConstants.segmentDuration
+            let segmentsDuration = Double(segmentBuffer.count) * self.segmentDuration
                 let currentSegmentDuration = currentSegmentRecorder?.currentTime ?? 0
                 return segmentsDuration + currentSegmentDuration
             }
@@ -552,7 +636,7 @@ class SegmentRollingManager: NSObject {
         return performQueueSafeOperation {
             guard isActive else { return getElapsedRecordingTime() }
 
-            let segmentsDuration = Double(segmentBuffer.count) * AudioEngineConstants.segmentDuration
+            let segmentsDuration = Double(segmentBuffer.count) * self.segmentDuration
             let currentSegmentDuration = currentSegmentRecorder?.currentTime ?? 0
             return segmentsDuration + currentSegmentDuration
         }
@@ -579,6 +663,23 @@ class SegmentRollingManager: NSObject {
                 log("Set max duration to \(duration) seconds - segment rolling with automatic cleanup")
             } else {
                 log("Set unlimited duration - segment rolling without cleanup")
+            }
+        }
+    }
+
+    /// Set per-segment duration (seconds). Applies to rotation timer and buffer calculations.
+    func setSegmentDuration(_ duration: TimeInterval) {
+        performQueueSafeOperation {
+            guard duration > 0 else { return }
+            segmentDuration = duration
+            log("Segment duration set to \(segmentDuration) seconds")
+
+            // If a timer exists, restart it with the new interval
+            DispatchQueue.main.async {
+                self.segmentTimer?.invalidate()
+                self.segmentTimer = Timer.scheduledTimer(withTimeInterval: self.segmentDuration, repeats: true) { _ in
+                    self.rotateSegment()
+                }
             }
         }
     }
@@ -1051,18 +1152,17 @@ class SegmentRollingManager: NSObject {
             return
         }
 
-        // Add to buffer
-        segmentBuffer.append(segmentURL)
+    // Add to buffer
+    segmentBuffer.append(segmentURL)
 
-        // Implement rolling window based on maxDuration
-        let effectiveMaxSegments: Int
-        if let maxDuration = maxDuration {
-            // Calculate segments needed for maxDuration + buffer for trimming
-            // We need enough segments to guarantee we can extract exactly maxDuration seconds
+    // Implement rolling window based on maxDuration
+    let effectiveMaxSegments: Int
+            if let maxDuration = maxDuration {
+            // Calculate segments needed for maxDuration + buffer for trimming based on per-instance segmentDuration
             // Add 1 extra segment to ensure we have enough audio for precise trimming
-            let segmentsNeeded = Int(ceil(maxDuration / AudioEngineConstants.segmentDuration)) + 1
+            let segmentsNeeded = Int(ceil(maxDuration / self.segmentDuration)) + 1
             effectiveMaxSegments = segmentsNeeded
-            log("Max duration: \(maxDuration)s, segments needed: \(segmentsNeeded) (includes trimming buffer)")
+            log("Max duration: \(maxDuration)s, segments needed: \(segmentsNeeded) (segmentDuration=\(self.segmentDuration)s, includes trimming buffer)")
         } else {
             // Unlimited when no maxDuration is provided (keep all segments)
             effectiveMaxSegments = Int.max
@@ -1071,8 +1171,11 @@ class SegmentRollingManager: NSObject {
         // Batch remove oldest segments if over limit to minimize filesystem overhead
         var segmentsToRemove: [URL] = []
         while segmentBuffer.count > effectiveMaxSegments {
-            let oldestSegment = segmentBuffer.removeFirst()
-            segmentsToRemove.append(oldestSegment)
+            if let oldestSegment = segmentBuffer.removeFirst() {
+                segmentsToRemove.append(oldestSegment)
+            } else {
+                break
+            }
         }
 
         // Batch delete old segment files
@@ -1122,8 +1225,9 @@ class SegmentRollingManager: NSObject {
         var insertTime = CMTime.zero
         var successfulSegments = 0
 
-        // Add each segment to composition
-        for (index, segmentURL) in segmentBuffer.enumerated() {
+        // Add each segment to composition in chronological order
+        let segments = segmentBuffer.toArray()
+        for (index, segmentURL) in segments.enumerated() {
             log("Processing segment \(index): \(segmentURL.lastPathComponent)")
             let asset = AVAsset(url: segmentURL)
 
@@ -1323,7 +1427,7 @@ class SegmentRollingManager: NSObject {
             return sourceURL
         }
 
-        // Create output URL for trimmed file
+    // Create output URL for trimmed file
         let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let trimmedURL = documentsPath.appendingPathComponent("trimmed_recording_\(Int(Date().timeIntervalSince1970)).m4a")
         log("Trimmed file URL: \(trimmedURL.path)")
@@ -1340,7 +1444,16 @@ class SegmentRollingManager: NSObject {
         let timeRange = CMTimeRange(start: startTime, end: endTime)
         log("Trim range: \(CMTimeGetSeconds(startTime)) to \(CMTimeGetSeconds(endTime)) seconds")
 
-        // Create export session
+        // Try fast passthrough trim first (AVAssetReader/Writer) - falls back to export session if not possible
+        if let fastURL = try? await trimMergedFileFastAsync(sourceURL, trimmedURL: trimmedURL, timeRange: timeRange) {
+            log("Successfully fast-trimmed merged file from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds)")
+            try? FileManager.default.removeItem(at: sourceURL)
+            return fastURL
+        }
+
+        log("Fast trim failed or unsupported, falling back to AVAssetExportSession path")
+
+        // Fallback to export session
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
             log("Error: Failed to create export session for trimming")
             throw SegmentRecordingError.exportSessionCreationFailed
@@ -1352,12 +1465,9 @@ class SegmentRollingManager: NSObject {
 
         // Use async completion with timeout instead of blocking semaphore
         let trimmedFileURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
-            self.log("Starting trim export...")
+            self.log("Starting trim export (fallback)...")
 
-            // Create a flag to track if export completed
             var exportCompleted = false
-
-            // Set up timeout
             let timeoutTask = DispatchWorkItem {
                 if !exportCompleted {
                     self.log("Trim export timeout reached - cancelling export")
@@ -1366,44 +1476,134 @@ class SegmentRollingManager: NSObject {
                 }
             }
 
-            // Schedule timeout after 30 seconds
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 30.0, execute: timeoutTask)
 
             exportSession.exportAsynchronously {
-                // Mark export as completed
                 exportCompleted = true
-
-                // Cancel timeout task since export completed
                 timeoutTask.cancel()
 
                 switch exportSession.status {
                 case .completed:
-                    self.log("Trim export completed successfully")
+                    self.log("Trim export completed successfully (fallback)")
                     continuation.resume(returning: trimmedURL)
-
                 case .failed:
                     let error = exportSession.error ?? SegmentRecordingError.trimExportFailed("Unknown trim export failure")
-                    self.log("Trim export error: \(error.localizedDescription)")
+                    self.log("Trim export error (fallback): \(error.localizedDescription)")
                     continuation.resume(throwing: error)
-
                 case .cancelled:
-                    self.log("Trim export was cancelled")
+                    self.log("Trim export was cancelled (fallback)")
                     continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Trim export was cancelled"))
-
                 default:
-                    self.log("Trim export failed with status: \(exportSession.status)")
+                    self.log("Trim export failed with status (fallback): \(exportSession.status)")
                     continuation.resume(throwing: SegmentRecordingError.trimExportFailed("\(exportSession.status)"))
                 }
             }
         }
 
-        log("Successfully trimmed merged file from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds)")
-
-        // Clean up original merged file
+        log("Successfully trimmed merged file from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds) via fallback")
         try FileManager.default.removeItem(at: sourceURL)
-        log("Cleaned up original merged file")
-
         return trimmedFileURL
+    }
+
+    /**
+     Fast trim using AVAssetReader -> AVAssetWriter with minimal transcoding/passthrough.
+     Returns trimmedURL on success or throws on failure.
+     */
+    private func trimMergedFileFastAsync(_ sourceURL: URL, trimmedURL: URL, timeRange: CMTimeRange) async throws -> URL {
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            DispatchQueue.global(qos: .utility).async {
+                let asset = AVAsset(url: sourceURL)
+
+                guard let reader = try? AVAssetReader(asset: asset) else {
+                    continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Failed to create AVAssetReader"))
+                    return
+                }
+
+                guard let audioTrack = asset.tracks(withMediaType: .audio).first else {
+                    continuation.resume(throwing: SegmentRecordingError.audioTrackCreationFailed)
+                    return
+                }
+
+                // Configure reader output for the requested timeRange
+                let readerOutputSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatLinearPCM
+                ]
+                let readerOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: readerOutputSettings)
+                reader.timeRange = timeRange
+
+                if reader.canAdd(readerOutput) {
+                    reader.add(readerOutput)
+                } else {
+                    continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Cannot add reader output"))
+                    return
+                }
+
+                // Writer with AAC output at reasonable bitrate
+                guard let writer = try? AVAssetWriter(outputURL: trimmedURL, fileType: .m4a) else {
+                    continuation.resume(throwing: SegmentRecordingError.exportSessionCreationFailed)
+                    return
+                }
+
+                let writerOutputSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVEncoderBitRateKey: NSNumber(value: AudioEngineConstants.defaultBitrate),
+                    AVSampleRateKey: NSNumber(value: AudioEngineConstants.defaultSampleRate),
+                    AVNumberOfChannelsKey: NSNumber(value: AudioEngineConstants.defaultChannels)
+                ]
+
+                let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: writerOutputSettings)
+                writerInput.expectsMediaDataInRealTime = false
+
+                if writer.canAdd(writerInput) {
+                    writer.add(writerInput)
+                } else {
+                    continuation.resume(throwing: SegmentRecordingError.exportSessionCreationFailed)
+                    return
+                }
+
+                writer.shouldOptimizeForNetworkUse = true
+
+                if !writer.startWriting() {
+                    continuation.resume(throwing: SegmentRecordingError.exportFailed("Writer failed to start"))
+                    return
+                }
+
+                writer.startSession(atSourceTime: timeRange.start)
+
+                if !reader.startReading() {
+                    writer.cancelWriting()
+                    continuation.resume(throwing: SegmentRecordingError.exportFailed("Reader failed to start"))
+                    return
+                }
+
+                let inputQueue = DispatchQueue(label: "trim-writer-queue")
+
+                writerInput.requestMediaDataWhenReady(on: inputQueue) {
+                    while writerInput.isReadyForMoreMediaData {
+                        if let sampleBuffer = readerOutput.copyNextSampleBuffer() {
+                            if !writerInput.append(sampleBuffer) {
+                                reader.cancelReading()
+                                writerInput.markAsFinished()
+                                writer.cancelWriting()
+                                continuation.resume(throwing: SegmentRecordingError.exportFailed("Failed to append sample buffer"))
+                                return
+                            }
+                        } else {
+                            writerInput.markAsFinished()
+                            writer.finishWriting {
+                                if writer.status == .completed {
+                                    continuation.resume(returning: trimmedURL)
+                                } else {
+                                    let err = writer.error ?? SegmentRecordingError.exportFailed("Unknown writer error")
+                                    continuation.resume(throwing: err)
+                                }
+                            }
+                            break
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -1441,6 +1641,7 @@ class SegmentRollingManager: NSObject {
      */
     private func cleanupSegments() {
         var cleanupErrors: [Error] = []
+        let initialCount = segmentBuffer.count
 
         for segmentURL in segmentBuffer {
             do {
@@ -1455,7 +1656,7 @@ class SegmentRollingManager: NSObject {
         segmentBuffer.removeAll()
         // Log summary of cleanup issues if any
         if !cleanupErrors.isEmpty {
-            log("Cleanup completed with \(cleanupErrors.count) errors out of \(segmentBuffer.count) segments")
+            log("Cleanup completed with \(cleanupErrors.count) errors out of \(initialCount) segments")
         }
     }
 
