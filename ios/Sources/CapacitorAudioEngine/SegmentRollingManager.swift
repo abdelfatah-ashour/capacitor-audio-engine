@@ -108,6 +108,17 @@ class SegmentRollingManager: NSObject {
     // Recording settings
     private var recordingSettings: [String: Any] = [:]
 
+    // Config flags
+    private var enableContinuousRecording: Bool = true
+
+    // External audio session configuration (optional)
+    private var externalAudioCategory: AVAudioSession.Category?
+    private var externalAudioMode: AVAudioSession.Mode?
+    private var externalAudioOptions: AVAudioSession.CategoryOptions?
+
+    // Track temp output files for cleanup
+    private var tempOutputFiles: [URL] = []
+
     // Duration control
     private var maxDuration: TimeInterval?
     // Per-instance segment duration (seconds). Default set from constants but configurable at runtime.
@@ -339,10 +350,11 @@ class SegmentRollingManager: NSObject {
         log("Getting audio session instance")
         let audioSession = AVAudioSession.sharedInstance()
         log("Setting audio session category")
-        // Configure category and mode for recording per checklist
-        try audioSession.setCategory(.playAndRecord,
-                                   mode: .default,
-                                   options: [.allowBluetooth, .duckOthers])
+        // Configure category and mode for recording per checklist (allow external override)
+        let category = self.externalAudioCategory ?? .playAndRecord
+        let mode = self.externalAudioMode ?? .default
+        let options = self.externalAudioOptions ?? [.allowBluetooth, .duckOthers]
+        try audioSession.setCategory(category, mode: mode, options: options)
         // Apply preferred hardware parameters
         if let sr = recordingSettings[AVSampleRateKey] as? Double {
             try? audioSession.setPreferredSampleRate(sr)
@@ -373,8 +385,12 @@ class SegmentRollingManager: NSObject {
 
         log("Starting recording with segment rolling mode (maxDuration: \(maxDuration?.description ?? "unlimited"))")
 
-        // Start continuous full-session recorder for instant file at stop
-        try startContinuousRecorder()
+        // Start continuous full-session recorder for instant file at stop (optional)
+        if enableContinuousRecording {
+            try startContinuousRecorder()
+        } else {
+            log("Continuous recorder disabled via config flag")
+        }
 
         // Start recording
         log("About to call startNewSegment()")
@@ -684,6 +700,20 @@ class SegmentRollingManager: NSObject {
         }
     }
 
+    /// Enable or disable using the continuous full-session recorder optimization
+    func setContinuousRecordingEnabled(_ enabled: Bool) {
+        performQueueSafeOperation { self.enableContinuousRecording = enabled }
+    }
+
+    /// Allow external configuration of the AVAudioSession category/mode/options
+    func setAudioSession(category: AVAudioSession.Category?, mode: AVAudioSession.Mode? = nil, options: AVAudioSession.CategoryOptions? = nil) {
+        performQueueSafeOperation {
+            self.externalAudioCategory = category
+            self.externalAudioMode = mode
+            self.externalAudioOptions = options
+        }
+    }
+
     /**
      * Set maximum recording duration in seconds (backwards compatibility)
      */
@@ -739,7 +769,7 @@ class SegmentRollingManager: NSObject {
                             self.log("Warning: No segments in buffer, this might be a very short recording")
                             throw SegmentRecordingError.noValidSegments
                         }
-                        let mergedFileURL = try self.mergeSegments()
+                        let mergedFileURL = try await self.mergeSegmentsAsync()
                         if let maxDuration = self.maxDuration {
                             finalFileURL = try await self.trimMergedFileAsync(mergedFileURL, maxDuration: maxDuration)
                         } else {
@@ -1202,6 +1232,7 @@ class SegmentRollingManager: NSObject {
      * Merge all segments in buffer into single audio file
      */
     private func mergeSegments() throws -> URL {
+        // Legacy synchronous merge retained for backward compatibility
         log("Starting mergeSegments with \(segmentBuffer.count) segments")
 
         guard !segmentBuffer.isEmpty else {
@@ -1209,9 +1240,10 @@ class SegmentRollingManager: NSObject {
             throw SegmentRecordingError.noValidSegments
         }
 
-        // Create output file
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let outputURL = documentsPath.appendingPathComponent("merged_recording_\(Int(Date().timeIntervalSince1970)).m4a")
+        // Create output file in temp directory
+        let tempDir = FileManager.default.temporaryDirectory
+        let outputURL = tempDir.appendingPathComponent("merged_recording_\(Int(Date().timeIntervalSince1970)).m4a")
+        tempOutputFiles.append(outputURL)
         log("Output URL: \(outputURL.path)")
 
         // Use AVAssetExportSession for high-quality merging
@@ -1256,7 +1288,7 @@ class SegmentRollingManager: NSObject {
 
         log("Added \(successfulSegments) segments to composition, starting export...")
 
-        // Export merged composition
+        // Export merged composition synchronously (legacy). Prefer using async mergeSegmentsAsync().
         guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
             log("Error: Failed to create export session")
             throw SegmentRecordingError.exportSessionCreationFailed
@@ -1265,32 +1297,99 @@ class SegmentRollingManager: NSObject {
         exportSession.outputURL = outputURL
         exportSession.outputFileType = .m4a
 
-        // Use semaphore to wait for export completion
         let semaphore = DispatchSemaphore(value: 0)
-
         log("Starting export session...")
-        exportSession.exportAsynchronously {
-            semaphore.signal()
-        }
-
+        exportSession.exportAsynchronously { semaphore.signal() }
         semaphore.wait()
         log("Export session completed with status: \(exportSession.status)")
-
-        // Check for export errors after completion
         if exportSession.status == .failed {
             let error = exportSession.error ?? SegmentRecordingError.exportFailed("Unknown export failure")
             log("Export error: \(error.localizedDescription)")
             throw error
         }
-
         if exportSession.status != .completed {
             log("Export failed with status: \(exportSession.status)")
             throw SegmentRecordingError.exportFailed("\(exportSession.status)")
         }
-
         log("Successfully merged \(segmentBuffer.count) segments into: \(outputURL.lastPathComponent)")
-
         return outputURL
+    }
+
+    /**
+     * Merge all segments asynchronously without blocking the thread. Tries passthrough first, then falls back to AppleM4A.
+     */
+    private func mergeSegmentsAsync() async throws -> URL {
+        log("Starting mergeSegmentsAsync with \(segmentBuffer.count) segments")
+        guard !segmentBuffer.isEmpty else { throw SegmentRecordingError.noValidSegments }
+
+        // Output url in temp dir
+        let tempDir = FileManager.default.temporaryDirectory
+        let outputURL = tempDir.appendingPathComponent("merged_recording_\(Int(Date().timeIntervalSince1970)).m4a")
+        tempOutputFiles.append(outputURL)
+
+        // Build composition
+        let composition = AVMutableComposition()
+        guard let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw SegmentRecordingError.audioTrackCreationFailed
+        }
+
+        var insertTime = CMTime.zero
+        var successfulSegments = 0
+        for segmentURL in segmentBuffer.toArray() {
+            let asset = AVAsset(url: segmentURL)
+            if let assetTrack = asset.tracks(withMediaType: .audio).first {
+                let timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+                do {
+                    try audioTrack.insertTimeRange(timeRange, of: assetTrack, at: insertTime)
+                    insertTime = CMTimeAdd(insertTime, asset.duration)
+                    successfulSegments += 1
+                } catch {
+                    log("Failed to add segment to composition: \(error.localizedDescription)")
+                }
+            }
+        }
+        guard successfulSegments > 0 else { throw SegmentRecordingError.noValidSegments }
+
+        // Helper to run an export asynchronously
+        func runExport(preset: String, fileType: AVFileType?) async throws -> URL {
+            guard let exportSession = AVAssetExportSession(asset: composition, presetName: preset) else {
+                throw SegmentRecordingError.exportSessionCreationFailed
+            }
+            exportSession.outputURL = outputURL
+            if let ft = fileType {
+                exportSession.outputFileType = ft
+            } else if exportSession.supportedFileTypes.contains(.m4a) {
+                exportSession.outputFileType = .m4a
+            } else if let first = exportSession.supportedFileTypes.first {
+                exportSession.outputFileType = first
+            }
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+                exportSession.exportAsynchronously {
+                    switch exportSession.status {
+                    case .completed:
+                        continuation.resume(returning: outputURL)
+                    case .failed:
+                        continuation.resume(throwing: exportSession.error ?? SegmentRecordingError.exportFailed("Unknown export failure"))
+                    case .cancelled:
+                        continuation.resume(throwing: SegmentRecordingError.exportFailed("Export cancelled"))
+                    default:
+                        continuation.resume(throwing: SegmentRecordingError.exportFailed("\(exportSession.status)"))
+                    }
+                }
+            }
+        }
+
+        // Try passthrough first, then fallback
+        do {
+            return try await runExport(preset: AVAssetExportPresetPassthrough, fileType: nil)
+        } catch {
+            log("Passthrough export failed: \(error.localizedDescription). Falling back to AppleM4A.")
+            // Remove partially written file if exists
+            if FileManager.default.fileExists(atPath: outputURL.path) {
+                try? FileManager.default.removeItem(at: outputURL)
+            }
+            return try await runExport(preset: AVAssetExportPresetAppleM4A, fileType: .m4a)
+        }
     }
 
     /**
@@ -1319,9 +1418,10 @@ class SegmentRollingManager: NSObject {
             return sourceURL
         }
 
-        // Create output URL for trimmed file
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let trimmedURL = documentsPath.appendingPathComponent("trimmed_recording_\(Int(Date().timeIntervalSince1970)).m4a")
+        // Create output URL for trimmed file in temp directory
+        let tempDir = FileManager.default.temporaryDirectory
+        let trimmedURL = tempDir.appendingPathComponent("trimmed_recording_\(Int(Date().timeIntervalSince1970)).m4a")
+        tempOutputFiles.append(trimmedURL)
         log("Trimmed file URL: \(trimmedURL.path)")
 
         // Remove existing file if it exists
@@ -1427,9 +1527,10 @@ class SegmentRollingManager: NSObject {
             return sourceURL
         }
 
-    // Create output URL for trimmed file
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let trimmedURL = documentsPath.appendingPathComponent("trimmed_recording_\(Int(Date().timeIntervalSince1970)).m4a")
+    // Create output URL for trimmed file in temp directory
+        let tempDir = FileManager.default.temporaryDirectory
+        let trimmedURL = tempDir.appendingPathComponent("trimmed_recording_\(Int(Date().timeIntervalSince1970)).m4a")
+        tempOutputFiles.append(trimmedURL)
         log("Trimmed file URL: \(trimmedURL.path)")
 
         // Remove existing file if it exists
@@ -1444,65 +1545,76 @@ class SegmentRollingManager: NSObject {
         let timeRange = CMTimeRange(start: startTime, end: endTime)
         log("Trim range: \(CMTimeGetSeconds(startTime)) to \(CMTimeGetSeconds(endTime)) seconds")
 
-        // Try fast passthrough trim first (AVAssetReader/Writer) - falls back to export session if not possible
-        if let fastURL = try? await trimMergedFileFastAsync(sourceURL, trimmedURL: trimmedURL, timeRange: timeRange) {
-            log("Successfully fast-trimmed merged file from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds)")
+        // Helper to try export with preset and timeout
+        func tryExport(_ preset: String, _ fileType: AVFileType?) async throws -> URL {
+            guard let exportSession = AVAssetExportSession(asset: asset, presetName: preset) else {
+                throw SegmentRecordingError.exportSessionCreationFailed
+            }
+            exportSession.outputURL = trimmedURL
+            if let ft = fileType {
+                exportSession.outputFileType = ft
+            } else if exportSession.supportedFileTypes.contains(.m4a) {
+                exportSession.outputFileType = .m4a
+            } else if let first = exportSession.supportedFileTypes.first {
+                exportSession.outputFileType = first
+            }
+            exportSession.timeRange = timeRange
+
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+                self.log("Starting trim export with preset: \(preset)...")
+
+                var completed = false
+                let timeout = DispatchWorkItem {
+                    if !completed {
+                        self.log("Trim export timeout - cancelling export")
+                        exportSession.cancelExport()
+                        continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Trim export timed out after 30 seconds"))
+                    }
+                }
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 30.0, execute: timeout)
+
+                exportSession.exportAsynchronously {
+                    completed = true
+                    timeout.cancel()
+                    switch exportSession.status {
+                    case .completed:
+                        continuation.resume(returning: trimmedURL)
+                    case .failed:
+                        continuation.resume(throwing: exportSession.error ?? SegmentRecordingError.trimExportFailed("Unknown trim export failure"))
+                    case .cancelled:
+                        continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Export cancelled"))
+                    default:
+                        continuation.resume(throwing: SegmentRecordingError.trimExportFailed("\(exportSession.status)"))
+                    }
+                }
+            }
+        }
+
+        // 1) Passthrough first
+        do {
+            let url = try await tryExport(AVAssetExportPresetPassthrough, nil)
+            self.log("Trim completed via passthrough (no re-encode)")
             try? FileManager.default.removeItem(at: sourceURL)
-            return fastURL
+            return url
+        } catch {
+            self.log("Passthrough trim failed: \(error.localizedDescription). Trying AppleM4A…")
         }
 
-        log("Fast trim failed or unsupported, falling back to AVAssetExportSession path")
-
-        // Fallback to export session
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            log("Error: Failed to create export session for trimming")
-            throw SegmentRecordingError.exportSessionCreationFailed
+        // 2) AppleM4A fallback
+        do {
+            let url = try await tryExport(AVAssetExportPresetAppleM4A, .m4a)
+            self.log("Trim completed via AppleM4A export")
+            try? FileManager.default.removeItem(at: sourceURL)
+            return url
+        } catch {
+            self.log("AppleM4A trim failed: \(error.localizedDescription). Falling back to reader/writer…")
         }
 
-        exportSession.outputURL = trimmedURL
-        exportSession.outputFileType = .m4a
-        exportSession.timeRange = timeRange
-
-        // Use async completion with timeout instead of blocking semaphore
-        let trimmedFileURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
-            self.log("Starting trim export (fallback)...")
-
-            var exportCompleted = false
-            let timeoutTask = DispatchWorkItem {
-                if !exportCompleted {
-                    self.log("Trim export timeout reached - cancelling export")
-                    exportSession.cancelExport()
-                    continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Trim export timed out after 30 seconds"))
-                }
-            }
-
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 30.0, execute: timeoutTask)
-
-            exportSession.exportAsynchronously {
-                exportCompleted = true
-                timeoutTask.cancel()
-
-                switch exportSession.status {
-                case .completed:
-                    self.log("Trim export completed successfully (fallback)")
-                    continuation.resume(returning: trimmedURL)
-                case .failed:
-                    let error = exportSession.error ?? SegmentRecordingError.trimExportFailed("Unknown trim export failure")
-                    self.log("Trim export error (fallback): \(error.localizedDescription)")
-                    continuation.resume(throwing: error)
-                case .cancelled:
-                    self.log("Trim export was cancelled (fallback)")
-                    continuation.resume(throwing: SegmentRecordingError.trimExportFailed("Trim export was cancelled"))
-                default:
-                    self.log("Trim export failed with status (fallback): \(exportSession.status)")
-                    continuation.resume(throwing: SegmentRecordingError.trimExportFailed("\(exportSession.status)"))
-                }
-            }
-        }
-
-        log("Successfully trimmed merged file from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds) via fallback")
-        try FileManager.default.removeItem(at: sourceURL)
-        return trimmedFileURL
+        // 3) Last resort: reader/writer (re-encode)
+        let fastURL = try await trimMergedFileFastAsync(sourceURL, trimmedURL: trimmedURL, timeRange: timeRange)
+        self.log("Trim completed via reader/writer (re-encode)")
+        try? FileManager.default.removeItem(at: sourceURL)
+        return fastURL
     }
 
     /**
@@ -1707,10 +1819,11 @@ class SegmentRollingManager: NSObject {
 
     /// Start continuous full-session recorder for 0s merge at stop
     private func startContinuousRecorder() throws {
-        // Build output file in Documents (parent of segments directory)
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let outputURL = documentsPath.appendingPathComponent("continuous_\(Int(Date().timeIntervalSince1970)).m4a")
+        // Build output file in temporary directory
+        let tempDir = FileManager.default.temporaryDirectory
+        let outputURL = tempDir.appendingPathComponent("continuous_\(Int(Date().timeIntervalSince1970)).m4a")
         continuousOutputURL = outputURL
+        tempOutputFiles.append(outputURL)
 
         // Release previous if any
         continuousRecorder?.stop()
@@ -1749,6 +1862,10 @@ class SegmentRollingManager: NSObject {
         if let url = url, FileManager.default.fileExists(atPath: url.path) {
             if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
                let size = attrs[.size] as? Int64, size > Int64(AudioEngineConstants.minValidFileSize) {
+                // Ensure tracked for cleanup
+                if !self.tempOutputFiles.contains(url) {
+                    self.tempOutputFiles.append(url)
+                }
                 return url
             }
         }
@@ -1793,6 +1910,12 @@ class SegmentRollingManager: NSObject {
             // Clean up temporary segment files
             cleanupSegments()
 
+            // Clean up any temp output files (merged/trimmed/continuous)
+            for url in tempOutputFiles {
+                try? FileManager.default.removeItem(at: url)
+            }
+            tempOutputFiles.removeAll()
+
             // Stop and release continuous recorder as well
             if let recorder = continuousRecorder {
                 if recorder.isRecording { recorder.stop() }
@@ -1801,27 +1924,28 @@ class SegmentRollingManager: NSObject {
                 log("Continuous recorder stopped and deallocated")
             }
 
-            // Harden audio session deactivation with retry logic
+            // Harden audio session deactivation with retry logic using async delay to avoid blocking
             if let session = recordingSession {
                 let maxRetries = 3
-
-                for attempt in 1...maxRetries {
+                func attemptDeactivate(_ attempt: Int) {
                     do {
                         try session.setActive(false, options: .notifyOthersOnDeactivation)
                         recordingSession = nil
                         log("SegmentRollingManager audio session deactivated successfully on attempt \(attempt)")
-                        break
                     } catch {
                         log("Warning: Failed to deactivate segment rolling audio session (attempt \(attempt)/\(maxRetries)): \(error.localizedDescription)")
-                        if attempt == maxRetries {
+                        if attempt < maxRetries {
+                            // Schedule next retry asynchronously to avoid blocking
+                            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.1) {
+                                attemptDeactivate(attempt + 1)
+                            }
+                        } else {
                             log("Audio session deactivation failed after \(maxRetries) attempts - forcing nil assignment")
                             recordingSession = nil
-                        } else {
-                            // Brief delay before retry
-                            Thread.sleep(forTimeInterval: 0.1)
                         }
                     }
                 }
+                attemptDeactivate(1)
             }
 
             // Reset state
