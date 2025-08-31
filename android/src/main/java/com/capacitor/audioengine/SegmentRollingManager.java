@@ -149,6 +149,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private MediaRecorder continuousRecorder;
     private File continuousOutputFile;
     private boolean isContinuousActive = false;
+    private boolean enableContinuousRecording = true; // parity with iOS
 
     private Timer segmentTimer;
     private Timer durationUpdateTimer;
@@ -269,8 +270,12 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             manualPausedDurationOffset = 0;
             manualPauseStartTime = 0;
 
-            // Start continuous full-session recorder for 0s merge
-            startContinuousRecorder();
+            // Start continuous full-session recorder for 0s merge (optional)
+            if (enableContinuousRecording) {
+                startContinuousRecorder();
+            } else {
+                Log.d(TAG, "Continuous recorder disabled via config flag");
+            }
 
             // Start first rolling segment
             startNewSegment();
@@ -714,6 +719,34 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     }
 
     /**
+     * Enable or disable using the continuous full-session recorder optimization (parity with iOS)
+     */
+    public void setContinuousRecordingEnabled(boolean enabled) {
+        this.enableContinuousRecording = enabled;
+    }
+
+    /**
+     * Get the duration of audio currently buffered (available for processing)
+     * This represents the actual audio that will be included in the final recording
+     */
+    public long getBufferedAudioDuration() {
+        if (!isActive.get()) {
+            return getElapsedRecordingTime();
+        }
+        // segments count * segmentDuration + current segment elapsed
+        int segmentsInBuffer = segmentBuffer.size();
+        long segmentsDurationMs = (long) segmentsInBuffer * (long) segmentDurationMs;
+        // Estimate current segment duration as time since last rotation within the segment window
+        long now = System.currentTimeMillis();
+        long currentSegmentElapsed = (now - recordingStartTime) % (long) segmentDurationMs;
+        // If manually paused, the current segment is not growing; set elapsed to 0
+        if (isManuallyPaused.get()) {
+            currentSegmentElapsed = 0;
+        }
+        return segmentsDurationMs + Math.max(0, currentSegmentElapsed);
+    }
+
+    /**
      * Check if recording is currently paused (either manually or due to interruption)
      */
     public boolean isRecordingPaused() {
@@ -1026,149 +1059,35 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         // Check memory usage periodically
         checkMemoryUsage();
 
-        // Optimize memory usage with smart rolling window management
+        // Optimize memory usage with rolling window management aligned with iOS
         if (maxDurationMs != null && maxDurationMs > 0) {
-            // Enhanced validation: Ensure maxDurationMs is reasonable
-            if (maxDurationMs < segmentDurationMs) {
-                Log.w(TAG, "maxDuration (" + maxDurationMs + "ms) is smaller than segment duration (" +
-                      segmentDurationMs + "ms). Using minimum of 1 segment.");
-            }
+            // iOS parity: effectiveMaxSegments = ceil(maxDuration/segmentDuration) + 1
+            int effectiveMaxSegments = (int) Math.ceil((double) maxDurationMs / (double) segmentDurationMs) + 1;
+            if (effectiveMaxSegments < 1) effectiveMaxSegments = 1;
 
-            // Calculate the MINIMUM number of segments needed to guarantee target duration
-            // For segment rolling, we need to ensure we always have enough segments to provide
-            // the full maxDuration, even if the current segment is only partially recorded
-
-            // For a 30-second maxDuration with 30-second segments, we need at least 2 segments:
-            // - One complete segment (30s)
-            // - One potentially partial current segment
-            // This ensures we can always provide exactly 30 seconds
-            int minSegmentsNeeded = (int) Math.ceil((double) maxDurationMs / segmentDurationMs);
-
-            // Always keep at least one extra segment to ensure we have overlapping audio
-            // This is crucial for rolling recording to work properly
-            minSegmentsNeeded = Math.max(minSegmentsNeeded, 2);
-
-            // Add configurable safety buffer for additional safety
-            int maxSegmentsToKeep = minSegmentsNeeded + segmentSafetyBuffer;
-
-            Log.d(TAG, "Buffer calculation: maxDuration=" + (maxDurationMs/1000) + "s, minNeeded=" +
-                  minSegmentsNeeded + ", keeping max=" + maxSegmentsToKeep + " segments");
-
-            // For very short durations, ensure we keep at least a reasonable number of segments
-            if (maxDurationMs < segmentDurationMs * 2) {
-                maxSegmentsToKeep = Math.max(maxSegmentsToKeep, 3); // Keep at least 3 for very short durations
-                Log.d(TAG, "Short duration detected, ensuring minimum 3 segments");
-            }
-
-            Log.d(TAG, "Memory-optimized rolling window: need " + minSegmentsNeeded + " segments for " +
-                  (maxDurationMs / 1000) + "s, keeping max " + maxSegmentsToKeep + " segments");
-
-            // Aggressively remove oldest segments to optimize memory usage with error recovery
-            // BUT only if we have more than the minimum required segments
-            long bytesRemoved = 0;
             int removedCount = 0;
-
-            // Enhanced logic: only remove segments if we have significantly more than needed
-            // This prevents removing segments too aggressively which causes the 24s vs 30s issue
-            int currentBufferSize = segmentBuffer.size();
-
-            Log.d(TAG, "Current buffer size: " + currentBufferSize + ", max allowed: " + maxSegmentsToKeep);
-
-            // Only remove segments if we have more than the maximum allowed AND
-            // we're not in the early stages of recording where segments might be incomplete
-            long recordingTimeMs = System.currentTimeMillis() - recordingStartTime;
-                boolean isEarlyRecording = recordingTimeMs < (maxDurationMs + segmentDurationMs); // Give extra time
-
-            if (!isEarlyRecording && currentBufferSize > maxSegmentsToKeep) {
-                Log.d(TAG, "Removing excess segments (not early recording phase)");
-
-                while (segmentBuffer.size() > maxSegmentsToKeep) {
-                    File oldestSegment = segmentBuffer.poll();
-                    if (oldestSegment != null && oldestSegment.exists()) {
-                        long segmentSize = oldestSegment.length();
-
-                        // Try compression before deletion if enabled
-                        if (enableSegmentCompression && segmentSize > 0) {
-                            compressSegmentBeforeDeletion(oldestSegment);
-                        }
-
-                        // Delete with retry logic
-                        boolean deleted = deleteSegmentWithRetry(oldestSegment);
-                        if (deleted) {
-                            bytesRemoved += segmentSize;
-                            removedCount++;
-                            Log.d(TAG, "Removed old segment for memory optimization: " + oldestSegment.getName() +
-                                  " (" + String.format("%.2f", segmentSize / 1024.0) + " KB)");
-                        } else {
-                            Log.e(TAG, "Failed to delete segment after retries: " + oldestSegment.getName());
-                            // Continue anyway to prevent infinite loop
-                        }
-
-                        // Update persistent index
-                        if (enablePersistentIndexing) {
-                            updatePersistentIndex();
-                        }
-                    } else if (oldestSegment != null) {
-                        Log.w(TAG, "Old segment file missing: " + oldestSegment.getName());
-                    }
-                }
-            } else if (isEarlyRecording) {
-                Log.d(TAG, "Early recording phase (" + (recordingTimeMs/1000.0) + "s), preserving all segments for accuracy");
-            } else {
-                Log.d(TAG, "Buffer size (" + currentBufferSize + ") within limits (" + maxSegmentsToKeep + "), no cleanup needed");
-            }
-
-            // Verify we still have enough segments for target duration
-            long totalRecordingMs = System.currentTimeMillis() - recordingStartTime;
-            double totalRecordingSeconds = totalRecordingMs / 1000.0;
-            double maxDurationSeconds = maxDurationMs / 1000.0;
-
-            // Calculate how much audio we can actually provide
-            double availableAudioSeconds = Math.min(totalRecordingSeconds, segmentBuffer.size() * (segmentDurationMs / 1000.0));
-            double targetAudioSeconds = Math.min(maxDurationSeconds, totalRecordingSeconds);
-
-            if (availableAudioSeconds < targetAudioSeconds && totalRecordingSeconds > maxDurationSeconds) {
-                Log.w(TAG, "WARNING: Available audio (" + String.format("%.1f", availableAudioSeconds) +
-                      "s) < target (" + String.format("%.1f", targetAudioSeconds) + "s)");
-            }
-
-            if (removedCount > 0) {
-                Log.d(TAG, "Buffer optimized: kept " + segmentBuffer.size() + "/" + maxSegmentsToKeep +
-                      " segments (removed " + removedCount + " segments, freed " +
-                      String.format("%.2f", bytesRemoved / 1024.0) + " KB), can provide " +
-                      String.format("%.1f", availableAudioSeconds) + "s of " + String.format("%.1f", targetAudioSeconds) + "s target");
-            }
-
-        } else {
-            // Fallback to default behavior for unlimited recording
-            int maxSegmentsAllowed = MAX_SEGMENTS;
-            Log.d(TAG, "Using default max segments: " + maxSegmentsAllowed);
-
-            long bytesRemoved = 0;
-            int removedCount = 0;
-            while (segmentBuffer.size() > maxSegmentsAllowed) {
+            while (segmentBuffer.size() > effectiveMaxSegments) {
                 File oldestSegment = segmentBuffer.poll();
-                if (oldestSegment != null && oldestSegment.exists()) {
-                    long segmentSize = oldestSegment.length();
-                    if (oldestSegment.delete()) {
-                        bytesRemoved += segmentSize;
-                        removedCount++;
-                        Log.d(TAG, "Removed old segment: " + oldestSegment.getName() +
-                              " (" + String.format("%.2f", segmentSize / 1024.0) + " KB)");
-                    } else {
-                        Log.w(TAG, "Failed to delete old segment: " + oldestSegment.getName());
+                if (oldestSegment != null) {
+                    if (enableSegmentCompression && oldestSegment.exists() && oldestSegment.length() > 0) {
+                        compressSegmentBeforeDeletion(oldestSegment);
                     }
-                } else if (oldestSegment != null) {
-                    Log.w(TAG, "Old segment file missing: " + oldestSegment.getName());
+                    deleteSegmentWithRetry(oldestSegment);
+                    removedCount++;
                 }
             }
-
             if (removedCount > 0) {
-                Log.d(TAG, "Added segment to buffer. Buffer size: " + segmentBuffer.size() + "/" + maxSegmentsAllowed +
-                      " (removed " + removedCount + " old segments, freed " + String.format("%.2f", bytesRemoved / 1024.0) + " KB)");
+                Log.d(TAG, "Batched removal of old segments - maintaining rolling window of " + effectiveMaxSegments + " segments");
             }
+            if (enablePersistentIndexing) {
+                updatePersistentIndex();
+            }
+        } else {
+            // Unlimited mode: keep all segments (parity with iOS)
         }
-    }    /**
+    }
+
+    /**
      * Merge all segments in buffer into single audio file using MediaMuxer
      */
     private File mergeSegments() throws IOException {
