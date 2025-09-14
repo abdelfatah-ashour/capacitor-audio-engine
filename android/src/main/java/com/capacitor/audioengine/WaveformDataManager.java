@@ -128,9 +128,7 @@ public class WaveformDataManager {
     public void setNumberOfBars(int bars) {
         if (bars > 0 && bars <= 256) { // Reasonable limits
             this.numberOfBars = bars;
-            Log.d(TAG, "Number of waveform bars set to: " + bars);
         } else {
-            Log.w(TAG, "Invalid number of bars: " + bars + ", using default: " + DEFAULT_BARS);
             this.numberOfBars = DEFAULT_BARS;
         }
     }
@@ -142,9 +140,7 @@ public class WaveformDataManager {
     public void setSampleRate(int sampleRate) {
         if (sampleRate >= 8000 && sampleRate <= 96000) {
             this.sampleRate = sampleRate;
-            Log.d(TAG, "Sample rate set to: " + sampleRate + " Hz");
         } else {
-            Log.w(TAG, "Invalid sample rate: " + sampleRate + ", using default: " + DEFAULT_SAMPLE_RATE);
             this.sampleRate = DEFAULT_SAMPLE_RATE;
         }
     }
@@ -160,14 +156,6 @@ public class WaveformDataManager {
             int requestedMs = Math.round(debounceInSeconds * 1000);
             // Ensure debounce time never goes below minimum threshold
             this.debounceTimeMs = Math.max(MIN_DEBOUNCE_MS, requestedMs);
-
-            if (requestedMs < MIN_DEBOUNCE_MS) {
-                Log.w(TAG, "Requested debounce time " + requestedMs + "ms is below minimum " + MIN_DEBOUNCE_MS + "ms, using minimum");
-            }
-
-            Log.d(TAG, "Debounce time set to: " + (this.debounceTimeMs / 1000.0f) + " seconds (" + this.debounceTimeMs + "ms)");
-        } else {
-            Log.w(TAG, "Invalid debounce time: " + debounceInSeconds + " seconds, keeping current: " + (this.debounceTimeMs / 1000.0f) + " seconds");
         }
 
         // Validate and set number of bars if provided
@@ -192,7 +180,6 @@ public class WaveformDataManager {
     public void setSpeechOnlyMode(boolean enabled, float threshold) {
         this.speechOnlyMode = enabled;
         this.speechThreshold = Math.max(0.0f, Math.min(1.0f, threshold));
-        Log.d(TAG, "Speech-only mode: " + enabled + ", threshold: " + this.speechThreshold);
 
         if (enabled) {
             // Reset VAD state when enabling speech mode
@@ -213,7 +200,6 @@ public class WaveformDataManager {
             // Reinitialize the energy levels array
             recentEnergyLevels = new float[vadWindowSize];
             energyIndex = 0;
-            Log.d(TAG, "VAD window size set to: " + vadWindowSize + " frames (~" + (vadWindowSize * 50) + "ms latency)");
 
             // Reset VAD state if currently enabled
             if (vadEnabled) {
@@ -228,8 +214,6 @@ public class WaveformDataManager {
      */
     public void setVoiceBandFilterEnabled(boolean enabled) {
         this.voiceBandFilterEnabled = enabled;
-        Log.d(TAG, "Voice band filter: " + (enabled ? "ENABLED" : "disabled") +
-              " (filtering " + MIN_VOICE_FREQ + "Hz-" + MAX_VOICE_FREQ + "Hz)");
     }
 
     /**
@@ -238,7 +222,6 @@ public class WaveformDataManager {
      */
     public void setVadEnabled(boolean enabled) {
         this.vadEnabled = enabled;
-        Log.d(TAG, "VAD enabled: " + enabled);
 
         if (enabled) {
             resetVadState();
@@ -260,11 +243,6 @@ public class WaveformDataManager {
         this.vadEnabled = useVAD != null ? useVAD : false;
         this.backgroundCalibrationDuration = calibrationDuration != null ? calibrationDuration : 1000;
 
-        Log.d(TAG, "Speech detection configured - enabled: " + enabled +
-             ", threshold: " + this.speechThreshold + ", VAD: " + this.vadEnabled +
-             ", calibration: " + this.backgroundCalibrationDuration + "ms" +
-             ", window: " + vadWindowSize + " frames" +
-             ", voiceFilter: " + voiceBandFilterEnabled);
 
         if (enabled || this.vadEnabled) {
             resetVadState();
@@ -298,9 +276,6 @@ public class WaveformDataManager {
         setVadWindowSize(vadWindowSize);
         setVoiceBandFilterEnabled(voiceFilter);
 
-        Log.d(TAG, "Advanced VAD configured - enabled: " + vadEnabled +
-             ", window: " + this.vadWindowSize + " frames (~" + (this.vadWindowSize * 50) + "ms)" +
-             ", voiceFilter: " + voiceBandFilterEnabled);
     }
 
     /**
@@ -342,9 +317,6 @@ public class WaveformDataManager {
 
         this.gainFactor = optimalGain;
 
-        Log.d(TAG, "Configured for recording - sampleRate: " + sampleRate +
-              ", channels: " + channels + ", adjustedThreshold: " + adjustedThreshold +
-              ", gainFactor: " + gainFactor);
 
         // Reset calibration with new settings
         if (speechOnlyMode) {
@@ -366,7 +338,6 @@ public class WaveformDataManager {
             recentLevels[i] = 0.0f;
         }
 
-        Log.d(TAG, "Level calibration reset for new recording configuration");
     }
 
     /**
@@ -404,8 +375,6 @@ public class WaveformDataManager {
                 }
 
                 levelCalibrated = true;
-                Log.d(TAG, String.format("Level calibration complete - avgLevel: %.3f, factor: %.3f, target: %.3f",
-                    avgLevel, levelCalibrationFactor, targetLevel));
             }
         }
     }
@@ -464,67 +433,51 @@ public class WaveformDataManager {
      */
     public void startMonitoring() {
         if (isActive.get()) {
-            Log.w(TAG, "Waveform monitoring is already active");
+            return;
+        }
+        // Reset level calibration for new monitoring session
+        resetLevelCalibration();
+
+        // Initialize emission tracking
+        monitoringStartTime = System.currentTimeMillis();
+        emissionCount = 0;
+        lastEmissionTime = 0;
+
+        // Calculate buffer size with debounce-aware sizing
+        int minBufferSize = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, AUDIO_FORMAT);
+        if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
             return;
         }
 
-        try {
-            // Reset level calibration for new monitoring session
-            resetLevelCalibration();
+        // Calculate optimal buffer size based on debounce time and sample rate
+        // This ensures we don't process audio data more frequently than needed
+        int samplesPerDebounce = (sampleRate * debounceTimeMs) / 1000;
+        int optimalBufferSize = Math.max(minBufferSize, samplesPerDebounce * 2); // 2 bytes per 16-bit sample
 
-            // Initialize emission tracking
-            monitoringStartTime = System.currentTimeMillis();
-            emissionCount = 0;
-            lastEmissionTime = 0;
+        // Apply buffer size factor but cap it to prevent excessive buffering
+        int bufferSize = Math.min(optimalBufferSize, minBufferSize * BUFFER_SIZE_FACTOR);
+        this.bufferSize = bufferSize;
 
-            // Calculate buffer size with debounce-aware sizing
-            int minBufferSize = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, AUDIO_FORMAT);
-            if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
-                Log.e(TAG, "Failed to get minimum buffer size");
-                return;
-            }
 
-            // Calculate optimal buffer size based on debounce time and sample rate
-            // This ensures we don't process audio data more frequently than needed
-            int samplesPerDebounce = (sampleRate * debounceTimeMs) / 1000;
-            int optimalBufferSize = Math.max(minBufferSize, samplesPerDebounce * 2); // 2 bytes per 16-bit sample
+        // Initialize AudioRecord for PCM data access
+        audioRecord = new AudioRecord(
+            MediaRecorder.AudioSource.MIC,
+            sampleRate,
+            CHANNEL_CONFIG,
+            AUDIO_FORMAT,
+            bufferSize
+        );
 
-            // Apply buffer size factor but cap it to prevent excessive buffering
-            int bufferSize = Math.min(optimalBufferSize, minBufferSize * BUFFER_SIZE_FACTOR);
-            this.bufferSize = bufferSize;
-
-            Log.d(TAG, "Starting waveform monitoring with buffer size: " + bufferSize +
-                  ", sample rate: " + sampleRate +
-                  ", debounce: " + debounceTimeMs + "ms" +
-                  ", samples per debounce: " + samplesPerDebounce);
-
-            // Initialize AudioRecord for PCM data access
-            audioRecord = new AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                CHANNEL_CONFIG,
-                AUDIO_FORMAT,
-                bufferSize
-            );
-
-            if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord initialization failed");
-                return;
-            }
-
-            isActive.set(true);
-            startRecordingThread();
-
-            // Emit waveform init event
-            emitWaveformInit();
-
-            Log.d(TAG, "Waveform monitoring started successfully");
-
-        } catch (SecurityException e) {
-            Log.e(TAG, "Permission denied for audio recording", e);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to start waveform monitoring", e);
+        if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+            return;
         }
+
+        isActive.set(true);
+        startRecordingThread();
+
+        // Emit waveform init event
+        emitWaveformInit();
+
     }
 
     /**
@@ -532,12 +485,8 @@ public class WaveformDataManager {
      */
     public void stopMonitoring() {
         if (!isActive.get()) {
-            Log.d(TAG, "Waveform monitoring is not active");
             return;
         }
-
-        Log.d(TAG, "Stopping waveform monitoring");
-
         // Emit waveform destroy event before cleanup
         emitWaveformDestroy("stop_recording");
 
@@ -550,25 +499,19 @@ public class WaveformDataManager {
             try {
                 recordingThread.join(1000); // Wait up to 1 second
             } catch (InterruptedException e) {
-                Log.w(TAG, "Interrupted while waiting for recording thread to stop", e);
                 Thread.currentThread().interrupt();
             }
         }
 
         // Release AudioRecord
         if (audioRecord != null) {
-            try {
-                if (audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
-                    audioRecord.stop();
-                }
-                audioRecord.release();
-                audioRecord = null;
-            } catch (Exception e) {
-                Log.w(TAG, "Error releasing AudioRecord", e);
+            if (audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
+                audioRecord.stop();
             }
-        }
+            audioRecord.release();
+            audioRecord = null;
 
-        Log.d(TAG, "Waveform monitoring stopped");
+        }
     }
 
     /**
@@ -576,7 +519,6 @@ public class WaveformDataManager {
      */
     public void pauseMonitoring() {
         isRecording.set(false);
-        Log.d(TAG, "Waveform monitoring paused");
     }
 
     /**
@@ -585,7 +527,6 @@ public class WaveformDataManager {
     public void resumeMonitoring() {
         if (isActive.get()) {
             isRecording.set(true);
-            Log.d(TAG, "Waveform monitoring resumed");
         }
     }
 
@@ -609,9 +550,6 @@ public class WaveformDataManager {
             try {
                 audioRecord.startRecording();
                 isRecording.set(true);
-
-                Log.d(TAG, "Recording thread started, buffer size: " + buffer.length);
-
                 while (isActive.get() && !Thread.currentThread().isInterrupted()) {
                     if (!isRecording.get()) {
                         // Paused state - sleep longer to reduce CPU usage
@@ -633,25 +571,16 @@ public class WaveformDataManager {
                             // This prevents unnecessary CPU usage between emissions
                         }
                     } else if (samplesRead < 0) {
-                        Log.e(TAG, "Error reading audio data: " + samplesRead);
                         break;
                     }
                 }
 
             } catch (InterruptedException e) {
-                Log.d(TAG, "Recording thread interrupted");
                 Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                Log.e(TAG, "Error in recording thread", e);
             } finally {
                 if (audioRecord != null && audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
-                    try {
-                        audioRecord.stop();
-                    } catch (Exception e) {
-                        Log.w(TAG, "Error stopping AudioRecord in thread", e);
-                    }
+                    audioRecord.stop();
                 }
-                Log.d(TAG, "Recording thread finished");
             }
         }, "WaveformDataThread");
 
@@ -672,100 +601,68 @@ public class WaveformDataManager {
      * @param samplesRead Number of samples read
      */
     private void processAndEmitWaveformData(short[] buffer, int samplesRead) {
-        try {
-            // Calculate RMS (Root Mean Square) for the entire buffer with higher precision
-            double sum = 0.0;
+        // Calculate RMS (Root Mean Square) for the entire buffer with higher precision
+        double sum = 0.0;
 
-            for (int i = 0; i < samplesRead; i++) {
-                double sample = buffer[i];
-                sum += sample * sample;
-            }
-
-            // Calculate RMS with double precision for better accuracy (matching iOS)
-            double rms = Math.sqrt(sum / (double) samplesRead);
-
-            // Normalize to 0-1 range with better precision (matching iOS Float32 approach)
-            float rawLevel = (float) (rms / Short.MAX_VALUE);
-
-            // Apply human voice band filtering FIRST (matching iOS order) - before gain
-            if (voiceBandFilterEnabled) {
-                rawLevel = applyVoiceBandFilter(rawLevel, buffer, samplesRead);
-            }
-
-            // Apply configurable gain factor (matching iOS gain factors) - after filtering
-            float calculatedLevel = rawLevel * gainFactor;
-
-            // Calibrate levels based on recording configuration and recent audio characteristics
-            calibrateLevels(calculatedLevel);
-
-            // Increment frame count for speech detection
-            frameCount++;
-
-            // Determine final emit level for lambda
-            final float finalEmitLevel;
-            if (speechOnlyMode) {
-                boolean isSpeech = detectSpeech(calculatedLevel, buffer, samplesRead);
-                finalEmitLevel = isSpeech ? calculatedLevel : 0.0f; // Send level = 0 for silence instead of omitting
-
-                // Debug logging for speech detection (matching iOS precision output exactly)
-                if (frameCount % 50 == 0) { // Log every 50 frames matching iOS debug frequency
-                    Log.d(TAG, String.format("Speech detection: level=%.3f, threshold=%.3f, isSpeech=%b, emitLevel=%.3f",
-                        calculatedLevel, speechThreshold, isSpeech, finalEmitLevel));
-                }
-            } else {
-                finalEmitLevel = calculatedLevel;
-                // Log raw levels when not using speech detection (matching iOS debug frequency exactly)
-                if (frameCount % 50 == 0) {
-                    Log.d(TAG, String.format("Raw audio level: %.3f (speech detection disabled)",
-                        calculatedLevel));
-                }
-            }
-
-            // Apply global silence gate and soft peak clamp (matching iOS behavior exactly)
-            float emitLevel = finalEmitLevel;
-
-            // Silence gate: zero out very small values even if speechOnlyMode is off (matching iOS)
-            float silenceGate = Math.max(0.01f, speechThreshold);
-            if (emitLevel < silenceGate) {
-                emitLevel = 0.0f;
-            }
-
-            // Soft clamp to keep typical speaking levels within ~0.3-0.7 range (matching iOS)
-            // (still allows lower values if speaking softly and won't exceed 0.7 peak)
-            if (emitLevel > 0.0f) {
-                emitLevel = Math.min(peakLimit, emitLevel);
-            }
-
-            // Apply final level calibration and rounding to eliminate precision errors
-            float originalLevel = emitLevel;
-            emitLevel = roundAndCalibrateLevel(emitLevel);
-
-            // Log calibration details every 100 frames
-            if (frameCount % 100 == 0) {
-                Log.d(TAG, String.format("Level calibration: original=%.6f, calibrated=%.3f, factor=%.3f, calibrated=%b",
-                    originalLevel, emitLevel, levelCalibrationFactor, levelCalibrated));
-            }
-
-            // Always emit the level value on the main thread (continuous emission)
-            final float finalEmitLevelWithGate = emitLevel;
-
-            // Track emission statistics for debugging
-            long currentTime = System.currentTimeMillis();
-            emissionCount++;
-
-            // Log emission frequency every 100 emissions to help debug
-            if (emissionCount % 100 == 0) {
-                long elapsed = currentTime - monitoringStartTime;
-                float emissionsPerSecond = (emissionCount * 1000.0f) / elapsed;
-                Log.d(TAG, String.format("Emission stats: count=%d, elapsed=%dms, rate=%.1f/sec, debounce=%dms",
-                    emissionCount, elapsed, emissionsPerSecond, debounceTimeMs));
-            }
-
-            mainHandler.post(() -> emitWaveformLevel(finalEmitLevelWithGate));
-
-        } catch (Exception e) {
-            Log.e(TAG, "Error processing waveform data", e);
+        for (int i = 0; i < samplesRead; i++) {
+            double sample = buffer[i];
+            sum += sample * sample;
         }
+
+        // Calculate RMS with double precision for better accuracy (matching iOS)
+        double rms = Math.sqrt(sum / (double) samplesRead);
+
+        // Normalize to 0-1 range with better precision (matching iOS Float32 approach)
+        float rawLevel = (float) (rms / Short.MAX_VALUE);
+
+        // Apply human voice band filtering FIRST (matching iOS order) - before gain
+        if (voiceBandFilterEnabled) {
+            rawLevel = applyVoiceBandFilter(rawLevel, buffer, samplesRead);
+        }
+
+        // Apply configurable gain factor (matching iOS gain factors) - after filtering
+        float calculatedLevel = rawLevel * gainFactor;
+
+        // Calibrate levels based on recording configuration and recent audio characteristics
+        calibrateLevels(calculatedLevel);
+
+        // Increment frame count for speech detection
+        frameCount++;
+
+        // Determine final emit level for lambda
+        final float finalEmitLevel;
+        if (speechOnlyMode) {
+            boolean isSpeech = detectSpeech(calculatedLevel, buffer, samplesRead);
+            finalEmitLevel = isSpeech ? calculatedLevel : 0.0f; // Send level = 0 for silence instead of omitting
+        } else {
+            finalEmitLevel = calculatedLevel;
+        }
+
+        // Apply global silence gate and soft peak clamp (matching iOS behavior exactly)
+        float emitLevel = finalEmitLevel;
+
+        // Silence gate: zero out very small values even if speechOnlyMode is off (matching iOS)
+        float silenceGate = Math.max(0.01f, speechThreshold);
+        if (emitLevel < silenceGate) {
+            emitLevel = 0.0f;
+        }
+
+        // Soft clamp to keep typical speaking levels within ~0.3-0.7 range (matching iOS)
+        // (still allows lower values if speaking softly and won't exceed 0.7 peak)
+        if (emitLevel > 0.0f) {
+            emitLevel = Math.min(peakLimit, emitLevel);
+        }
+
+        // Apply final level calibration and rounding to eliminate precision errors
+        float originalLevel = emitLevel;
+        emitLevel = roundAndCalibrateLevel(emitLevel);
+
+        // Always emit the level value on the main thread (continuous emission)
+        final float finalEmitLevelWithGate = emitLevel;
+
+        emissionCount++;
+
+        mainHandler.post(() -> emitWaveformLevel(finalEmitLevelWithGate));
     }
 
     /**
@@ -786,7 +683,6 @@ public class WaveformDataManager {
                 // Safety margin matching iOS backgroundNoiseMultiplier
                 backgroundNoiseLevel = backgroundNoiseLevel * 1.2f;
                 backgroundNoiseCalibrated = true;
-                Log.d(TAG, "Background noise calibrated: " + backgroundNoiseLevel);
             }
             return false; // Don't detect speech during calibration
         }
@@ -796,12 +692,6 @@ public class WaveformDataManager {
         if (backgroundNoiseCalibrated) {
             // Use the higher of configured threshold or background noise + smaller margin (matching iOS)
             effectiveThreshold = Math.max(speechThreshold, backgroundNoiseLevel + 0.005f);
-        }
-
-        // Log effective threshold every 100 frames for debugging (matching iOS frequency)
-        if (frameCount % 100 == 0) {
-            Log.d(TAG, String.format("Effective threshold: %.4f (config: %.4f, bg: %.4f, calibrated: %b)",
-                effectiveThreshold, speechThreshold, backgroundNoiseLevel, backgroundNoiseCalibrated));
         }
 
         // Simple threshold check
@@ -835,7 +725,6 @@ public class WaveformDataManager {
             if (frameCount == 30) {
                 backgroundEnergyLevel = (backgroundEnergyLevel / 30.0f) * ENERGY_THRESHOLD_MULTIPLIER;
                 backgroundCalibrated = true;
-                Log.d(TAG, "VAD background energy calibrated: " + backgroundEnergyLevel);
             }
             return false; // Don't emit during calibration
         }
@@ -865,11 +754,6 @@ public class WaveformDataManager {
         // Combined VAD decision
         boolean isSpeech = energyCheck && zcrCheck && continuityCheck;
 
-        if (frameCount % 100 == 0) { // Log every 100 frames for debugging (matching iOS frequency)
-            Log.d(TAG, String.format("VAD: energy=%.3f (bg=%.3f), zcr=%d, ratio=%.2f, speech=%b",
-                currentLevel, backgroundEnergyLevel, zeroCrossings, speechRatio, isSpeech));
-        }
-
         return isSpeech;
     }
 
@@ -898,11 +782,6 @@ public class WaveformDataManager {
             if (!inVoiceBand) {
                 // Attenuate signals outside voice band (likely noise/music) - matching iOS outOfBandAttenuation
                 level *= 0.3f; // Reduce to 30% for non-voice signals (same as iOS)
-
-                if (frameCount % 100 == 0) { // Debug logging (matching iOS frequency)
-                    Log.d(TAG, String.format("Voice filter: ZCR=%d (expected: %.1f-%.1f), inBand=%b, level=%.4f",
-                        zeroCrossings, expectedMinZCR, expectedMaxZCR, inVoiceBand, level));
-                }
             }
 
             return level;
