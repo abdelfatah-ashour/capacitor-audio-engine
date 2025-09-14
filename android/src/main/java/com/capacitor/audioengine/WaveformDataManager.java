@@ -66,11 +66,11 @@ public class WaveformDataManager {
     private int vadWindowSize = DEFAULT_VAD_WINDOW_SIZE; // Configurable VAD window size for latency optimization
     private boolean voiceBandFilterEnabled = true; // Enable human voice band filtering for noise rejection
 
-    // Gain factor for audio level amplification (matching iOS accuracy)
-    private float gainFactor = 20.0f; // Increased to match iOS defaultGainFactor for better accuracy
+    // Gain factor for audio level amplification (tuned to avoid boosted/overstated levels)
+    private float gainFactor = 8.0f; // Lower default gain to improve accuracy and match perceived loudness on iOS
 
     // Peak limiting configuration (matching iOS behavior) - always enabled internally
-    private float peakLimit = 0.7f; // Soft peak limit for typical speech levels (matching iOS)
+    private float peakLimit = 0.6f; // Slightly lower peak limit to avoid visually "boosted" bars
     // Silence gate is always enabled for cleaner waveform visualization (matching iOS behavior)
 
     // Level calibration and precision control
@@ -308,12 +308,11 @@ public class WaveformDataManager {
 
         this.speechThreshold = adjustedThreshold;
 
-        float optimalGain = 15.0f;
+        float optimalGain = 6.0f; // Base gain for typical 44.1k/48k mono speech
 
         if (sampleRate >= 48000) {
-            optimalGain = 30.0f;
+            optimalGain = 8.0f; // Slightly higher for high-quality input, but avoid over-boosting
         }
-
 
         this.gainFactor = optimalGain;
 
@@ -545,7 +544,6 @@ public class WaveformDataManager {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
 
             short[] buffer = new short[bufferSize / 2]; // 16-bit samples (2 bytes per sample)
-            long lastEmissionTime = 0;
 
             try {
                 audioRecord.startRecording();
@@ -642,7 +640,7 @@ public class WaveformDataManager {
         float emitLevel = finalEmitLevel;
 
         // Silence gate: zero out very small values even if speechOnlyMode is off (matching iOS)
-        float silenceGate = Math.max(0.01f, speechThreshold);
+        float silenceGate = Math.max(0.02f, speechThreshold);
         if (emitLevel < silenceGate) {
             emitLevel = 0.0f;
         }
@@ -691,7 +689,7 @@ public class WaveformDataManager {
         float effectiveThreshold = speechThreshold;
         if (backgroundNoiseCalibrated) {
             // Use the higher of configured threshold or background noise + smaller margin (matching iOS)
-            effectiveThreshold = Math.max(speechThreshold, backgroundNoiseLevel + 0.005f);
+            effectiveThreshold = Math.max(speechThreshold, backgroundNoiseLevel + 0.01f);
         }
 
         // Simple threshold check
