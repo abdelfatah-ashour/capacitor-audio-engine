@@ -1106,7 +1106,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
     @PluginMethod
     public void getPlaybackInfo(PluginCall call) {
-        // Ensure we're on the main thread since ExoPlayer methods need to be called from main thread
+        // Ensure we're on the main thread since MediaPlayer methods need to be called from main thread
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post(() -> getPlaybackInfo(call));
             return;

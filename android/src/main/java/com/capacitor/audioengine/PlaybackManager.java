@@ -5,6 +5,7 @@ import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaMetadataRetriever;
+import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.MediaMetadataCompat;
@@ -15,17 +16,9 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 
 import com.getcapacitor.JSObject;
-import com.google.android.exoplayer2.ExoPlayer;
-import com.google.android.exoplayer2.MediaItem;
-import com.google.android.exoplayer2.MediaMetadata;
-import com.google.android.exoplayer2.Player;
-import com.google.android.exoplayer2.source.ConcatenatingMediaSource;
-import com.google.android.exoplayer2.source.MediaSource;
-import com.google.android.exoplayer2.source.ProgressiveMediaSource;
-import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
-import com.google.android.exoplayer2.util.Util;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.ArrayList;
@@ -33,7 +26,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
-public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFocusChangeListener {
+public class PlaybackManager implements MediaPlayer.OnPreparedListener, MediaPlayer.OnCompletionListener,
+        MediaPlayer.OnErrorListener, AudioManager.OnAudioFocusChangeListener {
     private static final String TAG = "PlaybackManager";
 
     public interface PlaybackManagerListener {
@@ -51,7 +45,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     private final Handler mainHandler;
 
     // Audio components
-    private ExoPlayer player;
+    private MediaPlayer player;
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
     private MediaSessionCompat mediaSession;
@@ -61,10 +55,6 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     private int currentIndex = 0;
     private PlaybackStatus status = PlaybackStatus.IDLE;
     private HashMap<String, Long> trackPositions = new HashMap<>();
-
-  // Media sources
-    private ConcatenatingMediaSource concatenatingMediaSource;
-    private DefaultDataSourceFactory dataSourceFactory;
 
     // Progress tracking
     private static final long PROGRESS_UPDATE_INTERVAL = 500; // 500ms
@@ -92,31 +82,29 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     }
 
     private void initializeComponents() {
-        // Initialize ExoPlayer
-        player = new ExoPlayer.Builder(context).build();
-        player.addListener(this);
+        // Initialize MediaPlayer
+        player = new MediaPlayer();
+        player.setOnPreparedListener(this);
+        player.setOnCompletionListener(this);
+        player.setOnErrorListener(this);
 
         // Initialize AudioManager
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-
-        // Initialize data source factory
-        dataSourceFactory = new DefaultDataSourceFactory(context,
-            Util.getUserAgent(context, "CapacitorAudioEngine"));
 
         // Initialize media session
         setupMediaSession();
 
         // Setup audio focus request for Android O and above
-      AudioAttributes audioAttributes = new AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA)
-        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-        .build();
+        AudioAttributes audioAttributes = new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build();
 
-      audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-          .setAudioAttributes(audioAttributes)
-          .setAcceptsDelayedFocusGain(true)
-          .setOnAudioFocusChangeListener(this)
-          .build();
+        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(audioAttributes)
+            .setAcceptsDelayedFocusGain(true)
+            .setOnAudioFocusChangeListener(this)
+            .build();
     }
 
     private void setupMediaSession() {
@@ -211,24 +199,15 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     return tracks;
   }
 
-  private void initPlaylistOnMainThread(List<AudioTrack> tracks) throws Exception {
+    private void initPlaylistOnMainThread(List<AudioTrack> tracks) throws Exception {
         this.playlist = new ArrayList<>(tracks);
-      this.currentIndex = 0;
+        this.currentIndex = 0;
         this.status = PlaybackStatus.LOADING;
 
-        // Create concatenating media source
-        concatenatingMediaSource = new ConcatenatingMediaSource();
-
-        for (AudioTrack track : tracks) {
-            MediaItem mediaItem = MediaItem.fromUri(track.getUrl());
-            MediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(mediaItem);
-            concatenatingMediaSource.addMediaSource(mediaSource);
+        // For MediaPlayer, we'll load the first track
+        if (!tracks.isEmpty()) {
+            loadCurrentTrack();
         }
-
-        // Prepare player
-        player.setMediaSource(concatenatingMediaSource);
-        player.prepare();
 
         this.status = PlaybackStatus.IDLE;
 
@@ -239,13 +218,9 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     private List<JSObject> initPlaylistOnMainThreadWithResults(List<AudioTrack> tracks, boolean preloadNext) throws Exception {
         List<JSObject> trackResults = new ArrayList<>();
         List<AudioTrack> validTracks = new ArrayList<>();
-        List<MediaSource> validMediaSources = new ArrayList<>();
 
         this.currentIndex = 0;
         this.status = PlaybackStatus.LOADING;
-
-        // Store preloadNext setting (Android ExoPlayer handles this automatically when using ConcatenatingMediaSource)
-        // but we can use this for future optimizations
 
         // Process each track and collect information
         for (AudioTrack track : tracks) {
@@ -253,11 +228,6 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             trackInfo.put("url", track.getUrl());
 
             try {
-                // Validate URL and create MediaItem
-                MediaItem mediaItem = MediaItem.fromUri(track.getUrl());
-                MediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(mediaItem);
-
                 // Try to extract basic metadata
                 String mimeType = getMimeTypeFromUrl(track.getUrl());
                 if (mimeType != null) {
@@ -286,7 +256,6 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
 
                 // Add to valid collections
                 validTracks.add(track);
-                validMediaSources.add(mediaSource);
                 trackInfo.put("loaded", true);
 
             } catch (Exception e) {
@@ -301,17 +270,9 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         // Update playlist with valid tracks
         this.playlist = validTracks;
 
-        // Create concatenating media source with valid media sources
-        if (!validMediaSources.isEmpty()) {
-            concatenatingMediaSource = new ConcatenatingMediaSource();
-            for (MediaSource mediaSource : validMediaSources) {
-                concatenatingMediaSource.addMediaSource(mediaSource);
-            }
-
-            // Prepare player
-            player.setMediaSource(concatenatingMediaSource);
-            player.prepare();
-
+        // For MediaPlayer, we'll load the first track
+        if (!validTracks.isEmpty()) {
+            loadCurrentTrack();
             this.status = PlaybackStatus.IDLE;
             updateMediaSessionMetadata();
         } else {
@@ -319,6 +280,24 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         }
 
         return trackResults;
+    }
+
+    private void loadCurrentTrack() {
+        if (playlist == null || currentIndex < 0 || currentIndex >= playlist.size()) {
+            return;
+        }
+
+        AudioTrack track = playlist.get(currentIndex);
+        try {
+            player.reset();
+            player.setDataSource(track.getUrl());
+            player.prepareAsync();
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to load track: " + track.getUrl(), e);
+            if (listener != null) {
+                listener.onPlaybackError("Failed to load track: " + e.getMessage());
+            }
+        }
     }
 
     private String getMimeTypeFromUrl(String url) {
@@ -416,19 +395,23 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
 
         if (status == PlaybackStatus.IDLE || status == PlaybackStatus.PAUSED || status == PlaybackStatus.STOPPED) {
             if (requestAudioFocus()) {
-                player.setPlayWhenReady(true);
-                status = PlaybackStatus.PLAYING;
+                if (status == PlaybackStatus.IDLE) {
+                    loadCurrentTrack();
+                } else {
+                    player.start();
+                    status = PlaybackStatus.PLAYING;
 
-                AudioTrack currentTrack = getCurrentTrack();
-                if (currentTrack != null && listener != null) {
-                    listener.onPlaybackStarted(currentTrack, currentIndex);
+                    AudioTrack currentTrack = getCurrentTrack();
+                    if (currentTrack != null && listener != null) {
+                        listener.onPlaybackStarted(currentTrack, currentIndex);
+                    }
+
+                    // Start progress tracking
+                    startProgressTracking();
+
+                    updatePlaybackState();
+                    emitStatusChange();
                 }
-
-                // Start progress tracking
-                startProgressTracking();
-
-                updatePlaybackState();
-                emitStatusChange();
             }
         }
     }
@@ -447,7 +430,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             trackPositions.put(currentTrack.getUrl(), currentPosition);
         }
 
-        player.setPlayWhenReady(false);
+        player.pause();
         status = PlaybackStatus.PAUSED;
 
         if (currentTrack != null && listener != null) {
@@ -478,7 +461,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             trackPositions.remove(currentTrack.getUrl());
         }
 
-        player.setPlayWhenReady(false);
+        player.stop();
         player.seekTo(0);
         status = PlaybackStatus.STOPPED;
 
@@ -497,7 +480,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
             return;
         }
 
-        long milliseconds = (long) (seconds * 1000);
+        int milliseconds = (int) (seconds * 1000);
         player.seekTo(milliseconds);
     }
 
@@ -510,7 +493,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
 
         if (currentIndex < playlist.size() - 1) {
             currentIndex++;
-            player.seekTo(currentIndex, 0);
+            loadCurrentTrack();
 
             AudioTrack currentTrack = getCurrentTrack();
             if (currentTrack != null && listener != null) {
@@ -530,7 +513,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
 
         if (currentIndex > 0) {
             currentIndex--;
-            player.seekTo(currentIndex, 0);
+            loadCurrentTrack();
 
             AudioTrack currentTrack = getCurrentTrack();
             if (currentTrack != null && listener != null) {
@@ -550,7 +533,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
 
         if (index >= 0 && index < playlist.size()) {
             currentIndex = index;
-            player.seekTo(currentIndex, 0);
+            loadCurrentTrack();
 
             AudioTrack currentTrack = getCurrentTrack();
             if (currentTrack != null && listener != null) {
@@ -577,7 +560,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     }
 
     public double getDuration() {
-        long duration = player.getDuration();
+        int duration = player.getDuration();
         return duration != -1 ? duration / 1000.0 : 0.0;
     }
 
@@ -695,7 +678,7 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
                 status = PlaybackStatus.PAUSED;
             }
 
-            player.seekTo(index, 0);
+            loadCurrentTrack();
 
             AudioTrack newTrack = playlist.get(index);
             if (listener != null) {
@@ -719,14 +702,14 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
 
             AudioTrack newTrack = playlist.get(index);
 
+            // Load the track first
+            loadCurrentTrack();
+
             // Check if we have a stored position for this track
             Long storedPosition = trackPositions.get(newTrack.getUrl());
             if (storedPosition != null) {
-                // Seek to the stored position
-                player.seekTo(index, storedPosition);
-            } else {
-                // No stored position, start from beginning
-                player.seekTo(index, 0);
+                // Seek to the stored position after the track is loaded
+                player.seekTo(storedPosition.intValue());
             }
 
             if (listener != null) {
@@ -754,31 +737,24 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         abandonAudioFocus();
     }
 
-    // ExoPlayer.Listener implementation
+    // MediaPlayer listener implementations
     @Override
-    public void onPlaybackStateChanged(int playbackState) {
-        switch (playbackState) {
-            case Player.STATE_ENDED:
-                onTrackCompleted();
-                break;
-            case Player.STATE_READY:
-                // Player is ready to play
-                break;
-            case Player.STATE_BUFFERING:
-                // Player is buffering
-                break;
-            case Player.STATE_IDLE:
-                // Player is idle
-                break;
-        }
+    public void onPrepared(MediaPlayer mp) {
+        // Player is ready to play
         updatePlaybackState();
     }
 
     @Override
-    public void onPlayerError(@NonNull com.google.android.exoplayer2.PlaybackException error) {
+    public void onCompletion(MediaPlayer mp) {
+        onTrackCompleted();
+    }
+
+    @Override
+    public boolean onError(MediaPlayer mp, int what, int extra) {
         if (listener != null) {
-            listener.onPlaybackError("Playback error: " + error.getMessage());
+            listener.onPlaybackError("Playback error: " + what + ", " + extra);
         }
+        return true; // Error handled
     }
 
     private void onTrackCompleted() {
@@ -881,8 +857,8 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
         if (player != null && listener != null) {
             AudioTrack currentTrack = getCurrentTrack();
             if (currentTrack != null) {
-                long currentPosition = player.getCurrentPosition();
-                long duration = player.getDuration();
+                int currentPosition = player.getCurrentPosition();
+                int duration = player.getDuration();
                 boolean isPlaying = (status == PlaybackStatus.PLAYING);
 
                 listener.onPlaybackProgress(currentTrack, currentIndex, currentPosition, duration, isPlaying);
@@ -893,8 +869,8 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     private void emitStatusChange() {
         if (listener != null) {
             AudioTrack currentTrack = getCurrentTrack();
-            long currentPosition = player != null ? player.getCurrentPosition() : 0;
-            long duration = player != null ? player.getDuration() : 0;
+            int currentPosition = player != null ? player.getCurrentPosition() : 0;
+            int duration = player != null ? player.getDuration() : 0;
             boolean isPlaying = (status == PlaybackStatus.PLAYING);
 
             listener.onPlaybackStatusChanged(currentTrack, currentIndex, status, currentPosition, duration, isPlaying);
