@@ -57,6 +57,8 @@ dependencies {
     implementation project(':capacitor-android')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
 
+    // ExoPlayer for audio playback
+    implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
 
     // Media session support
     implementation 'androidx.media:media:1.7.0'
