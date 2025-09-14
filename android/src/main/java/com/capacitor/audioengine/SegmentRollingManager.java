@@ -36,7 +36,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private static final String TAG = "SegmentRollingManager";
 
     // Segment rolling constants
-    private static final int DEFAULT_SEGMENT_DURATION_MS = 300000; // 5 minutes (legacy default)
+    private static final int DEFAULT_SEGMENT_DURATION_MS = 30000; // 30 seconds (new default for faster finalize)
     private volatile int segmentDurationMs = DEFAULT_SEGMENT_DURATION_MS; // instance-configurable segment duration
     private static final int MAX_RETENTION_DURATION_MS = 600000; // 10 minutes
     private static final int MAX_SEGMENTS = MAX_RETENTION_DURATION_MS / DEFAULT_SEGMENT_DURATION_MS; // used only for default estimation
@@ -200,6 +200,25 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     // Synchronization
     private final Object recordingLock = new Object();
 
+    // Background pre-merge state
+    private Thread preMergeThread;
+    private final AtomicBoolean preMergeRunning = new AtomicBoolean(false);
+    private final AtomicBoolean preMergeStopRequested = new AtomicBoolean(false);
+    private final AtomicLong mergePlanVersion = new AtomicLong(0); // increment when segments change
+    private final AtomicLong mergedVersion = new AtomicLong(0); // last version applied to merged_temp
+    private final Object preMergeLock = new Object();
+    private File mergedTempFile;
+    // Incremental pre-merge tracking
+    private final ArrayList<String> preMergedNames = new ArrayList<>();
+    private long preMergedDurationUs = 0;
+
+    // Background continuous window (trim) worker
+    private Thread continuousWindowThread;
+    private final AtomicBoolean continuousWindowRunning = new AtomicBoolean(false);
+    private final AtomicBoolean continuousWindowStopRequested = new AtomicBoolean(false);
+    private final Object continuousWindowLock = new Object();
+    private File continuousWindowTempFile;
+
     // Audio interruption handling
     private final Context context;
     private AudioInterruptionManager interruptionManager;
@@ -224,6 +243,16 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
         // Clean up any old segments from previous sessions
         cleanupOldSegments();
+
+        // Prepare merged temp file path
+        mergedTempFile = new File(segmentsDirectory, ".merged_temp.m4a");
+        // Ensure no stale temp file from previous runs
+        if (mergedTempFile.exists()) {
+            boolean deleted = mergedTempFile.delete();
+            if (!deleted) {
+                Log.w(TAG, "Failed to delete stale merged temp file at init: " + mergedTempFile.getAbsolutePath());
+            }
+        }
 
         // Recover from persistent index if available
         if (enablePersistentIndexing) {
@@ -279,6 +308,9 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
             // Start first rolling segment
             startNewSegment();
+
+            // Start background pre-merge worker
+            startPreMergeWorker();
 
             // Schedule segment rotation timer
             segmentTimer = new Timer("SegmentRotationTimer", true);
@@ -533,6 +565,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
      */
     public File stopSegmentRolling() throws IOException {
         synchronized (recordingLock) {
+            long __stopEnterNs = System.nanoTime();
             Log.d(TAG, "stopSegmentRolling called - isActive: " + isActive.get());
 
             if (!isActive.get()) {
@@ -588,41 +621,122 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 Log.d(TAG, "No current segment recorder to stop (this is normal after reset)");
             }
 
-            // First, stop the continuous recorder to obtain final continuous .m4a instantly (0s merge)
-            File mergedFile = stopContinuousRecorderAndReturnFile();
+            // Timing: after finalizing last segment
+            long __afterFinalizeNs = System.nanoTime();
+            long __deltaFinalizeMs = (__afterFinalizeNs - __stopEnterNs) / 1_000_000L;
+            Log.d(TAG, "T_stop: after finalizing last segment: " + __deltaFinalizeMs + " ms since enter");
+            if (__deltaFinalizeMs > 300) {
+                Log.w(TAG, "Slow step: finalize last segment took >300ms (" + __deltaFinalizeMs + "ms)");
+            }
+
+            // Give pre-merge worker a final tick to incorporate the just-added segment
+            try {
+                requestPreMerge(); // ensure worker knows plan changed
+            } catch (Throwable ignored) {}
+            try { Thread.sleep(120); } catch (InterruptedException ignored) {}
+
+            // Stop pre-merge worker and try to use pre-merged file for instant finalize
+            stopPreMergeWorker();
+            long __afterStopWorkerNs = System.nanoTime();
+            long __deltaStopWorkerMs = (__afterStopWorkerNs - __stopEnterNs) / 1_000_000L;
+            Log.d(TAG, "T_stop: after stopping pre-merge worker: " + __deltaStopWorkerMs + " ms since enter");
+            if (__deltaStopWorkerMs > 300) {
+                Log.w(TAG, "Slow step: stop pre-merge worker took >300ms (" + __deltaStopWorkerMs + "ms)");
+            }
+
+            File mergedFile = null;
+            try {
+                performPreMergeIfNeeded();
+            } catch (Exception e) {
+                Log.w(TAG, "Final pre-merge attempt failed, will try other paths", e);
+            }
+            long __afterFinalPreMergeNs = System.nanoTime();
+            long __deltaFinalPreMergeMs = (__afterFinalPreMergeNs - __stopEnterNs) / 1_000_000L;
+            Log.d(TAG, "T_stop: after final performPreMergeIfNeeded(): " + __deltaFinalPreMergeMs + " ms since enter");
+            if (__deltaFinalPreMergeMs > 300) {
+                Log.w(TAG, "Slow step: final pre-merge took >300ms (" + __deltaFinalPreMergeMs + "ms)");
+            }
+            if (mergedTempFile != null && mergedTempFile.exists() && mergedTempFile.length() > 0
+                    && mergedVersion.get() == mergePlanVersion.get()) {
+                // Rename temp to final
+                File finalFile = new File(segmentsDirectory, "final_output_" + System.currentTimeMillis() + ".m4a");
+                boolean ok = mergedTempFile.renameTo(finalFile);
+                if (ok) {
+                    mergedFile = finalFile;
+                    long __afterRenameNs = System.nanoTime();
+                    long __deltaRenameMs = (__afterRenameNs - __stopEnterNs) / 1_000_000L;
+                    Log.d(TAG, "T_stop: after fast-rename finalize: " + __deltaRenameMs + " ms since enter");
+                    if (__deltaRenameMs > 300) {
+                        Log.w(TAG, "Slow step: rename finalize took >300ms (" + __deltaRenameMs + "ms)");
+                    }
+                    Log.d(TAG, "Fast finalize using pre-merged file: " + mergedFile.getAbsolutePath());
+                } else {
+                    Log.w(TAG, "Failed to rename merged temp to final; will try continuous or merge fallback");
+                }
+            }
+
+            if (mergedFile == null) {
+                // First, stop the continuous recorder to obtain final continuous .m4a instantly (0s merge)
+                mergedFile = stopContinuousRecorderAndReturnFile();
+                long __afterContinuousNs = System.nanoTime();
+                long __deltaContinuousMs = (__afterContinuousNs - __stopEnterNs) / 1_000_000L;
+                Log.d(TAG, "T_stop: after returning continuous file: " + __deltaContinuousMs + " ms since enter");
+                if (__deltaContinuousMs > 300) {
+                    Log.w(TAG, "Slow step: returning continuous file took >300ms (" + __deltaContinuousMs + "ms)");
+                }
+            }
             if (mergedFile != null) {
                 Log.d(TAG, "Continuous recording file ready: " + mergedFile.getAbsolutePath());
 
-                // If a max rolling duration is set, trim the continuous file to the last window
+                // If a max rolling duration is set, prefer background-trimmed window for O(1) stop
                 if (maxDurationMs != null && maxDurationMs > 0) {
+                    boolean usedBackgroundWindow = false;
                     try {
-                        long actualDurationMs = getAudioFileDuration(mergedFile);
-                        double actualDurationSec = actualDurationMs / 1000.0;
-                        double targetDurationSec = maxDurationMs / 1000.0;
-
-                        if (actualDurationSec > targetDurationSec) {
-                            double startTrimSec = Math.max(0.0, actualDurationSec - targetDurationSec);
+                        if (continuousWindowTempFile != null && continuousWindowTempFile.exists() && continuousWindowTempFile.length() > 1024) {
                             File trimmed = new File(mergedFile.getParent(),
                                     "trimmed_continuous_" + System.currentTimeMillis() + ".m4a");
-
-                            // Precision trim to keep the last maxDuration window
-                            boolean fastOk = fastTrimFile(mergedFile, trimmed, startTrimSec, actualDurationSec);
-                            if (!fastOk) {
-                                AudioFileProcessor.trimAudioFile(mergedFile, trimmed, startTrimSec, actualDurationSec);
+                            boolean ok = continuousWindowTempFile.renameTo(trimmed);
+                            if (ok) {
+                                mergedFile = trimmed;
+                                usedBackgroundWindow = true;
+                                Log.d(TAG, "Used background-trimmed continuous window file: " + mergedFile.getAbsolutePath());
+                            } else {
+                                Log.w(TAG, "Failed to rename background window file; will try inline fast trim");
                             }
-
-                            // Replace original with trimmed result
-                            boolean deleted = mergedFile.delete();
-                            if (!deleted) {
-                                Log.w(TAG, "Failed to delete original continuous file after trimming: " + mergedFile.getAbsolutePath());
-                            }
-                            mergedFile = trimmed;
-                            Log.d(TAG, "Continuous file trimmed to last " + String.format("%.3f", targetDurationSec) + "s: " + mergedFile.getAbsolutePath());
-                        } else {
-                            Log.d(TAG, "Continuous duration <= maxDuration; no trim needed (" + String.format("%.3f", actualDurationSec) + "s <= " + String.format("%.3f", targetDurationSec) + "s)");
                         }
                     } catch (Exception e) {
-                        Log.w(TAG, "Failed to trim continuous file to rolling window; returning untrimmed continuous file", e);
+                        Log.w(TAG, "Error using background-trimmed window file", e);
+                    }
+                    if (!usedBackgroundWindow) {
+                        try {
+                            long actualDurationMs = getAudioFileDuration(mergedFile);
+                            double actualDurationSec = actualDurationMs / 1000.0;
+                            double targetDurationSec = maxDurationMs / 1000.0;
+
+                            if (actualDurationSec > targetDurationSec) {
+                                double startTrimSec = Math.max(0.0, actualDurationSec - targetDurationSec);
+                                File trimmed = new File(mergedFile.getParent(),
+                                        "trimmed_continuous_" + System.currentTimeMillis() + ".m4a");
+
+                                // Precision trim to keep the last maxDuration window
+                                boolean fastOk = fastTrimFile(mergedFile, trimmed, startTrimSec, actualDurationSec);
+                                if (!fastOk) {
+                                    AudioFileProcessor.trimAudioFile(mergedFile, trimmed, startTrimSec, actualDurationSec);
+                                }
+
+                                // Replace original with trimmed result
+                                boolean deleted = mergedFile.delete();
+                                if (!deleted) {
+                                    Log.w(TAG, "Failed to delete original continuous file after trimming: " + mergedFile.getAbsolutePath());
+                                }
+                                mergedFile = trimmed;
+                                Log.d(TAG, "Continuous file trimmed to last " + String.format("%.3f", targetDurationSec) + "s: " + mergedFile.getAbsolutePath());
+                            } else {
+                                Log.d(TAG, "Continuous duration <= maxDuration; no trim needed (" + String.format("%.3f", actualDurationSec) + "s <= " + String.format("%.3f", targetDurationSec) + "s)");
+                            }
+                        } catch (Exception e) {
+                            Log.w(TAG, "Failed to trim continuous file to rolling window; returning untrimmed continuous file", e);
+                        }
                     }
                 }
             } else {
@@ -686,29 +800,185 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     }
 
     /**
-     * Get the duration of an audio file in milliseconds using MediaMetadataRetriever for consistency
+     * Get the duration of an audio file in milliseconds using robust fallbacks.
+     * Order of attempts:
+     * 1) MediaMetadataRetriever (fast, common)
+     * 2) MediaPlayer (reliable for many formats)
+     * 3) MediaExtractor track format duration (microseconds -> ms)
+     * 4) WAV/RIFF PCM header parsing (no metadata case)
      */
     private long getAudioFileDuration(File audioFile) throws IOException {
+        // 1) Try MediaMetadataRetriever
         android.media.MediaMetadataRetriever retriever = null;
         try {
             retriever = new android.media.MediaMetadataRetriever();
             retriever.setDataSource(audioFile.getAbsolutePath());
             String durationStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
             if (durationStr != null) {
-                return Long.parseLong(durationStr); // Already in milliseconds
+                long dur = Long.parseLong(durationStr);
+                if (dur > 0) return dur; // Already in ms
             }
-            throw new IOException("Could not extract duration metadata");
         } catch (Exception e) {
-            throw new IOException("Failed to get audio duration: " + e.getMessage(), e);
+            Log.w(TAG, "MediaMetadataRetriever could not get duration: " + e.getMessage());
         } finally {
             if (retriever != null) {
-                try {
-                    retriever.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error releasing MediaMetadataRetriever", e);
-                }
+                try { retriever.release(); } catch (Exception e) { Log.w(TAG, "Error releasing MediaMetadataRetriever", e); }
             }
         }
+
+        // 2) Try MediaPlayer
+        android.media.MediaPlayer mp = null;
+        try {
+            mp = new android.media.MediaPlayer();
+            mp.setDataSource(audioFile.getAbsolutePath());
+            mp.setOnErrorListener((player, what, extra) -> false);
+            mp.prepare();
+            int dur = mp.getDuration();
+            if (dur > 0) return (long) dur; // ms
+        } catch (Exception e) {
+            Log.w(TAG, "MediaPlayer could not get duration: " + e.getMessage());
+        } finally {
+            if (mp != null) {
+                try { mp.release(); } catch (Exception ignored) {}
+            }
+        }
+
+        // 3) Try MediaExtractor
+        android.media.MediaExtractor extractor = null;
+        try {
+            extractor = new android.media.MediaExtractor();
+            extractor.setDataSource(audioFile.getAbsolutePath());
+            int tracks = extractor.getTrackCount();
+            for (int i = 0; i < tracks; i++) {
+                android.media.MediaFormat fmt = extractor.getTrackFormat(i);
+                if (fmt != null && fmt.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                    long durUs = fmt.getLong(android.media.MediaFormat.KEY_DURATION);
+                    if (durUs > 0) {
+                        return durUs / 1000L; // us -> ms
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "MediaExtractor could not get duration: " + e.getMessage());
+        } finally {
+            if (extractor != null) {
+                try { extractor.release(); } catch (Exception ignored) {}
+            }
+        }
+
+        // 4) Try direct WAV/RIFF parsing as a last resort
+        Long wavDur = tryParseWavDuration(audioFile);
+        if (wavDur != null && wavDur > 0) {
+            return wavDur;
+        }
+
+        throw new IOException("Failed to get audio duration: Could not extract duration by any method");
+    }
+
+    /**
+     * Attempt to parse duration from a WAV/RIFF PCM file by reading its header.
+     * Returns duration in milliseconds, or null if not a supported WAV or parsing fails.
+     */
+    private Long tryParseWavDuration(File audioFile) {
+        java.io.RandomAccessFile raf = null;
+        try {
+            raf = new java.io.RandomAccessFile(audioFile, "r");
+            if (raf.length() < 44) {
+                return null;
+            }
+
+            // Read RIFF header
+            byte[] header = new byte[12];
+            raf.readFully(header);
+            if (!bytesEqual(header, 0, new byte[]{'R','I','F','F'}) || !bytesEqual(header, 8, new byte[]{'W','A','V','E'})) {
+                return null; // Not RIFF/WAVE
+            }
+
+            int channels = 0;
+            int sampleRate = 0;
+            int byteRate = 0;
+            int bitsPerSample = 0;
+            long dataSize = 0;
+            boolean fmtFound = false;
+            boolean dataFound = false;
+
+            while (raf.getFilePointer() + 8 <= raf.length()) { // need at least id(4)+size(4)
+                byte[] chunkId = new byte[4];
+                raf.readFully(chunkId);
+                int chunkSize = readLeInt(raf);
+
+                String id = new String(chunkId, java.nio.charset.StandardCharsets.US_ASCII);
+
+                if ("fmt ".equals(id)) {
+                    // PCM fmt chunk has at least 16 bytes
+                    int audioFormat = readLeShort(raf);
+                    channels = readLeShort(raf);
+                    sampleRate = readLeInt(raf);
+                    byteRate = readLeInt(raf);
+                    int blockAlign = readLeShort(raf);
+                    bitsPerSample = readLeShort(raf);
+
+                    int remaining = chunkSize - 16;
+                    if (remaining > 0) {
+                        raf.seek(raf.getFilePointer() + remaining);
+                    }
+                    fmtFound = true;
+                } else if ("data".equals(id)) {
+                    dataSize = (chunkSize & 0xFFFFFFFFL);
+                    // Move file pointer past data without reading
+                    raf.seek(raf.getFilePointer() + dataSize);
+                    dataFound = true;
+                } else {
+                    // Skip other chunks
+                    raf.seek(raf.getFilePointer() + (chunkSize & 0xFFFFFFFFL));
+                }
+
+                if (fmtFound && dataFound) break;
+            }
+
+            if (byteRate > 0 && dataSize > 0) {
+                long durationMs = (dataSize * 1000L) / (long) byteRate;
+                if (durationMs > 0) return durationMs;
+            } else if (sampleRate > 0 && channels > 0 && bitsPerSample > 0 && dataSize > 0) {
+                long bytesPerSec = (long) sampleRate * (long) channels * (long) bitsPerSample / 8L;
+                if (bytesPerSec > 0) {
+                    long durationMs = (dataSize * 1000L) / bytesPerSec;
+                    if (durationMs > 0) return durationMs;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "WAV parser could not get duration: " + e.getMessage());
+        } finally {
+            if (raf != null) {
+                try { raf.close(); } catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    // Helpers for little-endian reading
+    private static int readLeInt(java.io.RandomAccessFile raf) throws java.io.IOException {
+        int b1 = raf.read();
+        int b2 = raf.read();
+        int b3 = raf.read();
+        int b4 = raf.read();
+        if ((b1 | b2 | b3 | b4) < 0) throw new java.io.EOFException();
+        return (b1 & 0xFF) | ((b2 & 0xFF) << 8) | ((b3 & 0xFF) << 16) | ((b4 & 0xFF) << 24);
+    }
+
+    private static int readLeShort(java.io.RandomAccessFile raf) throws java.io.IOException {
+        int b1 = raf.read();
+        int b2 = raf.read();
+        if ((b1 | b2) < 0) throw new java.io.EOFException();
+        return (b1 & 0xFF) | ((b2 & 0xFF) << 8);
+    }
+
+    private static boolean bytesEqual(byte[] arr, int offset, byte[] match) {
+        if (offset + match.length > arr.length) return false;
+        for (int i = 0; i < match.length; i++) {
+            if (arr[offset + i] != match[i]) return false;
+        }
+        return true;
     }
 
     /**
@@ -889,6 +1159,21 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             continuousRecorder.prepare();
             continuousRecorder.start();
             isContinuousActive = true;
+            // Prepare background continuous window temp file in same directory
+            try {
+                File cwParentDir = continuousOutputFile.getParentFile();
+                if (cwParentDir != null) {
+                    continuousWindowTempFile = new File(cwParentDir, ".continuous_window_temp.m4a");
+                    if (continuousWindowTempFile.exists()) {
+                        // best-effort cleanup
+                        try { continuousWindowTempFile.delete(); } catch (Exception ignore) {}
+                    }
+                }
+            } catch (Exception ignore) {}
+            // Start background window worker if we have a rolling window configured
+            if (maxDurationMs != null && maxDurationMs > 0) {
+                startContinuousWindowWorker();
+            }
             Log.d(TAG, "Started continuous recorder: " + continuousOutputFile.getAbsolutePath());
         } catch (Exception e) {
             isContinuousActive = false;
@@ -905,6 +1190,8 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private File stopContinuousRecorderAndReturnFile() {
         File out = continuousOutputFile;
         if (continuousRecorder != null) {
+            // Stop window worker first to avoid trimming during stop
+            stopContinuousWindowWorker();
             try {
                 if (isContinuousActive) {
                     // If paused, resume briefly to avoid stop errors
@@ -1085,6 +1372,8 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         } else {
             // Unlimited mode: keep all segments (parity with iOS)
         }
+        // Notify pre-merge worker that the plan changed
+        requestPreMerge();
     }
 
     /**
@@ -1532,6 +1821,10 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
                 durationUpdateTimer = null;
             }
 
+            // Stop background workers
+            stopPreMergeWorker();
+            stopContinuousWindowWorker();
+
             if (currentSegmentRecorder != null) {
                 try {
                     currentSegmentRecorder.stop();
@@ -1906,14 +2199,15 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     public String getConfigurationSummary() {
         return String.format(
             "SegmentRollingManager Configuration:\n" +
-            "- Segment Duration: %ds (5 minutes)\n" +
+            "- Segment Duration: %dms (%.1fs)\n" +
             "- Memory Safety Margin: %.1fx\n" +
             "- Segment Safety Buffer: %d\n" +
             "- Compression Enabled: %s\n" +
             "- Persistent Indexing: %s\n" +
             "- Max Deletion Retries: %d\n" +
             "- Deletion Retry Delay: %dms",
-            segmentDurationMs / 1000,
+            segmentDurationMs,
+            segmentDurationMs / 1000.0,
             memorySafetyMargin,
             segmentSafetyBuffer,
             enableSegmentCompression ? "Yes" : "No",
@@ -1939,7 +2233,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         StringBuilder debug = new StringBuilder();
         debug.append("=== Segment Rolling Debug Info ===\n");
         debug.append(String.format("Recording Duration: %.1fs\n", recordingDuration / 1000.0));
-        debug.append(String.format("Current Segment: %d (elapsed: %.1fs/%.1fs = 5min)\n",
+        debug.append(String.format("Current Segment: %d (elapsed: %.1fs/%.1fs)\n",
                     segmentCounter.get(), currentSegmentElapsed / 1000.0, segmentDurationMs / 1000.0));
         debug.append(String.format("Buffer Size: %d segments\n", segmentBuffer.size()));
         debug.append(String.format("Expected Segments: %d\n", expectedSegments));
@@ -2193,4 +2487,388 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             throw new IOException("Failed to create empty audio file after reset: " + e.getMessage());
         }
     }
+
+    // ===== Background Pre-Merge Worker =====
+    private void startPreMergeWorker() {
+        if (preMergeRunning.get()) return;
+        preMergeStopRequested.set(false);
+        preMergeRunning.set(true);
+        preMergeThread = new Thread(() -> {
+            Log.d(TAG, "Pre-merge worker started");
+            while (!preMergeStopRequested.get()) {
+                try {
+                    performPreMergeIfNeeded();
+                    // Sleep lightly; will be notified on changes
+                    synchronized (preMergeLock) {
+                        preMergeLock.wait(300);
+                    }
+                } catch (InterruptedException ie) {
+                    // ignore
+                } catch (Exception e) {
+                    Log.w(TAG, "Pre-merge worker error", e);
+                }
+            }
+            // Final attempt to be up-to-date before exiting
+            try { performPreMergeIfNeeded(); } catch (Exception e) { Log.w(TAG, "Final pre-merge failed", e); }
+            preMergeRunning.set(false);
+            Log.d(TAG, "Pre-merge worker stopped");
+        }, "PreMergeWorker");
+        preMergeThread.setDaemon(true);
+        preMergeThread.start();
+    }
+
+    private void requestPreMerge() {
+        mergePlanVersion.incrementAndGet();
+        synchronized (preMergeLock) {
+            preMergeLock.notifyAll();
+        }
+    }
+
+    private void stopPreMergeWorker() {
+        preMergeStopRequested.set(true);
+        synchronized (preMergeLock) {
+            preMergeLock.notifyAll();
+        }
+        try {
+            if (preMergeThread != null) {
+                preMergeThread.join(1500);
+            }
+        } catch (InterruptedException ignored) {}
+    }
+
+    private void performPreMergeIfNeeded() throws IOException {
+        long target = mergePlanVersion.get();
+        if (mergedVersion.get() == target) return; // already up-to-date
+        // Snapshot current segments
+        List<File> segments = new ArrayList<>(segmentBuffer);
+        if (segments.isEmpty()) return;
+        List<String> currentNames = new ArrayList<>();
+        for (File f : segments) currentNames.add(f.getName());
+
+        File workFile = new File(segmentsDirectory, ".merged_work_" + System.currentTimeMillis() + ".m4a");
+        boolean canAppend = !preMergedNames.isEmpty()
+                && mergedTempFile.exists() && mergedTempFile.length() > 0
+                && isPrefix(preMergedNames, currentNames);
+        if (canAppend) {
+            // Append only newly added segments onto existing merged
+            int startIdx = preMergedNames.size();
+            List<File> newSegs = (startIdx < segments.size()) ? segments.subList(startIdx, segments.size()) : new ArrayList<>();
+            buildMergedByAppending(mergedTempFile, newSegs, workFile);
+        } else {
+            // Full rebuild (e.g., after deletions/rollovers or first build)
+            buildMergedFromSegments(segments, workFile);
+        }
+        // Atomic replace
+        if (mergedTempFile.exists() && !mergedTempFile.delete()) {
+            Log.w(TAG, "Failed deleting old merged_temp before replace");
+        }
+        boolean renamed = workFile.renameTo(mergedTempFile);
+        if (!renamed) {
+            Log.w(TAG, "Rename failed, rebuilding directly to mergedTempFile");
+            if (canAppend) {
+                int startIdx = preMergedNames.size();
+                List<File> newSegs = (startIdx < segments.size()) ? segments.subList(startIdx, segments.size()) : new ArrayList<>();
+                buildMergedByAppending(mergedTempFile, newSegs, mergedTempFile);
+            } else {
+                buildMergedFromSegments(segments, mergedTempFile);
+            }
+            if (workFile.exists()) workFile.delete();
+        }
+        preMergedNames.clear();
+        preMergedNames.addAll(currentNames);
+        preMergedDurationUs = getDurationUsFast(mergedTempFile);
+        mergedVersion.set(target);
+        Log.d(TAG, "Pre-merge updated to version " + target + " using " + (canAppend ? "append" : "rebuild") +
+                ", size=" + mergedTempFile.length());
+    }
+
+    private boolean isPrefix(List<String> prefix, List<String> full) {
+        if (prefix.size() > full.size()) return false;
+        for (int i = 0; i < prefix.size(); i++) {
+            if (!prefix.get(i).equals(full.get(i))) return false;
+        }
+        return true;
+    }
+
+    private void buildMergedByAppending(File existingMerged, List<File> newSegments, File outFile) throws IOException {
+        // If no new segments, just copy existingMerged to outFile
+        if ((newSegments == null || newSegments.isEmpty()) && existingMerged != null && existingMerged.exists()) {
+            buildMergedFromSegments(java.util.Arrays.asList(existingMerged), outFile);
+            return;
+        }
+        MediaMuxer muxer = null;
+        MediaExtractor ex0 = null;
+        try {
+            long existingDurUs = existingMerged != null && existingMerged.exists() ? getDurationUsFast(existingMerged) : 0;
+            // Determine audio format from either existing or first new segment
+            MediaFormat audioFormat = null;
+            if (existingMerged != null && existingMerged.exists()) {
+                ex0 = new MediaExtractor();
+                ex0.setDataSource(existingMerged.getAbsolutePath());
+                for (int i = 0; i < ex0.getTrackCount(); i++) {
+                    MediaFormat f = ex0.getTrackFormat(i);
+                    String mime = f.getString(MediaFormat.KEY_MIME);
+                    if (mime != null && mime.startsWith("audio/")) { audioFormat = f; break; }
+                }
+            }
+            if (audioFormat == null && newSegments != null && !newSegments.isEmpty()) {
+                MediaExtractor tmp = new MediaExtractor();
+                try {
+                    tmp.setDataSource(newSegments.get(0).getAbsolutePath());
+                    for (int i = 0; i < tmp.getTrackCount(); i++) {
+                        MediaFormat f = tmp.getTrackFormat(i);
+                        String mime = f.getString(MediaFormat.KEY_MIME);
+                        if (mime != null && mime.startsWith("audio/")) { audioFormat = f; break; }
+                    }
+                } finally { try { tmp.release(); } catch (Exception ignore) {} }
+            }
+            if (audioFormat == null) throw new IOException("No audio format for append");
+
+            if (outFile.exists() && !outFile.delete()) {
+                Log.w(TAG, "Failed to delete existing output before append: " + outFile.getAbsolutePath());
+            }
+            muxer = new MediaMuxer(outFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            int outTrack = muxer.addTrack(audioFormat);
+            muxer.start();
+
+            ByteBuffer buffer = ByteBuffer.allocate(256 * 1024);
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+
+            long ptsOffsetUs = 0;
+            // First, copy existing merged if present
+            if (existingMerged != null && existingMerged.exists() && existingMerged.length() > 0) {
+                MediaExtractor ex = new MediaExtractor();
+                try {
+                    ex.setDataSource(existingMerged.getAbsolutePath());
+                    int tr = -1;
+                    for (int i = 0; i < ex.getTrackCount(); i++) {
+                        MediaFormat f = ex.getTrackFormat(i);
+                        String mime = f.getString(MediaFormat.KEY_MIME);
+                        if (mime != null && mime.startsWith("audio/")) { tr = i; break; }
+                    }
+                    if (tr >= 0) {
+                        ex.selectTrack(tr);
+                        while (true) {
+                            info.offset = 0;
+                            info.size = ex.readSampleData(buffer, 0);
+                            if (info.size < 0) break;
+                            long pts = ex.getSampleTime();
+                            if (pts < 0) break;
+                            info.presentationTimeUs = pts; // keep original timeline
+                            info.flags = ex.getSampleFlags();
+                            muxer.writeSampleData(outTrack, buffer, info);
+                            ex.advance();
+                        }
+                    }
+                } finally { try { ex.release(); } catch (Exception ignore) {} }
+                ptsOffsetUs = existingDurUs > 0 ? existingDurUs : 0;
+            }
+            // Append new segments
+            if (newSegments != null) {
+                for (File seg : newSegments) {
+                    MediaExtractor ex = new MediaExtractor();
+                    try {
+                        ex.setDataSource(seg.getAbsolutePath());
+                        int tr = -1;
+                        for (int i = 0; i < ex.getTrackCount(); i++) {
+                            MediaFormat f = ex.getTrackFormat(i);
+                            String mime = f.getString(MediaFormat.KEY_MIME);
+                            if (mime != null && mime.startsWith("audio/")) { tr = i; break; }
+                        }
+                        if (tr < 0) { Log.w(TAG, "No audio track in segment for append: " + seg.getName()); continue; }
+                        ex.selectTrack(tr);
+                        while (true) {
+                            info.offset = 0;
+                            info.size = ex.readSampleData(buffer, 0);
+                            if (info.size < 0) break;
+                            long pts = ex.getSampleTime();
+                            if (pts < 0) break;
+                            info.presentationTimeUs = pts + ptsOffsetUs;
+                            info.flags = ex.getSampleFlags();
+                            muxer.writeSampleData(outTrack, buffer, info);
+                            ex.advance();
+                        }
+                        long durUs = getDurationUsFast(seg);
+                        if (durUs > 0) ptsOffsetUs += durUs;
+                    } finally { try { ex.release(); } catch (Exception ignore) {} }
+                }
+            }
+        } finally {
+            try { if (muxer != null) { muxer.stop(); muxer.release(); } } catch (Exception ignore) {}
+            try { if (ex0 != null) ex0.release(); } catch (Exception ignore) {}
+        }
+    }
+
+    private void buildMergedFromSegments(List<File> segments, File outFile) throws IOException {
+        // Ensure parent
+        File parent = outFile.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        if (outFile.exists() && !outFile.delete()) {
+            Log.w(TAG, "Failed to delete existing output before merge: " + outFile.getAbsolutePath());
+        }
+        MediaMuxer muxer = null;
+        MediaExtractor extractor = null;
+        int audioTrackIndex = -1;
+        try {
+            // Prepare first segment to get format
+            extractor = new MediaExtractor();
+            extractor.setDataSource(segments.get(0).getAbsolutePath());
+            int inTrack = -1;
+            MediaFormat audioFormat = null;
+            for (int i = 0; i < extractor.getTrackCount(); i++) {
+                MediaFormat f = extractor.getTrackFormat(i);
+                String mime = f.getString(MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("audio/")) {
+                    inTrack = i; audioFormat = f; break;
+                }
+            }
+            if (audioFormat == null) throw new IOException("No audio track in first segment");
+            muxer = new MediaMuxer(outFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            audioTrackIndex = muxer.addTrack(audioFormat);
+            muxer.start();
+            ByteBuffer buffer = ByteBuffer.allocate(256 * 1024);
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            long ptsOffsetUs = 0;
+            // Iterate all segments
+            for (int s = 0; s < segments.size(); s++) {
+                File seg = segments.get(s);
+                MediaExtractor ex = new MediaExtractor();
+                try {
+                    ex.setDataSource(seg.getAbsolutePath());
+                    int segTrack = -1;
+                    for (int i = 0; i < ex.getTrackCount(); i++) {
+                        MediaFormat f = ex.getTrackFormat(i);
+                        String mime = f.getString(MediaFormat.KEY_MIME);
+                        if (mime != null && mime.startsWith("audio/")) { segTrack = i; break; }
+                    }
+                    if (segTrack < 0) { Log.w(TAG, "No audio track in segment: " + seg.getName()); continue; }
+                    ex.selectTrack(segTrack);
+                    while (true) {
+                        info.offset = 0;
+                        info.size = ex.readSampleData(buffer, 0);
+                        if (info.size < 0) break;
+                        long pts = ex.getSampleTime();
+                        if (pts < 0) break;
+                        info.presentationTimeUs = pts + ptsOffsetUs;
+                        info.flags = ex.getSampleFlags();
+                        muxer.writeSampleData(audioTrackIndex, buffer, info);
+                        ex.advance();
+                    }
+                    // update offset
+                    long segDurUs = getDurationUsFast(seg);
+                    if (segDurUs > 0) ptsOffsetUs += segDurUs;
+                } finally {
+                    try { ex.release(); } catch (Exception ignore) {}
+                }
+            }
+        } finally {
+            try { if (muxer != null) { muxer.stop(); muxer.release(); } } catch (Exception ignore) {}
+            try { if (extractor != null) extractor.release(); } catch (Exception ignore) {}
+        }
+    }
+
+    private long getDurationUsFast(File file) {
+        try {
+            MediaExtractor ex = new MediaExtractor();
+            try {
+                ex.setDataSource(file.getAbsolutePath());
+                for (int i = 0; i < ex.getTrackCount(); i++) {
+                    MediaFormat f = ex.getTrackFormat(i);
+                    String mime = f.getString(MediaFormat.KEY_MIME);
+                    if (mime != null && mime.startsWith("audio/")) {
+                        if (f.containsKey(MediaFormat.KEY_DURATION)) {
+                            return f.getLong(MediaFormat.KEY_DURATION);
+                        }
+                    }
+                }
+            } finally { try { ex.release(); } catch (Exception ignore) {} }
+        } catch (Exception e) { /* ignore */ }
+        return -1;
+    }
+
+    // ===== Background Continuous Window Worker =====
+    private void startContinuousWindowWorker() {
+        if (continuousWindowRunning.get()) return;
+        continuousWindowStopRequested.set(false);
+        continuousWindowRunning.set(true);
+        continuousWindowThread = new Thread(() -> {
+            Log.d(TAG, "Continuous window worker started");
+            while (!continuousWindowStopRequested.get()) {
+                try {
+                    performContinuousWindowUpdate();
+                    synchronized (continuousWindowLock) {
+                        continuousWindowLock.wait(2000); // every ~2s
+                    }
+                } catch (InterruptedException ie) {
+                    // ignore
+                } catch (Exception e) {
+                    Log.w(TAG, "Continuous window worker error", e);
+                }
+            }
+            // One last update before exit
+            try { performContinuousWindowUpdate(); } catch (Exception e) { Log.w(TAG, "Final window update failed", e); }
+            continuousWindowRunning.set(false);
+            Log.d(TAG, "Continuous window worker stopped");
+        }, "ContinuousWindowWorker");
+        continuousWindowThread.setDaemon(true);
+        continuousWindowThread.start();
+    }
+
+    private void stopContinuousWindowWorker() {
+        continuousWindowStopRequested.set(true);
+        synchronized (continuousWindowLock) {
+            continuousWindowLock.notifyAll();
+        }
+        try {
+            if (continuousWindowThread != null) {
+                continuousWindowThread.join(1500);
+            }
+        } catch (InterruptedException ignored) {}
+    }
+
+    private void performContinuousWindowUpdate() {
+        if (maxDurationMs == null || maxDurationMs <= 0) return;
+        File source = continuousOutputFile;
+        if (source == null || !source.exists() || source.length() < 1024) return;
+        if (continuousWindowTempFile == null) return;
+        try {
+            long durMs = getAudioFileDuration(source);
+            double durSec = durMs / 1000.0;
+            double targetSec = maxDurationMs / 1000.0;
+            File work = new File(continuousWindowTempFile.getParentFile(), ".cw_work_" + System.currentTimeMillis() + ".m4a");
+            boolean ok;
+            if (durSec > targetSec) {
+                double startSec = Math.max(0.0, durSec - targetSec);
+                ok = fastTrimFile(source, work, startSec, durSec);
+                if (!ok) {
+                    // Fallback to slower trim, still in background thread
+                    AudioFileProcessor.trimAudioFile(source, work, startSec, durSec);
+                    ok = true;
+                }
+            } else {
+                // Duration <= window: best-effort copy entire file as current window snapshot
+                ok = fastTrimFile(source, work, 0.0, Math.max(0.001, durSec));
+                if (!ok) {
+                    // If fastTrim can't handle 0..dur, just copy via merge single file
+                    buildMergedFromSegments(java.util.Arrays.asList(source), work);
+                    ok = true;
+                }
+            }
+            if (ok) {
+                if (continuousWindowTempFile.exists() && !continuousWindowTempFile.delete()) {
+                    Log.w(TAG, "Failed deleting old continuous window temp");
+                }
+                if (!work.renameTo(continuousWindowTempFile)) {
+                    // fallback: rebuild directly
+                    buildMergedFromSegments(java.util.Arrays.asList(source), continuousWindowTempFile);
+                    if (work.exists()) work.delete();
+                }
+            } else {
+                if (work.exists()) work.delete();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "performContinuousWindowUpdate failed", e);
+        }
+    }
+
 }
