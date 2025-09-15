@@ -2,13 +2,42 @@ import type { PluginListenerHandle } from '@capacitor/core';
 
 export type RecordingStatus = 'idle' | 'recording' | 'paused';
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
+
+// Permission Status Enums
+export enum PermissionStatus {
+  /** Permission granted permanently */
+  GRANTED = 'granted',
+  /** Permission denied permanently */
+  DENIED = 'denied',
+  /** Permission denied permanently with "Don't ask again" (Android) */
+  DENIED_PERMANENTLY = 'denied_permanently',
+  /** Permission not yet requested from user */
+  NOT_DETERMINED = 'not_determined',
+  /** Permission granted only for current session (iOS 14+) */
+  LIMITED = 'limited',
+  /** Permission restricted by device policy/parental controls */
+  RESTRICTED = 'restricted',
+  /** Permission request in progress */
+  REQUESTING = 'requesting',
+  /** Permission unsupported on current platform/version */
+  UNSUPPORTED = 'unsupported',
+}
+
+export enum AudioPermissionType {
+  /** Microphone recording permission */
+  MICROPHONE = 'microphone',
+  /** Background notification permission */
+  NOTIFICATIONS = 'notifications',
+}
+
 export type AudioRecordingEventName =
   | 'durationChange'
   | 'error'
   | 'waveLevel'
   | 'waveLevelInit'
   | 'waveLevelDestroy'
-  | 'waveLevelError';
+  | 'waveLevelError'
+  | 'permissionStatusChanged';
 export type AudioPlaybackEventName =
   | 'trackChanged'
   | 'trackEnded'
@@ -36,6 +65,7 @@ export type AudioRecordingEventMap = {
   waveLevelInit: WaveLevelInitData;
   waveLevelDestroy: WaveLevelDestroyData;
   waveLevelError: ErrorEventData;
+  permissionStatusChanged: PermissionStatusChangedData;
 };
 
 export type AudioPlaybackEventMap = {
@@ -74,6 +104,13 @@ export interface ErrorEventData {
   message: string;
   code?: string | number;
   details?: any;
+}
+
+export interface PermissionStatusChangedData {
+  permissionType: AudioPermissionType;
+  status: PermissionStatus;
+  previousStatus?: PermissionStatus;
+  message?: string;
 }
 
 export interface AudioTrack {
@@ -314,6 +351,29 @@ export interface SkipToIndexOptions {
   index: number;
 }
 
+export interface PermissionStatusResults {
+  /** Overall permission status - granted only if all required permissions are granted */
+  granted: boolean;
+  /** Overall permission status */
+  status: PermissionStatus;
+}
+
+export interface CheckPermissionResults {
+  /** Permission type being checked */
+  permissionType: AudioPermissionType;
+  /** Current permission status */
+  status: PermissionStatus;
+}
+
+export interface PermissionRequestOptions {
+  /** Whether to show rationale before requesting permission (Android) */
+  showRationale?: boolean;
+  /** Custom rationale message to show user */
+  rationaleMessage?: string;
+  /** Whether to force request even if previously denied permanently */
+  forceRequest?: boolean;
+}
+
 /**
  * Interface for the Native Audio Plugin that provides audio recording capabilities.
  *
@@ -337,28 +397,41 @@ export interface CapacitorAudioEnginePlugin {
   echo(options: { value: string }): Promise<{ value: string }>;
 
   /**
-   * Check if the app has microphone permission.
-   * @returns Promise that resolves with an object containing the permission status
-   * @property {boolean} granted - Whether microphone permission is granted
-   * @property {boolean} audioPermission - Whether audio permission is granted
-   * @property {boolean} notificationPermission - Whether notification permission is granted (Android 13+ only)
-   * @platform web Uses navigator.permissions.query API
-   * @platform android Uses ContextCompat.checkSelfPermission with RECORD_AUDIO permission
-   * @platform ios Uses AVAudioSession.recordPermission
+   * Check permission status with simplified result.
+   * @returns Promise that resolves with simplified permission status including granted boolean and overall status
+   * @platform web Returns unsupported status for all permissions
+   * @platform android Uses ContextCompat.checkSelfPermission with simplified status mapping
+   * @platform ios Uses AVAudioSession.recordPermission and UNUserNotificationCenter with simplified status mapping
    */
-  checkPermissions(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
+  checkPermissions(): Promise<PermissionStatusResults>;
 
   /**
-   * Request microphone permission from the user.
-   * @returns Promise that resolves with an object containing the permission status
-   * @property {boolean} granted - Whether microphone permission was granted
-   * @property {boolean} audioPermission - Whether audio permission was granted
-   * @property {boolean} notificationPermission - Whether notification permission was granted (Android 13+ only)
-   * @platform web Uses navigator.mediaDevices.getUserMedia API
-   * @platform android Uses ActivityCompat.requestPermissions with RECORD_AUDIO permission
-   * @platform ios Uses AVAudioSession.requestRecordPermission
+   * Check microphone permission status with simplified information.
+   * @returns Promise that resolves with simplified microphone permission status
+   * @platform web Returns unsupported status
+   * @platform android Uses ContextCompat.checkSelfPermission for RECORD_AUDIO
+   * @platform ios Uses AVAudioSession.recordPermission with simplified status mapping
    */
-  requestPermissions(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
+  checkPermissionMicrophone(): Promise<CheckPermissionResults>;
+
+  /**
+   * Check notification permission status with simplified information.
+   * @returns Promise that resolves with simplified notification permission status
+   * @platform web Returns unsupported status
+   * @platform android Uses ContextCompat.checkSelfPermission for POST_NOTIFICATIONS (Android 13+)
+   * @platform ios Uses UNUserNotificationCenter with simplified status mapping
+   */
+  checkPermissionNotifications(): Promise<CheckPermissionResults>;
+
+  /**
+   * Request permissions with detailed options and status information.
+   * @param options - Permission request options
+   * @returns Promise that resolves with detailed permission status
+   * @platform web Returns unsupported status for all permissions
+   * @platform android Uses ActivityCompat.requestPermissions with detailed status handling
+   * @platform ios Uses AVAudioSession.requestRecordPermission and UNUserNotificationCenter with detailed status handling
+   */
+  requestPermissions(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
 
   /**
    * Start recording audio from the device's microphone.

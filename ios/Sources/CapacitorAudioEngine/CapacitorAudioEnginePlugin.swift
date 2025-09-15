@@ -14,6 +14,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     public let jsName = "CapacitorAudioEngine"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "checkPermissions", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "checkPermissionMicrophone", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "checkPermissionNotifications", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermissions", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pauseRecording", returnType: CAPPluginReturnPromise),
@@ -51,6 +53,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     private var recordingManager: RecordingManager!
     private var playbackManager: PlaybackManager!
     private var waveLevelEmitter: WaveLevelEmitter!
+    private var permissionService: PermissionManagerService!
     private var pendingStopRecordingCall: CAPPluginCall?
     private var stopRecordingTimeoutTask: DispatchWorkItem?
     private var currentRecordingSampleRate: Int = Int(AudioEngineConstants.defaultSampleRate)
@@ -73,6 +76,23 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     private func invalidatePlaybackInfoCache() {
         cachedPlaybackInfo = nil
         lastPlaybackInfoUpdate = 0
+    }
+
+    // MARK: - Lifecycle
+
+    public override func load() {
+        super.load()
+        permissionService = PermissionManagerService()
+
+        // Initialize recording manager with delegate
+        recordingManager = RecordingManager(delegate: self)
+
+        // Initialize playback manager and set delegate
+        playbackManager = PlaybackManager()
+        playbackManager.delegate = self
+
+        // Initialize wave level emitter with event callback
+        waveLevelEmitter = WaveLevelEmitter(eventCallback: self)
     }
 
     // MARK: - Logging Utility
@@ -117,107 +137,37 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
     @objc public override func checkPermissions(_ call: CAPPluginCall) {
         Task {
-            let audioStatus = AVAudioSession.sharedInstance().recordPermission
-            let audioGranted = audioStatus == .granted
-
-            // Check notification permission status asynchronously
-            let notificationGranted: Bool
-            if #available(iOS 10.0, *) {
-                // Use async API on iOS 15+ or fallback to callback-based API
-                if #available(iOS 15.0, *) {
-                    let settings = await UNUserNotificationCenter.current().notificationSettings()
-                    notificationGranted = settings.authorizationStatus == .authorized
-                } else {
-                    // Fallback for iOS 10-14: use callback-based API
-                    notificationGranted = await withCheckedContinuation { continuation in
-                        UNUserNotificationCenter.current().getNotificationSettings { settings in
-                            let granted = settings.authorizationStatus == .authorized
-                            continuation.resume(returning: granted)
-                        }
-                    }
-                }
-            } else {
-                notificationGranted = true
-            }
-
-            // Return to main actor for Capacitor callback
+            let result = await permissionService.checkPermissions()
             await MainActor.run {
-                call.resolve([
-                    "granted": audioGranted && notificationGranted,
-                    "audioPermission": audioGranted,
-                    "notificationPermission": notificationGranted
-                ])
+                call.resolve(result)
             }
         }
     }
 
-    override public func load() {
-        // Initialize the recording manager and set self as delegate
-        recordingManager = RecordingManager(delegate: self)
-
-        // Initialize the playback manager and set self as delegate
-        playbackManager = PlaybackManager()
-        playbackManager.delegate = self
-
-        // Initialize the wave level emitter and set self as delegate
-        waveLevelEmitter = WaveLevelEmitter(eventCallback: self)
-
-        // Set up initial audio session that supports both recording and playback
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord,
-                                       mode: .default,
-                                       options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers, .duckOthers])
-            // Don't activate the session yet - let individual managers handle activation
-            log("Initial audio session configured for recording and playback")
-        } catch {
-            log("Warning: Failed to configure initial audio session: \(error.localizedDescription)")
+    @objc func checkPermissionMicrophone(_ call: CAPPluginCall) {
+        Task {
+            let result = await permissionService.checkPermissionMicrophone()
+            await MainActor.run {
+                call.resolve(result)
+            }
         }
     }
 
-    deinit {
-        // Clean up any pending timeout tasks
-        if let timeoutTask = stopRecordingTimeoutTask {
-            timeoutTask.cancel()
-            log("Stop recording timeout cancelled - plugin deallocated")
+    @objc func checkPermissionNotifications(_ call: CAPPluginCall) {
+        Task {
+            let result = await permissionService.checkPermissionNotifications()
+            await MainActor.run {
+                call.resolve(result)
+            }
         }
     }
 
     @objc public override func requestPermissions(_ call: CAPPluginCall) {
-        // First request audio permission
-        AVAudioSession.sharedInstance().requestRecordPermission { audioGranted in
-            // Then check/request notification permission on iOS 10+
-            if #available(iOS 10.0, *) {
-                UNUserNotificationCenter.current().getNotificationSettings { settings in
-                    if settings.authorizationStatus == .notDetermined {
-                        // Request notification permission
-                        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { notificationGranted, error in
-                            DispatchQueue.main.async {
-                                call.resolve([
-                                    "granted": audioGranted && notificationGranted,
-                                    "audioPermission": audioGranted,
-                                    "notificationPermission": notificationGranted
-                                ])
-                            }
-                        }
-                    } else {
-                        let notificationGranted = settings.authorizationStatus == .authorized
-                        DispatchQueue.main.async {
-                            call.resolve([
-                                "granted": audioGranted && notificationGranted,
-                                "audioPermission": audioGranted,
-                                "notificationPermission": notificationGranted
-                            ])
-                        }
-                    }
-                }
-            } else {
-                // iOS < 10, assume notification permission is granted
-                call.resolve([
-                    "granted": audioGranted,
-                    "audioPermission": audioGranted,
-                    "notificationPermission": true
-                ])
+        Task {
+            let options = call.getObject("options")
+            let result = await permissionService.requestPermissions(options: options)
+            await MainActor.run {
+                call.resolve(result)
             }
         }
     }
@@ -225,6 +175,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     // MARK: - Recording Methods (delegate to RecordingManager)
 
     @objc func startRecording(_ call: CAPPluginCall) {
+        // Validate permissions before starting recording
+        do {
+            try permissionService.validateRecordingPermissions()
+        } catch {
+            call.reject("Permission Error", error.localizedDescription)
+            return
+        }
+
         // Input validation
         if let sampleRate = call.getInt("sampleRate"), sampleRate <= 0 {
             call.reject("Invalid sample rate: must be positive")

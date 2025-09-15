@@ -13,7 +13,9 @@ import android.provider.Settings;
 import android.os.Looper;
 import android.util.Log;
 
+
 import androidx.annotation.RequiresPermission;
+import androidx.core.app.ActivityCompat;
 
 import java.io.File;
 import java.io.IOException;
@@ -42,11 +44,11 @@ import com.getcapacitor.annotation.PermissionCallback;
         )
     }
 )
-public class CapacitorAudioEnginePlugin extends Plugin implements PermissionManager.PermissionRequestCallback, EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, RecordingServiceListener, AudioInterruptionManager.InterruptionCallback {
+public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, RecordingServiceListener, AudioInterruptionManager.InterruptionCallback {
     private static final String TAG = "CapacitorAudioEngine";
 
     // Core managers
-    private PermissionManager permissionManager;
+    private PermissionManagerService permissionService; // Standalone permission service
     private EventManager eventManager;
 
     private FileDirectoryManager fileManager;
@@ -77,7 +79,16 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         mainHandler = new Handler(Looper.getMainLooper());
 
         // Initialize managers
-        permissionManager = new PermissionManager(getContext(), this);
+        permissionService = new PermissionManagerService(getContext(), new PermissionManagerService.PermissionServiceCallback() {
+            public void requestPermission(String alias, PluginCall call, String callbackMethod) {
+                requestPermissionForAlias(alias, call, callbackMethod);
+            }
+
+            public boolean shouldShowRequestPermissionRationale(String permission) {
+                return getActivity() != null &&
+                       ActivityCompat.shouldShowRequestPermissionRationale(getActivity(), permission);
+            }
+        });
         eventManager = new EventManager(this);
         fileManager = new FileDirectoryManager(getContext());
 
@@ -143,27 +154,37 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
 
     @PluginMethod
     public void checkPermissions(PluginCall call) {
-        JSObject result = permissionManager.checkPermissions();
+        JSObject result = permissionService.checkPermissions();
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void checkPermissionMicrophone(PluginCall call) {
+        JSObject result = permissionService.checkPermissionMicrophone();
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void checkPermissionNotifications(PluginCall call) {
+        JSObject result = permissionService.checkPermissionNotifications();
         call.resolve(result);
     }
 
     @PluginMethod
     public void requestPermissions(PluginCall call) {
-        permissionManager.requestPermissions(call);
+        JSObject options = call.getObject("options", new JSObject());
+        permissionService.requestPermissions(call, options);
     }
 
-
-
     @PermissionCallback
-    private void permissionCallback(PluginCall call) {
-        Log.d(TAG, "permissionCallback triggered - handling permission response");
-        // Delegate to the permission manager to handle the callback properly
-        // This ensures proper sequential permission handling (audio first, then notifications)
-        permissionManager.handlePermissionCallback(call);
+    private void detailedPermissionCallback(PluginCall call) {
+        Log.d(TAG, "detailedPermissionCallback triggered - handling detailed permission response");
+        // Delegate to the permission service for detailed permission handling
+        permissionService.handleDetailedPermissionCallback(call);
     }
 
   // Implementation of PermissionRequestCallback interface
-    @Override
+    // Not an override: PermissionServiceCallback is implemented as an anonymous inner class, not here.
     public void requestPermission(String alias, PluginCall call, String callbackMethod) {
         requestPermissionForAlias(alias, call, callbackMethod);
     }
@@ -209,8 +230,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             return;
         }
 
-        // Check permissions
-        permissionManager.validateRecordingPermissions();
+        // Check permissions using the new permission service
+        permissionService.validateRecordingPermissions();
 
         // Clean up any leftover state from previous recordings or interruptions
         cleanupRecordingState();
@@ -520,13 +541,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         try {
             Log.d(TAG, "isMicrophoneBusy called");
 
-            // Check if microphone permission is granted first
-            boolean hasPermission = permissionManager.hasMicrophonePermission();
+            // Check if microphone permission is granted first using permissionService
+            boolean hasPermission = hasPermission("microphone");
             Log.d(TAG, "Microphone permission granted: " + hasPermission);
-
-            // Also log the full permission result for debugging
-            JSObject permissionResult = permissionManager.checkPermissions();
-            Log.d(TAG, "Full permission result: " + permissionResult);
 
             if (!hasPermission) {
                 Log.d(TAG, "Microphone permission not granted, returning busy=true");
@@ -1274,10 +1291,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             if (playbackManager != null) {
                 playbackManager.release();
                 playbackManager = null;
-            }
-
-            if (permissionManager != null) {
-                permissionManager = null;
             }
 
             if (eventManager != null) {

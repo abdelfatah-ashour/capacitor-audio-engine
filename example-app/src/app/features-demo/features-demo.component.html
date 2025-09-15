@@ -10,9 +10,106 @@
     <ion-icon name="settings" slot="start"></ion-icon>
     Open App Permissions
   </ion-button>
+
+  <!-- Main Permission Check -->
   <ion-button expand="block" fill="outline" color="medium" (click)="checkPermission()">
-    Check Permission
+    Check All Permissions
   </ion-button>
+
+  <!-- Individual Permission Checks -->
+  <ion-grid>
+    <ion-row>
+      <ion-col size="6">
+        <ion-button
+          expand="block"
+          fill="outline"
+          size="small"
+          (click)="checkMicrophonePermission()"
+        >
+          <ion-icon name="mic-circle" slot="start"></ion-icon>
+          Microphone
+        </ion-button>
+      </ion-col>
+      <ion-col size="6">
+        <ion-button
+          expand="block"
+          fill="outline"
+          size="small"
+          (click)="checkNotificationPermission()"
+        >
+          <ion-icon name="notifications-circle" slot="start"></ion-icon>
+          Notifications
+        </ion-button>
+      </ion-col>
+    </ion-row>
+  </ion-grid>
+
+  <!-- Permission Status Display -->
+  @if (permissionChecked()) {
+    <ion-card>
+      <ion-card-header>
+        <ion-card-title>Permission Status</ion-card-title>
+      </ion-card-header>
+      <ion-card-content>
+        <ion-item>
+          <ion-icon
+            name="mic-circle"
+            slot="start"
+            [color]="microphonePermissionStatus() === 'granted' ? 'success' : 'danger'"
+          ></ion-icon>
+          <ion-label>
+            <h3>Microphone</h3>
+            <p>{{ microphonePermissionStatus() | titlecase }}</p>
+          </ion-label>
+          <ion-chip
+            [color]="microphonePermissionStatus() === 'granted' ? 'success' : 'danger'"
+            slot="end"
+          >
+            {{ microphonePermissionStatus() }}
+          </ion-chip>
+        </ion-item>
+        <ion-item>
+          <ion-icon
+            name="notifications-circle"
+            slot="start"
+            [color]="notificationPermissionStatus() === 'granted' ? 'success' : 'warning'"
+          ></ion-icon>
+          <ion-label>
+            <h3>Notifications</h3>
+            <p>{{ notificationPermissionStatus() | titlecase }}</p>
+          </ion-label>
+          <ion-chip
+            [color]="
+              notificationPermissionStatus() === 'granted'
+                ? 'success'
+                : notificationPermissionStatus() === 'unsupported'
+                  ? 'medium'
+                  : 'warning'
+            "
+            slot="end"
+          >
+            {{ notificationPermissionStatus() }}
+          </ion-chip>
+        </ion-item>
+        @if (detailedPermissionInfo()) {
+          <ion-item>
+            <ion-label>
+              <h3>Overall Status</h3>
+              <p>
+                All required permissions:
+                {{ detailedPermissionInfo().granted ? 'Granted' : 'Not Granted' }}
+              </p>
+            </ion-label>
+            <ion-icon
+              [name]="detailedPermissionInfo().granted ? 'checkmark-circle' : 'close-circle'"
+              [color]="detailedPermissionInfo().granted ? 'success' : 'danger'"
+              slot="end"
+            ></ion-icon>
+          </ion-item>
+        }
+      </ion-card-content>
+    </ion-card>
+  }
   @if (!hasPermission()) {
     <ion-card color="warning">
       <ion-card-header>

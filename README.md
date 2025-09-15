@@ -1,6 +1,6 @@
 # Capacitor Audio Engine 🎙️
 
-Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin makes it super easy to add high-quality audio recording to your mobile apps. Whether you're building a voice memo app, a podcast recorder, or just need to capture some audio, we've got you covered!
+Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin makes it super easy to add both high-quality audio recording and powerful audio playback to your mobile apps. Whether you're building a voice memo app, a podcast player, a music app, or just need to record and play audio, we've got you covered!
 
 ## 📑 Table of Contents
 
@@ -40,62 +40,57 @@ Hey there! 👋 Welcome to the Native Audio plugin for Capacitor. This plugin ma
 
 ### 🎙️ Audio Recording
 
-- 🎯 Record high-quality audio on Android and iOS
-- ⏯️ Pause and resume your recordings
-- 🔄 Reset an in-progress recording (discard segments/duration/waveform, keep settings; resume starts fresh)
-- 📊 Monitor recording status in real-time
-- 🔒 Handle permissions automatically
-- ✂️ Trim your audio files
-- 📝 Get detailed recording metadata
-- 🎙️ **Microphone management** - Detect and switch between available microphones
-- 🔍 **Microphone status** - Check if microphone is busy/in use by other apps
-- 📊 **Real-time waveform data** - Get amplitude levels during recording for UI visualizations
-- ⚙️ **Enum-based configuration** - Type-safe recording options with quality presets
-- 🎚️ **Quality presets** - Low/Medium/High presets for common use cases
-- 🔧 **Custom settings** - Fine-grained control with sample rate, bitrate, and channel options
+- 🎯 **High-quality recording** on Android and iOS
+- ⏯️ **Pause and resume** your recordings seamlessly
+- 🔄 **Reset recordings** without stopping (keeps settings, starts fresh)
+- 📊 **Real-time monitoring** with duration tracking and recording status
+- 🔒 **Smart permission handling** with detailed status information
+- ✂️ **Audio trimming** to cut your recordings to the perfect length
+- 📝 **Rich metadata** including file info, duration, sample rate, and more
+- 🎙️ **Microphone management** - detect and switch between available microphones
+- 🔍 **Microphone status checking** - know if the mic is busy with other apps
+- 📊 **Real-time waveform data** - get audio levels for stunning visualizations
+- ⚙️ **Flexible configuration** with quality presets and custom settings
+- 🔧 **Segment recording** - automatic multi-segment recording for long sessions
 
 ### 🎵 Audio Playback
 
-- 📂 **Playlist support** - Initialize and manage playlists of multiple audio tracks
-- ▶️ **Full playback controls** - Play, pause, resume, stop with seamless track transitions
-- ⏭️ **Navigation** - Skip to next/previous track or jump to specific track index
-- 🎯 **Seeking** - Seek to any position within the current track
-- 📊 **Real-time info** - Get current track, position, duration, and playback status
-- 🔔 **Event notifications** - Track changes, playback state, and error handling
-- 🔄 **Auto-advance** - Automatically play next track when current track ends
-- 📱 **Lock screen controls** - Native media controls on iOS and Android
-- 🔊 **Background playback** - Continue playing when app is backgrounded
-- 🎨 **Metadata support** - Display track title, artist, and artwork
-- ⚡ **Audio preloading** - Preload audio files for faster playback start times
-- 🎼 **Multi-audio resume** - Resume any of multiple audio files with custom settings
-- 📋 **Audio information** - Get detailed metadata from local and remote audio files
-- 📡 **Real-time monitoring** - Track playback progress and status changes
-- 🌐 Cross-platform support (Web coming soon!)
-- 🎚️ Consistent audio quality:
-  - Default: Medium preset (22.05kHz, 64kbps, mono) - optimized for smaller files
-  - Low preset: 16kHz, 32kbps, mono - perfect for voice notes
-  - High preset: 44.1kHz, 128kbps, mono - excellent quality for music
-  - Custom values: Full control over sample rate, bitrate, and channels
+- 📂 **Playlist management** - load and control multiple audio tracks
+- ▶️ **Complete playback controls** - play, pause, resume, stop with smooth transitions
+- ⏭️ **Track navigation** - skip to next/previous or jump to any track by index
+- 🎯 **Precise seeking** - jump to any position within tracks
+- 📊 **Real-time progress** - get current position, duration, and playback status
+- 🔔 **Event notifications** - track changes, completion, errors, and more
+- 🔄 **Auto-advance** - automatically move to the next track
+- 📱 **Background support** - continue playing when app is backgrounded
+- 🎨 **Rich metadata** - support for track titles, artists, and artwork
+- ⚡ **Smart preloading** - preload tracks for instant playback
+
+### 🔧 Cross-Platform Excellence
+
+- 📱 **Native performance** on Android and iOS
+- 🎵 **Consistent format** - M4A/AAC across all platforms
+- 🎚️ **Quality control** - from voice notes (16kHz) to high-quality music (48kHz)
+- 🔄 **Optimized defaults** - 22.05kHz, 64kbps, mono for smaller file sizes
+- 📐 **Flexible options** - choose quality presets or fine-tune every setting
 
 ## 📱 Platform Support
 
-| Feature              | Android | iOS | Web |
-| -------------------- | ------- | --- | --- |
-| Recording            | ✅      | ✅  | 🔜  |
-| Pause/Resume         | ✅      | ✅  | 🔜  |
-| Permission Handling  | ✅      | ✅  | 🔜  |
-| Status Monitoring    | ✅      | ✅  | 🔜  |
-| Audio Trimming       | ✅      | ✅  | 🔜  |
-| Microphone Detection | ✅      | ✅  | 🔜  |
-| Microphone Switching | ✅      | ✅  | 🔜  |
-| Waveform Data        | ✅      | ✅  | ❌  |
-| Audio Playback       | ✅      | ✅  | 🔜  |
-| Playback Controls    | ✅      | ✅  | 🔜  |
-| Audio Preloading     | ✅      | ✅  | ❌  |
-| Multi-Audio Resume   | ✅      | ✅  | ❌  |
-| Audio Information    | ✅      | ✅  | 🔜  |
+| Feature                | Android | iOS | Web |
+| ---------------------- | ------- | --- | --- |
+| Audio Recording        | ✅      | ✅  | 🔜  |
+| Pause/Resume Recording | ✅      | ✅  | 🔜  |
+| Permission Management  | ✅      | ✅  | ❌  |
+| Recording Status       | ✅      | ✅  | 🔜  |
+| Audio Trimming         | ✅      | ✅  | ❌  |
+| Microphone Detection   | ✅      | ✅  | ❌  |
+| Microphone Switching   | ✅      | ✅  | ❌  |
+| Waveform Data          | ✅      | ✅  | ❌  |
+| Audio Playback         | ✅      | ✅  | 🔜  |
+| Playlist Management    | ✅      | ✅  | 🔜  |
+| Background Playback    | ✅      | ✅  | ❌  |
 
-> 💡 **Note:** Android and iOS are fully supported! Web support is coming soon - we're working on it! 🚧
+> 💡 **Note:** Android and iOS are fully supported with all features! Web support is in development for core recording and playback features. 🚧
 
 ## 🚀 Installation
 
@@ -159,151 +154,116 @@ Add this to your `AndroidManifest.xml`:
 
 #### `AudioFileInfo`
 
+Information about recorded or audio files:
+
 ```typescript
-export interface AudioFileInfo {
-  path: string;
-  webPath: string;
-  uri: string;
-  mimeType: string;
-  size: number;
-  duration: number;
-  sampleRate: number;
-  channels: number;
-  bitrate: number;
-  createdAt: number;
-  filename: string;
-  /**
-   * Base64-encoded audio data with MIME prefix (Data URI format)
-   * Format: "data:audio/m4a;base64,<base64-data>"
-   */
-  base64?: string;
+interface AudioFileInfo {
+  path: string; // File system path
+  webPath: string; // Web accessible path
+  uri: string; // URI for file access
+  mimeType: string; // MIME type (audio/m4a)
+  size: number; // File size in bytes
+  duration: number; // Duration in seconds
+  sampleRate: number; // Audio sample rate (Hz)
+  channels: number; // Number of audio channels
+  bitrate: number; // Audio bitrate (bps)
+  createdAt: number; // Creation timestamp
+  filename: string; // File name
 }
 ```
 
 #### `RecordingOptions`
 
+Configure your recording settings:
+
 ```typescript
-export interface RecordingOptions {
-  /**
-   * Audio sample rate (Hz). Default: AudioSampleRate.STANDARD_22K (optimized for smaller file sizes)
-   */
-  sampleRate?: AudioSampleRate | number;
-  /**
-   * Number of audio channels. Default: AudioChannels.MONO
-   */
-  channels?: AudioChannels | number;
-  /**
-   * Audio bitrate (bps). Default: AudioBitrate.MEDIUM (optimized for smaller file sizes)
-   */
-  bitrate?: AudioBitrate | number;
-  /**
-   * Audio quality preset. If specified, overrides individual sampleRate and bitrate settings.
-   * - AudioQuality.LOW: 16kHz, 32kbps - smallest files, suitable for voice notes
-   * - AudioQuality.MEDIUM: 22.05kHz, 64kbps - balanced quality/size (default)
-   * - AudioQuality.HIGH: 44.1kHz, 128kbps - higher quality, larger files
-   */
-  quality?: AudioQuality;
-  /**
-   * Maximum recording duration in seconds.
-   * When set, enables segment rolling mode:
-   * - Records in multi-minute segments (default 5 minutes each)
-   * - Maintains a rolling buffer based on the specified max duration
-   * - Prior segments are already finalized; stop only closes the current segment for minimal latency
-   * If not set, segment rolling still records in segments and the final file will include the full session.
-   */
-  maxDuration?: number;
-  /**
-   * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
-   *
-   * Enhanced Recording Features:
-   * - Automatic segment rolling (multi-minute segments, default 5 minutes) for improved reliability and minimal stop latency
-   * - Rolling window retention based on maxDuration for efficient memory usage
-   * - Automatic segment merging when needed (most stops only close the current segment)
-   * - Better handling of long recording sessions and interruptions
-   */
+interface RecordingOptions {
+  sampleRate?: AudioSampleRate | number; // Default: 22050 Hz
+  channels?: AudioChannels | number; // Default: 1 (mono)
+  bitrate?: AudioBitrate | number; // Default: 64000 bps
+  maxDuration?: number; // Max duration in seconds
 }
 ```
 
 #### Recording Configuration Enums
 
+Type-safe options for recording quality:
+
 ```typescript
-export enum AudioSampleRate {
-  /** Low quality - 8kHz for voice recording */
-  VOICE_8K = 8000,
-  /** Voice quality - 16kHz for speech */
-  VOICE_16K = 16000,
-  /** Standard quality - 22.05kHz (default optimized) */
-  STANDARD_22K = 22050,
-  /** CD quality - 44.1kHz */
-  CD_44K = 44100,
-  /** High quality - 48kHz */
-  HIGH_48K = 48000,
+enum AudioSampleRate {
+  VOICE_8K = 8000, // Basic voice recording
+  VOICE_16K = 16000, // Good voice quality
+  STANDARD_22K = 22050, // Standard quality (default)
+  CD_44K = 44100, // CD quality
+  HIGH_48K = 48000, // High quality
 }
 
-export enum AudioChannels {
-  /** Mono - single channel */
-  MONO = 1,
-  /** Stereo - two channels */
-  STEREO = 2,
+enum AudioChannels {
+  MONO = 1, // Single channel (smaller files)
+  STEREO = 2, // Two channels (stereo)
 }
 
-export enum AudioBitrate {
-  /** Very low bitrate - 16kbps for voice notes */
-  VERY_LOW = 16000,
-  /** Low bitrate - 32kbps for voice recording */
-  LOW = 32000,
-  /** Medium bitrate - 64kbps (default optimized) */
-  MEDIUM = 64000,
-  /** High bitrate - 128kbps for music */
-  HIGH = 128000,
-  /** Very high bitrate - 256kbps for high quality */
-  VERY_HIGH = 256000,
-}
-
-export enum AudioQuality {
-  /** Low quality: 16kHz, 32kbps - smallest files, suitable for voice notes */
-  LOW = 'low',
-  /** Medium quality: 22.05kHz, 64kbps - balanced quality/size (default) */
-  MEDIUM = 'medium',
-  /** High quality: 44.1kHz, 128kbps - higher quality, larger files */
-  HIGH = 'high',
+enum AudioBitrate {
+  VERY_LOW = 16000, // Voice notes
+  LOW = 32000, // Voice recording
+  MEDIUM = 64000, // Balanced (default)
+  HIGH = 128000, // Good quality
+  VERY_HIGH = 256000, // Excellent quality
 }
 ```
 
-#### `RecordingStatus`
+#### Permission Management
 
 ```typescript
-type RecordingStatus = 'idle' | 'recording' | 'paused';
+enum PermissionStatus {
+  GRANTED = 'granted',
+  DENIED = 'denied',
+  DENIED_PERMANENTLY = 'denied_permanently',
+  NOT_DETERMINED = 'not_determined',
+  LIMITED = 'limited',
+  RESTRICTED = 'restricted',
+  REQUESTING = 'requesting',
+  UNSUPPORTED = 'unsupported',
+}
+
+enum AudioPermissionType {
+  MICROPHONE = 'microphone',
+  NOTIFICATIONS = 'notifications',
+}
+
+interface PermissionStatusResults {
+  granted: boolean; // permission status
+  status: PermissionStatus; // status
+}
 ```
 
-#### `AudioRecordingEventName`
+#### Audio Playback
 
 ```typescript
-type AudioRecordingEventName = 'durationChange' | 'error';
-```
+interface AudioTrack {
+  id: string;
+  url: string;
+  title?: string;
+  artist?: string;
+  artworkUrl?: string;
+}
 
-#### `DurationChangeData`
-
-```typescript
-export interface DurationChangeData {
+interface PlaybackInfo {
+  currentTrack: AudioTrack | null;
+  currentIndex: number;
+  currentPosition: number;
   duration: number;
+  isPlaying: boolean;
+  status: PlaybackStatus;
 }
+
+type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
 ```
 
-#### `ErrorEventData`
+#### Microphone Management
 
 ```typescript
-export interface ErrorEventData {
-  message: string;
-  code?: string | number;
-  details?: any;
-}
-```
-
-#### `MicrophoneInfo`
-
-```typescript
-export interface MicrophoneInfo {
+interface MicrophoneInfo {
   id: number;
   name: string;
   type: 'internal' | 'external' | 'unknown';
@@ -313,177 +273,19 @@ export interface MicrophoneInfo {
 }
 ```
 
-#### `MicrophoneStatusResult`
+#### Waveform Configuration
 
 ```typescript
-export interface MicrophoneStatusResult {
-  busy: boolean;
-  reason?: string;
+enum WaveLevelEmissionInterval {
+  REALTIME = 50, // 50ms - real-time
+  VERY_FAST = 100, // 100ms - very fast
+  FAST = 200, // 200ms - fast
+  MEDIUM = 500, // 500ms - medium
+  DEFAULT = 1000, // 1000ms - default
 }
-```
 
-#### `AvailableMicrophonesResult`
-
-```typescript
-export interface AvailableMicrophonesResult {
-  microphones: MicrophoneInfo[];
-}
-```
-
-#### `SwitchMicrophoneOptions`
-
-```typescript
-export interface SwitchMicrophoneOptions {
-  microphoneId: number;
-}
-```
-
-#### `SwitchMicrophoneResult`
-
-```typescript
-export interface SwitchMicrophoneResult {
-  success: boolean;
-  microphoneId: number;
-}
-```
-
-#### `PlaybackStatus`
-
-```typescript
-type PlaybackStatus = 'idle' | 'loaded' | 'playing' | 'paused' | 'stopped' | 'completed' | 'error';
-```
-
-#### `PlaybackOptions`
-
-```typescript
-export interface PlaybackOptions {
-  /**
-   * Playback speed (0.5 - 2.0). Default: 1.0
-   */
-  speed?: number;
-  /**
-   * Start time in seconds. Default: 0
-   */
-  startTime?: number;
-  /**
-   * Whether to loop the audio. Default: false
-   */
-  loop?: boolean;
-  /**
-   * Volume level (0.0 - 1.0). Default: 1.0
-   */
-  volume?: number;
-}
-```
-
-#### `ResumePlaybackOptions`
-
-```typescript
-export interface ResumePlaybackOptions {
-  /**
-   * URI of the audio file to resume
-   * If not provided, resumes the currently paused playback
-   */
-  uri?: string;
-  /**
-   * Playback speed (0.5 - 2.0). Default: 1.0
-   */
-  speed?: number;
-  /**
-   * Volume level (0.0 - 1.0). Default: 1.0
-   */
-  volume?: number;
-  /**
-   * Whether to loop the audio. Default: false
-   */
-  loop?: boolean;
-}
-```
-
-#### `PreloadOptions`
-
-```typescript
-export interface PreloadOptions {
-  /**
-   * URI of the audio file to preload
-   */
-  uri: string;
-  /**
-   * Whether to prepare for playback immediately. Default: true
-   */
-  prepare?: boolean;
-}
-```
-
-#### `AudioPlayerInfo`
-
-```typescript
-export interface AudioPlayerInfo {
-  status: PlaybackStatus;
-  currentTime: number;
-  duration: number;
-  speed?: number;
-  volume?: number;
-  isLooping?: boolean;
-  uri?: string;
-}
-```
-
-#### `AudioPlaybackEventName`
-
-```typescript
-type AudioPlaybackEventName = 'playbackStatusChange' | 'playbackProgress' | 'playbackCompleted' | 'playbackError';
-```
-
-#### `PlaybackProgressData`
-
-```typescript
-export interface PlaybackProgressData {
-  currentTime: number;
-  duration: number;
-  position: number; // Playback position as percentage (0-100)
-}
-```
-
-#### `PlaybackStatusData`
-
-```typescript
-export interface PlaybackStatusData {
-  status: PlaybackStatus;
-  currentTime?: number;
-  duration?: number;
-}
-```
-
-#### `PlaybackErrorData`
-
-```typescript
-export interface PlaybackErrorData {
-  message: string;
-  code?: string | number;
-  details?: any;
-}
-```
-
-#### `PlaybackCompletedData`
-
-```typescript
-export interface PlaybackCompletedData {
-  duration: number;
-}
-```
-
-#### `GetAudioInfoOptions`
-
-```typescript
-export interface GetAudioInfoOptions {
-  /**
-   * URI of the audio file to analyze
-   * Supports:
-   * - Local file URIs (from stopRecording)
-   * - Remote CDN URLs (HTTP/HTTPS)
-   */
-  uri: string;
+interface WaveLevelConfiguration {
+  emissionInterval?: WaveLevelEmissionInterval | number;
 }
 ```
 
@@ -491,35 +293,83 @@ export interface GetAudioInfoOptions {
 
 #### Permission Management
 
-##### `checkPermission()`
+##### `checkPermissions()`
 
-Check if your app has permission to use the microphone.
+Check the status of all audio-related permissions with detailed information:
 
 ```typescript
-checkPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
+checkPermissions(): Promise<PermissionStatusResults>;
 ```
 
-##### `requestPermission()`
-
-Ask the user for microphone permission.
+**Example:**
 
 ```typescript
-requestPermission(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }>;
+const permissions = await CapacitorAudioEngine.checkPermissions();
+console.log('Overall granted:', permissions.granted);
+console.log('Microphone:', permissions.microphone.status);
+console.log('Notifications:', permissions.notifications.status);
+```
+
+##### `checkPermissionMicrophone()`
+
+Check only microphone permission status:
+
+```typescript
+checkPermissionMicrophone(): Promise<SinglePermissionStatus>;
+```
+
+##### `checkPermissionNotifications()`
+
+Check only notification permission status:
+
+```typescript
+checkPermissionNotifications(): Promise<SinglePermissionStatus>;
+```
+
+##### `requestPermissions()`
+
+Request permissions with detailed options and status:
+
+```typescript
+requestPermissions(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
+```
+
+##### `openSettings()`
+
+Navigate to app settings for manual permission management:
+
+```typescript
+openSettings(): Promise<void>;
 ```
 
 #### Recording Control
 
 ##### `startRecording()`
 
-Start recording audio from the device's microphone.
+Start recording audio with optional configuration:
 
 ```typescript
 startRecording(options?: RecordingOptions): Promise<void>;
 ```
 
+**Example:**
+
+```typescript
+// Start with default settings (22.05kHz, 64kbps, mono)
+await CapacitorAudioEngine.startRecording();
+
+// Custom configuration
+await CapacitorAudioEngine.startRecording({
+  sampleRate: AudioSampleRate.CD_44K,
+  channels: AudioChannels.STEREO,
+  bitrate: AudioBitrate.HIGH,
+  maxDuration: 300, // 5 minutes max
+});
+```
+
 ##### `pauseRecording()`
 
-Pause the current recording.
+Pause the current recording:
 
 ```typescript
 pauseRecording(): Promise<void>;
@@ -527,7 +377,7 @@ pauseRecording(): Promise<void>;
 
 ##### `resumeRecording()`
 
-Resume the current recording if it was previously paused.
+Resume a paused recording:
 
 ```typescript
 resumeRecording(): Promise<void>;
@@ -535,21 +385,15 @@ resumeRecording(): Promise<void>;
 
 ##### `resetRecording()`
 
-Reset the current recording session without finalizing a file.
+Reset the current recording session (keeps settings, discards data):
 
 ```typescript
 resetRecording(): Promise<void>;
 ```
 
-Notes:
-- Discards current segments, duration, and waveform data
-- Keeps your previous recording configuration so you can resume seamlessly
-- Leaves the session in paused state; call resumeRecording() to start fresh
-- Web: Not supported (throws an error)
-
 ##### `stopRecording()`
 
-Stop the current recording and get the recorded file information.
+Stop recording and get the audio file information:
 
 ```typescript
 stopRecording(): Promise<AudioFileInfo>;
@@ -559,7 +403,7 @@ stopRecording(): Promise<AudioFileInfo>;
 
 ##### `getDuration()`
 
-Get the current recording duration.
+Get the current recording duration:
 
 ```typescript
 getDuration(): Promise<{ duration: number }>;
@@ -567,201 +411,143 @@ getDuration(): Promise<{ duration: number }>;
 
 ##### `getStatus()`
 
-Check the current recording status.
+Get comprehensive recording status:
 
 ```typescript
-getStatus(): Promise<{ status: RecordingStatus; isRecording: boolean; duration: number }>;
+getStatus(): Promise<{
+  status: RecordingStatus;
+  isRecording: boolean;
+  duration: number;
+}>;
 ```
 
 #### Audio Processing
 
 ##### `trimAudio()`
 
-Trim an audio file to a specific duration.
+Trim an audio file to a specific duration:
 
 ```typescript
 trimAudio(options: { uri: string; start: number; end: number }): Promise<AudioFileInfo>;
 ```
 
-##### `getAudioInfo()`
-
-Get detailed information about an audio file (local or remote).
-
-```typescript
-getAudioInfo(options: GetAudioInfoOptions): Promise<AudioFileInfo>;
-```
-
-**Example:**
-
-```typescript
-// Get info for a local recording
-const localInfo = await CapacitorAudioEngine.getAudioInfo({
-  uri: 'file:///path/to/recording.m4a',
-});
-
-// Get info for a remote CDN file
-const remoteInfo = await CapacitorAudioEngine.getAudioInfo({
-  uri: 'https://example.com/audio/sample.mp3',
-});
-
-console.log('Duration:', localInfo.duration, 'seconds');
-console.log('File size:', localInfo.size, 'bytes');
-console.log('Sample rate:', localInfo.sampleRate, 'Hz');
-```
-
-**Platform Notes:**
-
-- **Android**: Uses MediaMetadataRetriever to extract metadata from local and remote files
-- **iOS**: Uses AVAsset to extract metadata from local and remote files
-- **Web**: Not supported
-
 #### Microphone Management
 
 ##### `isMicrophoneBusy()`
 
-Check if the microphone is currently being used by another application.
+Check if the microphone is being used by another app:
 
 ```typescript
 isMicrophoneBusy(): Promise<MicrophoneStatusResult>;
 ```
 
-**Example:**
-
-```typescript
-const status = await CapacitorAudioEngine.isMicrophoneBusy();
-if (status.busy) {
-  console.log('Microphone is busy:', status.reason);
-} else {
-  console.log('Microphone is available');
-}
-```
-
 ##### `getAvailableMicrophones()`
 
-Get a list of available microphones (internal and external).
+Get a list of all available microphones:
 
 ```typescript
 getAvailableMicrophones(): Promise<AvailableMicrophonesResult>;
 ```
 
-**Example:**
-
-```typescript
-const result = await CapacitorAudioEngine.getAvailableMicrophones();
-result.microphones.forEach((mic) => {
-  console.log(`${mic.name} (${mic.type}): ${mic.isConnected ? 'Connected' : 'Disconnected'}`);
-});
-```
-
 ##### `switchMicrophone()`
 
-Switch to a different microphone while keeping recording active.
+Switch to a different microphone during recording:
 
 ```typescript
 switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
 ```
 
+#### Waveform Configuration
+
+##### `configureWaveform()`
+
+Set up real-time audio level monitoring:
+
+```typescript
+configureWaveform(options?: { EmissionInterval?: number }): Promise<WaveLevelConfigurationResult>;
+```
+
 **Example:**
 
 ```typescript
-// Get available microphones
-const result = await CapacitorAudioEngine.getAvailableMicrophones();
-const externalMic = result.microphones.find((mic) => mic.type === 'external');
+// Configure with 200ms intervals
+await CapacitorAudioEngine.configureWaveform({
+  EmissionInterval: WaveLevelEmissionInterval.FAST,
+});
 
-if (externalMic) {
-  try {
-    const switchResult = await CapacitorAudioEngine.switchMicrophone({
-      microphoneId: externalMic.id,
-    });
-    console.log('Switched to:', switchResult.message);
-  } catch (error) {
-    console.error('Failed to switch microphone:', error);
-  }
-}
+// Listen for wave level events
+await CapacitorAudioEngine.addListener('waveLevel', (data) => {
+  console.log('Audio level:', data.level); // 0.0 to 1.0
+});
 ```
 
-**Platform Notes:**
+##### `destroyWaveform()`
 
-- **Android**: Shows primary built-in microphone + all external devices (headsets, USB, Bluetooth)
-- **iOS**: Shows all available audio inputs from AVAudioSession
-- **Web**: Not supported (returns empty array)
+Clean up waveform configuration and resources:
+
+```typescript
+destroyWaveform(): Promise<void>;
+```
 
 #### Audio Playback
 
-The Audio Engine now supports comprehensive playlist-based audio playback with full control over multiple tracks.
-
 ##### `preloadTracks()`
 
-Preload audio tracks from URLs and initialize playlist for optimal performance.
+Initialize a playlist with multiple audio tracks for optimized playback:
 
 ```typescript
-preloadTracks(options: PreloadTracksOptions): Promise<void>;
-
-interface PreloadTracksOptions {
-  tracks: string[]; // Array of audio URLs
-  preloadNext?: boolean; // Default: true
-}
+preloadTracks(options: PreloadTracksOptions): Promise<PreloadTracksResult>;
 ```
 
 **Example:**
 
 ```typescript
-const trackUrls = ['https://example.com/song1.mp3', 'file:///path/to/local/song2.m4a', 'https://example.com/song3.mp3'];
-
-await CapacitorAudioEngine.preloadTracks({
-  tracks: trackUrls,
+const result = await CapacitorAudioEngine.preloadTracks({
+  tracks: ['https://example.com/song1.mp3', 'file:///path/to/local/song2.m4a', 'https://example.com/song3.mp3'],
   preloadNext: true,
 });
+
+console.log('Preloaded tracks:', result.tracks);
 ```
 
 ##### `playAudio()`
 
-Start playback of the current track in the playlist.
+Start playback of the current track or a specific track:
 
 ```typescript
-playAudio(): Promise<void>;
-```
-
-**Example:**
-
-```typescript
-await CapacitorAudioEngine.playAudio();
+playAudio(options?: PlayAudioOptions): Promise<void>;
 ```
 
 ##### `pauseAudio()`
 
-Pause the current audio playback.
+Pause the current audio playback:
 
 ```typescript
-pauseAudio(): Promise<void>;
+pauseAudio(options?: PauseAudioOptions): Promise<void>;
 ```
 
 ##### `resumeAudio()`
 
-Resume paused audio playback.
+Resume paused audio playback:
 
 ```typescript
-resumeAudio(): Promise<void>;
+resumeAudio(options?: ResumeAudioOptions): Promise<void>;
 ```
 
 ##### `stopAudio()`
 
-Stop audio playback and reset to the beginning of the current track.
+Stop audio playback and reset to beginning:
 
 ```typescript
-stopAudio(): Promise<void>;
+stopAudio(options?: StopAudioOptions): Promise<void>;
 ```
 
 ##### `seekAudio()`
 
-Seek to a specific position within the current track.
+Seek to a specific position in the current track:
 
 ```typescript
 seekAudio(options: SeekOptions): Promise<void>;
-
-interface SeekOptions {
-  seconds: number;
-}
 ```
 
 **Example:**
@@ -769,11 +555,17 @@ interface SeekOptions {
 ```typescript
 // Seek to 30 seconds
 await CapacitorAudioEngine.seekAudio({ seconds: 30 });
+
+// Seek in specific track
+await CapacitorAudioEngine.seekAudio({
+  seconds: 45,
+  url: 'https://example.com/track.mp3',
+});
 ```
 
 ##### `skipToNext()`
 
-Skip to the next track in the playlist.
+Skip to the next track in the playlist:
 
 ```typescript
 skipToNext(): Promise<void>;
@@ -781,7 +573,7 @@ skipToNext(): Promise<void>;
 
 ##### `skipToPrevious()`
 
-Skip to the previous track in the playlist.
+Skip to the previous track in the playlist:
 
 ```typescript
 skipToPrevious(): Promise<void>;
@@ -789,14 +581,10 @@ skipToPrevious(): Promise<void>;
 
 ##### `skipToIndex()`
 
-Jump to a specific track in the playlist by index.
+Jump to a specific track by index:
 
 ```typescript
 skipToIndex(options: SkipToIndexOptions): Promise<void>;
-
-interface SkipToIndexOptions {
-  index: number; // Zero-based track index
-}
 ```
 
 **Example:**
@@ -808,19 +596,10 @@ await CapacitorAudioEngine.skipToIndex({ index: 2 });
 
 ##### `getPlaybackInfo()`
 
-Get comprehensive information about the current playback state.
+Get comprehensive playback information:
 
 ```typescript
 getPlaybackInfo(): Promise<PlaybackInfo>;
-
-interface PlaybackInfo {
-  currentTrack: AudioTrack | null;
-  currentIndex: number;
-  currentPosition: number; // in seconds
-  duration: number; // in seconds
-  isPlaying: boolean;
-  status: PlaybackStatus; // 'idle' | 'loading' | 'playing' | 'paused' | 'stopped'
-}
 ```
 
 **Example:**
@@ -830,14 +609,13 @@ const info = await CapacitorAudioEngine.getPlaybackInfo();
 console.log('Current track:', info.currentTrack?.title);
 console.log('Position:', `${info.currentPosition}s / ${info.duration}s`);
 console.log('Playing:', info.isPlaying);
-console.log('Track index:', info.currentIndex);
 ```
 
 #### Event Handling
 
 ##### `addListener()`
 
-Add a listener for recording or playback events.
+Listen for recording and playback events:
 
 ```typescript
 addListener<T extends AudioEventName>(
@@ -846,57 +624,69 @@ addListener<T extends AudioEventName>(
 ): Promise<PluginListenerHandle>;
 ```
 
-**Recording Event Examples:**
+**Recording Events:**
 
 ```typescript
-// Listen for recording duration changes
-await CapacitorAudioEngine.addListener('durationChange', (event) => {
-  console.log('Recording duration:', event.duration, 'seconds');
+// Duration changes during recording
+await CapacitorAudioEngine.addListener('durationChange', (data) => {
+  console.log('Recording duration:', data.duration, 'seconds');
 });
 
-// Listen for recording errors
-await CapacitorAudioEngine.addListener('error', (event) => {
-  console.error('Recording error:', event.message);
+// Recording errors
+await CapacitorAudioEngine.addListener('error', (data) => {
+  console.error('Recording error:', data.message);
+});
+
+// Wave level data (requires configureWaveform)
+await CapacitorAudioEngine.addListener('waveLevel', (data) => {
+  console.log('Audio level:', data.level); // 0.0 to 1.0
+  console.log('Timestamp:', data.timestamp);
+});
+
+// Wave level initialization
+await CapacitorAudioEngine.addListener('waveLevelInit', (data) => {
+  console.log('Waveform initialized:', data.status);
+});
+
+// Permission status changes
+await CapacitorAudioEngine.addListener('permissionStatusChanged', (data) => {
+  console.log('Permission changed:', data.permissionType, data.status);
 });
 ```
 
-**Playback Event Examples:**
+**Playback Events:**
 
 ```typescript
-// Listen for track changes
-await CapacitorAudioEngine.addListener('trackChanged', (event) => {
-  console.log('Track changed:', event.track.title, 'at index', event.index);
-  // Update UI to show new track info
+// Track changes
+await CapacitorAudioEngine.addListener('trackChanged', (data) => {
+  console.log('Track changed:', data.track.title, 'at index', data.index);
 });
 
-// Listen for track completion
-await CapacitorAudioEngine.addListener('trackEnded', (event) => {
-  console.log('Track ended:', event.track.title);
-  // Track will auto-advance to next if available
+// Track completion
+await CapacitorAudioEngine.addListener('trackEnded', (data) => {
+  console.log('Track ended:', data.track.title);
 });
 
-// Listen for playback start
-await CapacitorAudioEngine.addListener('playbackStarted', (event) => {
-  console.log('Playback started:', event.track.title);
-  // Update play/pause button state
+// Playback start/pause
+await CapacitorAudioEngine.addListener('playbackStarted', (data) => {
+  console.log('Playback started:', data.track.title);
 });
 
-// Listen for playback pause
-await CapacitorAudioEngine.addListener('playbackPaused', (event) => {
-  console.log('Playback paused:', event.track.title, 'at', event.position, 'seconds');
-  // Update play/pause button state
+await CapacitorAudioEngine.addListener('playbackPaused', (data) => {
+  console.log('Playback paused at:', data.position, 'seconds');
 });
 
-// Listen for playback errors
-await CapacitorAudioEngine.addListener('playbackError', (event) => {
-  console.error('Playback error:', event.message);
-  // Show error message to user
-});
-await CapacitorAudioEngine.addListener('playbackCompleted', (data) => {
-  console.log('Playback completed, duration:', data.duration);
+// Playback progress (every 500ms during playback)
+await CapacitorAudioEngine.addListener('playbackProgress', (data) => {
+  console.log(`Progress: ${data.currentPosition}/${data.duration}s`);
 });
 
-// Listen for playback errors
+// Status changes
+await CapacitorAudioEngine.addListener('playbackStatusChanged', (data) => {
+  console.log('Status:', data.status, 'Playing:', data.isPlaying);
+});
+
+// Playback errors
 await CapacitorAudioEngine.addListener('playbackError', (data) => {
   console.error('Playback error:', data.message);
 });
@@ -904,93 +694,56 @@ await CapacitorAudioEngine.addListener('playbackError', (data) => {
 
 ##### `removeAllListeners()`
 
-Remove all listeners for recording events.
+Remove all event listeners:
 
 ```typescript
 removeAllListeners(): Promise<void>;
 ```
 
-> **Note:** The audio format is always `.m4a` (MPEG-4/AAC) on all platforms.
-
 #### Usage Example
 
-Here's a complete example of how to use the plugin with microphone management:
+Here's a complete example showing how to use the plugin:
 
 ```typescript
 import { CapacitorAudioEngine } from 'capacitor-audio-engine';
-import { AudioSampleRate, AudioChannels, AudioBitrate, AudioQuality } from 'capacitor-audio-engine';
+import { AudioSampleRate, AudioChannels, AudioBitrate, WaveLevelEmissionInterval } from 'capacitor-audio-engine';
 
-class AudioRecorder {
+class AudioManager {
   private isRecording = false;
-  private availableMicrophones: MicrophoneInfo[] = [];
-  private selectedMicrophoneId: number | null = null;
 
   async initialize() {
-    // Check and request permission
-    const permission = await CapacitorAudioEngine.checkPermission();
-    if (!permission.granted) {
-      const result = await CapacitorAudioEngine.requestPermission();
+    // Check permissions
+    const permissions = await CapacitorAudioEngine.checkPermissions();
+    if (!permissions.granted) {
+      const result = await CapacitorAudioEngine.requestPermissions();
       if (!result.granted) {
-        throw new Error('Microphone permission denied');
+        throw new Error('Permissions denied');
       }
     }
-
-    // Load available microphones
-    await this.loadMicrophones();
 
     // Set up event listeners
     await this.setupEventListeners();
-  }
 
-  async loadMicrophones() {
-    try {
-      const result = await CapacitorAudioEngine.getAvailableMicrophones();
-      this.availableMicrophones = result.microphones;
-
-      // Select internal microphone by default
-      const internalMic = result.microphones.find((mic) => mic.type === 'internal');
-      if (internalMic) {
-        this.selectedMicrophoneId = internalMic.id;
-      }
-
-      console.log('Available microphones:', result.microphones);
-    } catch (error) {
-      console.error('Failed to load microphones:', error);
-    }
+    // Configure waveform monitoring
+    await CapacitorAudioEngine.configureWaveform({
+      EmissionInterval: WaveLevelEmissionInterval.FAST, // 200ms intervals
+    });
   }
 
   async startRecording() {
     try {
-      // Check if microphone is busy
-      const status = await CapacitorAudioEngine.isMicrophoneBusy();
-      if (status.busy) {
-        throw new Error(`Microphone is busy: ${status.reason}`);
+      // Check if microphone is available
+      const micStatus = await CapacitorAudioEngine.isMicrophoneBusy();
+      if (micStatus.busy) {
+        throw new Error(`Microphone busy: ${micStatus.reason}`);
       }
 
-      // Switch to selected microphone if available
-      if (this.selectedMicrophoneId) {
-        await CapacitorAudioEngine.switchMicrophone({
-          microphoneId: this.selectedMicrophoneId,
-        });
-      }
-
-      // Start recording with enum-based configuration (recommended)
+      // Start recording with high quality settings
       await CapacitorAudioEngine.startRecording({
         sampleRate: AudioSampleRate.CD_44K,
         channels: AudioChannels.MONO,
         bitrate: AudioBitrate.HIGH,
-      });
-
-      // Or use quality presets for quick configuration
-      await CapacitorAudioEngine.startRecording({
-        quality: AudioQuality.HIGH, // Automatically sets 44.1kHz, 128kbps
-      });
-
-      // Or use custom values (still supported)
-      await CapacitorAudioEngine.startRecording({
-        sampleRate: 32000, // Custom sample rate
-        channels: 1, // Custom channel count
-        bitrate: 96000, // Custom bitrate
+        maxDuration: 600, // 10 minutes max
       });
 
       this.isRecording = true;
@@ -1002,338 +755,173 @@ class AudioRecorder {
 
   async stopRecording() {
     try {
-      const result = await CapacitorAudioEngine.stopRecording();
+      const audioFile = await CapacitorAudioEngine.stopRecording();
       this.isRecording = false;
-      console.log('Recording saved:', result);
-      return result;
+      console.log('Recording saved:', audioFile);
+      return audioFile;
     } catch (error) {
       console.error('Failed to stop recording:', error);
     }
   }
 
-  async playRecording(audioFile: AudioFileInfo) {
+  async playPlaylist(trackUrls: string[]) {
     try {
-      // Preload the audio file for better performance
-      await CapacitorAudioEngine.preload({
-        uri: audioFile.uri,
-        prepare: true,
+      // Preload tracks for better performance
+      const preloadResult = await CapacitorAudioEngine.preloadTracks({
+        tracks: trackUrls,
+        preloadNext: true,
       });
 
-      // Start playback with custom options
-      await CapacitorAudioEngine.startPlayback({
-        uri: audioFile.uri,
-        speed: 1.0, // Normal speed
-        volume: 1.0, // Full volume
-        loop: false, // Don't loop
-        startTime: 0, // Start from beginning
-      });
+      console.log('Preloaded tracks:', preloadResult.tracks);
 
+      // Start playback
+      await CapacitorAudioEngine.playAudio();
       console.log('Playback started');
     } catch (error) {
       console.error('Failed to start playback:', error);
     }
   }
 
-  async pausePlayback() {
+  async switchMicrophone() {
     try {
-      await CapacitorAudioEngine.pausePlayback();
-      console.log('Playback paused');
-    } catch (error) {
-      console.error('Failed to pause playback:', error);
-    }
-  }
+      const mics = await CapacitorAudioEngine.getAvailableMicrophones();
+      const externalMic = mics.microphones.find((mic) => mic.type === 'external');
 
-  async resumePlayback() {
-    try {
-      // Resume current playback (existing behavior)
-      await CapacitorAudioEngine.resumePlayback();
-      console.log('Playback resumed');
-    } catch (error) {
-      console.error('Failed to resume playback:', error);
-    }
-  }
-
-  async resumePlaybackWithOptions(uri?: string, speed?: number, volume?: number, loop?: boolean) {
-    try {
-      // Resume with custom options - can switch to different audio files
-      await CapacitorAudioEngine.resumePlayback({
-        uri, // Optional: switch to different audio file
-        speed, // Optional: custom playback speed
-        volume, // Optional: custom volume level
-        loop, // Optional: enable/disable looping
-      });
-      console.log('Playback resumed with custom options');
-    } catch (error) {
-      console.error('Failed to resume playback with options:', error);
-    }
-  }
-
-  async stopPlayback() {
-    try {
-      await CapacitorAudioEngine.stopPlayback();
-      console.log('Playback stopped');
-    } catch (error) {
-      console.error('Failed to stop playback:', error);
-    }
-  }
-
-  async seekTo(time: number) {
-    try {
-      await CapacitorAudioEngine.seekTo({ time });
-      console.log(`Seeked to ${time} seconds`);
-    } catch (error) {
-      console.error('Failed to seek:', error);
-    }
-  }
-
-  async getPlaybackStatus() {
-    try {
-      const status = await CapacitorAudioEngine.getPlaybackStatus();
-      console.log('Playback status:', status);
-      return status;
-    } catch (error) {
-      console.error('Failed to get playback status:', error);
-    }
-  }
-
-  async switchMicrophone(microphoneId: number) {
-    try {
-      const result = await CapacitorAudioEngine.switchMicrophone({ microphoneId });
-      this.selectedMicrophoneId = result.microphoneId;
-      console.log('Switched microphone:', result.message);
+      if (externalMic) {
+        await CapacitorAudioEngine.switchMicrophone({
+          microphoneId: externalMic.id,
+        });
+        console.log('Switched to external microphone');
+      }
     } catch (error) {
       console.error('Failed to switch microphone:', error);
     }
   }
 
   private async setupEventListeners() {
-    // Recording event listeners
+    // Recording events
     await CapacitorAudioEngine.addListener('durationChange', (data) => {
-      console.log('Recording duration:', data.duration);
+      console.log('Duration:', data.duration);
+    });
+
+    await CapacitorAudioEngine.addListener('waveLevel', (data) => {
+      // Update waveform visualization
+      this.updateWaveform(data.level);
     });
 
     await CapacitorAudioEngine.addListener('error', (data) => {
       console.error('Recording error:', data.message);
     });
 
-    // Playback event listeners
+    // Playback events
+    await CapacitorAudioEngine.addListener('trackChanged', (data) => {
+      console.log('Now playing:', data.track.title);
+    });
+
     await CapacitorAudioEngine.addListener('playbackProgress', (data) => {
-      console.log(`Playback progress: ${data.currentTime}s / ${data.duration}s`);
+      // Update progress bar
+      this.updateProgress(data.currentPosition, data.duration);
     });
+  }
 
-    await CapacitorAudioEngine.addListener('playbackStatusChange', (data) => {
-      console.log('Playback status changed to:', data.status);
-    });
+  private updateWaveform(level: number) {
+    // Update your waveform visualization UI
+    // level is between 0.0 (silent) and 1.0 (loud)
+  }
 
-    await CapacitorAudioEngine.addListener('playbackCompleted', (data) => {
-      console.log('Playback completed, duration:', data.duration);
-    });
-
-    await CapacitorAudioEngine.addListener('playbackError', (data) => {
-      console.error('Playback error:', data.message);
-    });
+  private updateProgress(currentTime: number, duration: number) {
+    // Update your progress bar UI
+    const percentage = (currentTime / duration) * 100;
   }
 
   async cleanup() {
     await CapacitorAudioEngine.removeAllListeners();
+    await CapacitorAudioEngine.destroyWaveform();
   }
 }
 
 // Usage
-const recorder = new AudioRecorder();
-await recorder.initialize();
+const audioManager = new AudioManager();
+await audioManager.initialize();
 ```
 
-### 📝 Recording Configuration Options
+> **Note:** All audio files are saved in M4A format (MPEG-4/AAC) across all platforms for consistency.
 
-The plugin now supports enum-based configuration options for better type safety and developer experience. Here are all the ways you can configure recording options:
-
-#### Using Quality Presets (Easiest)
-
-Quality presets provide pre-configured settings optimized for common use cases:
-
-```typescript
-// Low quality - Perfect for voice notes (smallest file size)
-await CapacitorAudioEngine.startRecording({
-  quality: AudioQuality.LOW, // 16kHz, 32kbps, mono
-});
-
-// Medium quality - Balanced quality and file size (default)
-await CapacitorAudioEngine.startRecording({
-  quality: AudioQuality.MEDIUM, // 22.05kHz, 64kbps, mono
-});
-
-// High quality - Best quality for music recording
-await CapacitorAudioEngine.startRecording({
-  quality: AudioQuality.HIGH, // 44.1kHz, 128kbps, mono
-});
-```
-
-#### Using Enums (Recommended for Custom Settings)
-
-For more control while maintaining type safety:
-
-```typescript
-await CapacitorAudioEngine.startRecording({
-  sampleRate: AudioSampleRate.CD_44K, // 44100 Hz
-  channels: AudioChannels.STEREO, // 2 channels
-  bitrate: AudioBitrate.VERY_HIGH, // 256000 bps
-});
-
-// Mix and match different quality levels
-await CapacitorAudioEngine.startRecording({
-  sampleRate: AudioSampleRate.VOICE_16K, // 16000 Hz - good for voice
-  channels: AudioChannels.MONO, // 1 channel - saves space
-  bitrate: AudioBitrate.MEDIUM, // 64000 bps - balanced
-});
-```
-
-#### Available Enum Values
-
-**Sample Rates (`AudioSampleRate`):**
-
-- `VOICE_8K` = 8000 Hz - Basic voice recording
-- `VOICE_16K` = 16000 Hz - Good voice quality
-- `STANDARD_22K` = 22050 Hz - Standard quality (default)
-- `CD_44K` = 44100 Hz - CD quality
-- `HIGH_48K` = 48000 Hz - High quality
-
-**Channels (`AudioChannels`):**
-
-- `MONO` = 1 - Single channel (smaller files)
-- `STEREO` = 2 - Two channels (stereo recording)
-
-**Bitrates (`AudioBitrate`):**
-
-- `VERY_LOW` = 16000 bps - Minimal quality
-- `LOW` = 32000 bps - Voice recording
-- `MEDIUM` = 64000 bps - Balanced (default)
-- `HIGH` = 128000 bps - Good quality
-- `VERY_HIGH` = 256000 bps - Excellent quality
-
-#### Using Custom Values (Still Supported)
-
-You can still use raw numeric values for complete customization:
-
-```typescript
-await CapacitorAudioEngine.startRecording({
-  sampleRate: 32000, // Custom sample rate
-  channels: 1, // Custom channel count
-  bitrate: 96000, // Custom bitrate
-  maxDuration: 300, // 5 minutes max
-});
-```
-
-#### Advanced Features
-
-**Segment Rolling Mode:**
-
-```typescript
-await CapacitorAudioEngine.startRecording({
-  quality: AudioQuality.MEDIUM,
-  maxDuration: 600, // Enable segment rolling for long recordings
-});
-```
-
-When `maxDuration` is set:
-
-- Records in multi-minute segments (default 5 minutes each)
-- Maintains a rolling buffer based on the specified maxDuration
-- Prior segments are already finalized; stop typically only closes the current segment for near-instant stop
-- Improves reliability and keeps UI responsive for long recording sessions
-
-```
-await recorder.startRecording();
-// ... record audio ...
-const audioFile = await recorder.stopRecording();
-```
-
-## 🔧 Troubleshooting
+## � Troubleshooting
 
 ### Common Issues
 
-1. **Permission Denied**
-   - Ensure you've added the required permissions in your platform-specific files
-   - Check if the user has granted permission in their device settings
-   - Try requesting permission again
-2. **Recording Not Starting**
-   - Verify that you're not already recording
-   - Check if the microphone is being used by another app
-   - Ensure you have sufficient storage space
-3. **Audio Quality Issues**
-   - Check if the device's microphone is working properly
-   - Verify that no other apps are using the microphone
-   - Ensure you're not in a noisy environment
-4. **File Access Issues**
-   - Check if the app has proper storage permissions
-   - Verify that the storage path is accessible
-   - Ensure there's enough free space
-5. **Microphone Issues**
-   - Use `isMicrophoneBusy()` to check if another app is using the microphone
-   - Try refreshing available microphones with `getAvailableMicrophones()`
-   - Ensure external microphones (headsets, USB) are properly connected
-   - On Android: Built-in microphone should always be available
-   - On iOS: Check if microphone access is enabled in device settings
-6. **Microphone Switching Issues**
-   - Verify the microphone ID exists in the available microphones list
-   - External microphones may disconnect during recording
-   - Some devices may not support seamless microphone switching during recording
+**Permission Problems:**
+
+- Make sure you've added the required permissions to your platform files
+- Check if permissions were granted in device settings
+- Use `openSettings()` to guide users to permission settings
+
+**Recording Issues:**
+
+- Check if another app is using the microphone with `isMicrophoneBusy()`
+- Verify sufficient storage space is available
+- Try switching microphones if external ones are available
+
+**Playback Issues:**
+
+- Ensure audio files are accessible and in supported formats
+- Check network connectivity for remote audio files
+- Verify the track was properly preloaded before playback
+
+**Performance Issues:**
+
+- Use `preloadTracks()` for better playback performance
+- Configure appropriate `maxDuration` for long recordings
+- Clean up listeners and resources when no longer needed
 
 ## 🛠️ Technical Details
 
 ### Platform-Specific Implementations
 
-#### Web
-
-- Uses MediaRecorder API
-- Format: WebM container with Opus codec
-- MIME Type: 'audio/webm;codecs=opus'
-- Permission: Uses navigator.permissions.query API
-- Audio trimming: Not supported (logs console message)
-- **Microphone Management**: Not supported (returns empty arrays and placeholder responses)
-
 #### Android
 
-- Uses MediaRecorder
-- Format: M4A container with AAC codec (MPEG-4/AAC, always .m4a)
-- MIME Type: 'audio/m4a' or 'audio/m4a'
-- Audio Source: MIC
-- **Default Quality**: Medium preset (22.05kHz, 64kbps, mono) - optimized for smaller file sizes
-- **Quality Presets**:
-  - Low: 16kHz, 32kbps, mono (voice notes)
-  - Medium: 22.05kHz, 64kbps, mono (balanced - default)
-  - High: 44.1kHz, 128kbps, mono (high quality)
-- Storage: App's external files directory under "Recordings" folder
-- Filename Format: "recording\_[timestamp].m4a"
-- **Background Recording**: Full support via foreground service with microphone type
-- **Required Permission**: `android.permission.RECORD_AUDIO`
-- **Background Permissions**: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS`
-- **Microphone Management**:
-  - Uses AudioManager.getDevices() to enumerate input devices (API 23+)
-  - Shows primary built-in microphone + all external devices
-  - Supports headset, USB, and Bluetooth microphones
-  - Uses AudioRecord for microphone busy detection
-  - Microphone switching uses MediaRecorder.setPreferredDevice() (API 28+)
+- **Recording**: MediaRecorder with AAC codec in M4A container
+- **Playback**: ExoPlayer for advanced playlist management
+- **Format**: M4A/AAC (audio/m4a)
+- **Storage**: App's external files directory under "Recordings" folder
+- **Permissions**: `RECORD_AUDIO`, `FOREGROUND_SERVICE`, `POST_NOTIFICATIONS`
+- **Microphone Management**: AudioManager.getDevices() for device enumeration
+- **Background Support**: Foreground service for continuous recording/playback
 
 #### iOS
 
-- Uses AVAudioRecorder
-- Format: M4A container with AAC codec (MPEG-4/AAC, always .m4a)
-- MIME Type: 'audio/m4a'
-- **Default Quality**: Medium preset (22.05kHz, 64kbps, mono) - optimized for smaller file sizes
-- **Quality Presets**:
-  - Low: 16kHz, 32kbps, mono (voice notes)
-  - Medium: 22.05kHz, 64kbps, mono (balanced - default)
-  - High: 44.1kHz, 128kbps, mono (high quality)
-- Uses AVAssetExportSession for audio trimming
-- **Background Recording**: Supports continuous recording when app is backgrounded (requires 'audio' background mode)
-- **Required Permission**: NSMicrophoneUsageDescription in Info.plist
-- **Background Mode**: UIBackgroundModes with 'audio' capability
-- **Microphone Management**:
-  - Uses AVAudioSession.availableInputs to list audio inputs
-  - Supports built-in, wired headset, and Bluetooth microphones
-  - Uses AVAudioSession.setPreferredInput() for microphone switching
-  - Real-time microphone busy detection via AVAudioSession
+- **Recording**: AVAudioRecorder with AAC codec in M4A container
+- **Playback**: AVQueuePlayer for playlist management
+- **Format**: M4A/AAC (audio/m4a)
+- **Permissions**: NSMicrophoneUsageDescription in Info.plist
+- **Microphone Management**: AVAudioSession.availableInputs for device enumeration
+- **Background Support**: Background audio mode for continuous operation
+
+#### Web (In Development)
+
+- **Recording**: MediaRecorder API (when available)
+- **Playback**: HTML5 Audio API
+- **Format**: WebM/Opus for recording, various formats for playback
+- **Limitations**: Limited microphone management, no waveform data
+
+### Audio Quality Settings
+
+The plugin uses optimized defaults that balance quality and file size:
+
+- **Default**: 22.05kHz, 64kbps, mono (medium quality)
+- **Voice Notes**: 16kHz, 32kbps, mono (smaller files)
+- **High Quality**: 44.1kHz, 128kbps, mono (better audio)
+- **Custom**: Any combination of supported sample rates, bitrates, and channels
+
+### File Format Consistency
+
+All platforms use M4A/AAC format for maximum compatibility:
+
+- **MIME Type**: `audio/m4a`
+- **Container**: MPEG-4 Part 14 (.m4a)
+- **Codec**: Advanced Audio Coding (AAC)
+- **Compatibility**: Excellent across all platforms and devices
 
 ## 📚 Additional Documentation
 

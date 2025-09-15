@@ -18,7 +18,11 @@ import type {
   SeekOptions,
   SkipToIndexOptions,
   WaveLevelConfigurationResult,
+  PermissionRequestOptions,
+  PermissionStatusResults,
+  CheckPermissionResults,
 } from './definitions';
+import { AudioPermissionType, PermissionStatus } from './definitions';
 
 declare global {
   interface BlobEventInit extends EventInit {
@@ -37,31 +41,66 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   /**
-   * Check if the app has microphone permission.
-   * @returns Promise that resolves with an object containing the permission status
-   * @platform web Not supported - returns false
+   * Check permission status with detailed information for each permission type.
+   * @returns Promise that resolves with detailed permission status including granular information
+   * @platform web Returns unsupported status for all permissions
    */
-  async checkPermissions(): Promise<{ granted: boolean; audioPermission?: boolean; notificationPermission?: boolean }> {
+  async checkPermissions(): Promise<PermissionStatusResults> {
     console.warn(
-      'checkPermissions is not supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
+      'checkPermissions is not fully supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
     );
-    return { granted: false };
+
+    return {
+      granted: false,
+      status: PermissionStatus.UNSUPPORTED,
+    };
   }
 
   /**
-   * Request microphone permission from the user.
-   * @returns Promise that resolves with an object containing the permission status
-   * @platform web Not supported - returns false
+   * Check microphone permission status with detailed information.
+   * @returns Promise that resolves with detailed microphone permission status
+   * @platform web Returns unsupported status
    */
-  async requestPermissions(): Promise<{
-    granted: boolean;
-    audioPermission?: boolean;
-    notificationPermission?: boolean;
-  }> {
+  async checkPermissionMicrophone(): Promise<CheckPermissionResults> {
     console.warn(
-      'requestPermissions is not supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
+      'checkPermissionMicrophone is not fully supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
     );
-    return { granted: false };
+
+    return {
+      permissionType: AudioPermissionType.MICROPHONE,
+      status: PermissionStatus.UNSUPPORTED,
+    };
+  }
+
+  /**
+   * Check notification permission status with detailed information.
+   * @returns Promise that resolves with detailed notification permission status
+   * @platform web Returns unsupported status
+   */
+  async checkPermissionNotifications(): Promise<CheckPermissionResults> {
+    console.warn(
+      'checkPermissionNotifications is not fully supported on web platform. Notifications not applicable for web audio recording.',
+    );
+
+    return {
+      permissionType: AudioPermissionType.NOTIFICATIONS,
+      status: PermissionStatus.UNSUPPORTED,
+    };
+  }
+
+  /**
+   * Request permissions with detailed options and status information.
+   * @param options - Permission request options
+   * @returns Promise that resolves with detailed permission status
+   * @platform web Returns unsupported status for all permissions
+   */
+  async requestPermissions(_options?: PermissionRequestOptions): Promise<PermissionStatusResults> {
+    void _options; // Parameter for API compatibility
+    console.warn(
+      'requestPermissions is not fully supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
+    );
+
+    return this.checkPermissions();
   }
 
   /**

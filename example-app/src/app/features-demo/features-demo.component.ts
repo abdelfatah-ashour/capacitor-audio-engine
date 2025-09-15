@@ -208,6 +208,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Permission signals
   protected readonly hasPermission = signal(false);
   protected readonly permissionChecked = signal(false);
+  protected readonly microphonePermissionStatus = signal<string>('unknown');
+  protected readonly notificationPermissionStatus = signal<string>('unknown');
+  protected readonly detailedPermissionInfo = signal<any>(null);
 
   // Recording options signals
   protected readonly recordingOptions = signal<RecordingOptions>({
@@ -482,9 +485,23 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Recording methods
   async checkPermission(): Promise<void> {
     try {
-      const result = await CapacitorAudioEngine.checkPermissions();
-      this.hasPermission.set(result.granted);
-      this.permissionChecked.set(true);
+      // Try new detailed permissions first, fallback to legacy if not available
+      try {
+        const result = await CapacitorAudioEngine.checkPermissions();
+        this.hasPermission.set(result.granted);
+        this.permissionChecked.set(true);
+        this.detailedPermissionInfo.set(result);
+
+        // Extract individual permission statuses
+        this.microphonePermissionStatus.set(result.status || 'unknown');
+        this.notificationPermissionStatus.set(result.status || 'unknown');
+      } catch (detailedError) {
+        // Fallback to legacy permission check
+        console.log('Using legacy permission check');
+        const result = await CapacitorAudioEngine.checkPermissions();
+        this.hasPermission.set(result.granted);
+        this.permissionChecked.set(true);
+      }
     } catch (error: any) {
       console.error('Permission check failed:', error);
       this.hasPermission.set(false);
@@ -497,12 +514,71 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     }
   }
 
+  async checkMicrophonePermission(): Promise<void> {
+    try {
+      const result = await CapacitorAudioEngine.checkPermissionMicrophone();
+      this.microphonePermissionStatus.set(result.status);
+      await this.showToast(
+        `Microphone: ${result.status}`,
+        result.status === 'granted' ? 'success' : 'warning'
+      );
+    } catch (error: any) {
+      console.error('Microphone permission check failed:', error);
+      await this.showToast(
+        'Microphone permission check not available - using legacy method.',
+        'warning'
+      );
+      // Fallback to checking overall permissions
+      await this.checkPermission();
+    }
+  }
+
+  async checkNotificationPermission(): Promise<void> {
+    try {
+      const result = await CapacitorAudioEngine.checkPermissionNotifications();
+      this.notificationPermissionStatus.set(result.status);
+      await this.showToast(
+        `Notifications: ${result.status}`,
+        result.status === 'granted' ? 'success' : 'warning'
+      );
+    } catch (error: any) {
+      console.error('Notification permission check failed:', error);
+      await this.showToast(
+        'Notification permission check not available - using legacy method.',
+        'warning'
+      );
+      // Fallback to checking overall permissions
+      await this.checkPermission();
+    }
+  }
+
   async requestPermission(): Promise<void> {
     try {
-      const result = await CapacitorAudioEngine.requestPermissions();
-      this.hasPermission.set(result.granted);
-      if (!result.granted) {
-        await this.showToast('Permission denied. Cannot record audio.', 'warning');
+      // Try new detailed permissions first, fallback to legacy if not available
+      try {
+        const result = await CapacitorAudioEngine.requestPermissions();
+        this.hasPermission.set(result.granted);
+        this.detailedPermissionInfo.set(result);
+
+        // Extract individual permission statuses
+        this.microphonePermissionStatus.set(result.status || 'unknown');
+        this.notificationPermissionStatus.set(result.status || 'unknown');
+
+        if (!result.granted) {
+          await this.showToast('Permission denied. Cannot record audio.', 'warning');
+        } else {
+          await this.showToast('All permissions granted!', 'success');
+        }
+      } catch (detailedError) {
+        // Fallback to legacy permission request
+        console.log('Using legacy permission request');
+        const result = await CapacitorAudioEngine.requestPermissions();
+        this.hasPermission.set(result.granted);
+        if (!result.granted) {
+          await this.showToast('Permission denied. Cannot record audio.', 'warning');
+        } else {
+          await this.showToast('Permission granted!', 'success');
+        }
       }
     } catch (error: any) {
       console.error('Permission request failed:', error);
@@ -1219,7 +1295,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async destroyWaveform(): Promise<void> {
     try {
-      await (CapacitorAudioEngine as any).destroyWaveform();
+      await CapacitorAudioEngine.destroyWaveform();
       await this.showToast('Waveform configuration destroyed', 'success');
     } catch (error: any) {
       console.error('Error destroying waveform:', error);
