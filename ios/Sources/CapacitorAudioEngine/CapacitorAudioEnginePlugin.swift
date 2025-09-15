@@ -83,6 +83,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     public override func load() {
         super.load()
         permissionService = PermissionManagerService()
+
+        // Initialize recording manager with delegate
+        recordingManager = RecordingManager(delegate: self)
+
+        // Initialize playback manager and set delegate
+        playbackManager = PlaybackManager()
+        playbackManager.delegate = self
+
+        // Initialize wave level emitter with event callback
+        waveLevelEmitter = WaveLevelEmitter(eventCallback: self)
     }
 
     // MARK: - Logging Utility
