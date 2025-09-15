@@ -412,7 +412,7 @@ export interface CapacitorAudioEnginePlugin {
    * @platform android Uses ContextCompat.checkSelfPermission for RECORD_AUDIO
    * @platform ios Uses AVAudioSession.recordPermission with simplified status mapping
    */
-  checkPermissionMicrophone(): Promise<CheckPermissionResults>;
+  checkPermissionMicrophone(): Promise<PermissionStatusResults>;
 
   /**
    * Check notification permission status with simplified information.
@@ -421,7 +421,7 @@ export interface CapacitorAudioEnginePlugin {
    * @platform android Uses ContextCompat.checkSelfPermission for POST_NOTIFICATIONS (Android 13+)
    * @platform ios Uses UNUserNotificationCenter with simplified status mapping
    */
-  checkPermissionNotifications(): Promise<CheckPermissionResults>;
+  checkPermissionNotifications(): Promise<PermissionStatusResults>;
 
   /**
    * Request permissions with detailed options and status information.

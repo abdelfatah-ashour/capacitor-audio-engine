@@ -20,9 +20,8 @@ import type {
   WaveLevelConfigurationResult,
   PermissionRequestOptions,
   PermissionStatusResults,
-  CheckPermissionResults,
 } from './definitions';
-import { AudioPermissionType, PermissionStatus } from './definitions';
+import { PermissionStatus } from './definitions';
 
 declare global {
   interface BlobEventInit extends EventInit {
@@ -61,13 +60,13 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with detailed microphone permission status
    * @platform web Returns unsupported status
    */
-  async checkPermissionMicrophone(): Promise<CheckPermissionResults> {
+  async checkPermissionMicrophone(): Promise<PermissionStatusResults> {
     console.warn(
       'checkPermissionMicrophone is not fully supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
     );
 
     return {
-      permissionType: AudioPermissionType.MICROPHONE,
+      granted: false,
       status: PermissionStatus.UNSUPPORTED,
     };
   }
@@ -77,13 +76,13 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with detailed notification permission status
    * @platform web Returns unsupported status
    */
-  async checkPermissionNotifications(): Promise<CheckPermissionResults> {
+  async checkPermissionNotifications(): Promise<PermissionStatusResults> {
     console.warn(
       'checkPermissionNotifications is not fully supported on web platform. Notifications not applicable for web audio recording.',
     );
 
     return {
-      permissionType: AudioPermissionType.NOTIFICATIONS,
+      granted: false,
       status: PermissionStatus.UNSUPPORTED,
     };
   }

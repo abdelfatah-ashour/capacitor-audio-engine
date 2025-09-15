@@ -142,7 +142,8 @@ public class PermissionManagerService {
         Log.d(TAG, "Checking microphone permission");
         PermissionStatus status = getDetailedPermissionStatus(PermissionType.MICROPHONE);
         JSObject result = new JSObject();
-        result.put("permissionType", PermissionType.MICROPHONE.getName());
+        boolean granted = status == PermissionStatus.GRANTED;
+        result.put("granted", granted);
         result.put("status", status.getValue());
         return result;
     }
@@ -154,7 +155,8 @@ public class PermissionManagerService {
         Log.d(TAG, "Checking notification permission");
         PermissionStatus status = getDetailedPermissionStatus(PermissionType.NOTIFICATIONS);
         JSObject result = new JSObject();
-        result.put("permissionType", PermissionType.NOTIFICATIONS.getName());
+        boolean granted = status == PermissionStatus.GRANTED || status == PermissionStatus.UNSUPPORTED;
+        result.put("granted", granted);
         result.put("status", status.getValue());
         return result;
     }

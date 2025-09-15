@@ -99,8 +99,9 @@ import UserNotifications
      */
     @objc public func checkPermissionMicrophone() async -> [String: Any] {
         let status = await getMicrophonePermissionStatus()
+        let granted = status == .granted
         return [
-            "permissionType": PermissionType.microphone.stringValue,
+            "granted": granted,
             "status": status.stringValue
         ]
     }
@@ -110,8 +111,9 @@ import UserNotifications
      */
     @objc public func checkPermissionNotifications() async -> [String: Any] {
         let status = await getNotificationPermissionStatus()
+        let granted = status == .granted || status == .unsupported
         return [
-            "permissionType": PermissionType.notifications.stringValue,
+            "granted": granted,
             "status": status.stringValue
         ]
     }
