@@ -12,12 +12,12 @@ import type {
   AvailableMicrophonesResult,
   SwitchMicrophoneResult,
   SwitchMicrophoneOptions,
-  WaveformConfigurationResult,
   PreloadTracksOptions,
   PreloadTracksResult,
   PlaybackInfo,
   SeekOptions,
   SkipToIndexOptions,
+  WaveLevelConfigurationResult,
 } from './definitions';
 
 declare global {
@@ -231,32 +231,16 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with configuration result
    * @platform web Not supported
    */
-  async configureWaveform(): Promise<WaveformConfigurationResult> {
+  async configureWaveform(options?: { EmissionInterval?: number }): Promise<WaveLevelConfigurationResult> {
     console.warn(
       'configureWaveform is not supported on web platform. Waveform data is not available for web recordings. Consider using MediaRecorder events and manual amplitude analysis.',
     );
-
-    // Build default configuration (web mock)
-    const numberOfBars = 128;
-    const debounceTimeMs = 50; // align with native default (50ms)
 
     // Build unified response structure
     return {
       success: false,
       configuration: {
-        numberOfBars,
-        debounceTimeMs,
-        speechDetection: {
-          enabled: false,
-          threshold: 0.02,
-          calibrationDuration: 1000,
-        },
-        vad: {
-          enabled: false,
-          windowSize: 5,
-          estimatedLatencyMs: 5 * 50,
-          enableVoiceFilter: true,
-        },
+        emissionInterval: options?.EmissionInterval ?? 1000,
       },
     };
   }

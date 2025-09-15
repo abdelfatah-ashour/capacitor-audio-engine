@@ -52,8 +52,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     private FileDirectoryManager fileManager;
     private PlaybackManager playbackManager;
 
-    // Waveform data manager for real-time audio levels
-    private WaveformDataManager waveformDataManager;
+    // Wave level emitter for real-time audio levels
+    private WaveLevelEmitter waveLevelEmitter;
 
     // Background recording service
     private RecordingService recordingService;
@@ -81,8 +81,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         eventManager = new EventManager(this);
         fileManager = new FileDirectoryManager(getContext());
 
-        // Initialize waveform data manager with event manager callback
-        waveformDataManager = new WaveformDataManager(eventManager);
+        // Initialize wave level emitter with event manager callback
+        waveLevelEmitter = new WaveLevelEmitter(eventManager);
 
 
         // Initialize recording configuration with defaults
@@ -282,10 +282,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 Log.d(TAG, "Segment rolling reset successfully");
             }
 
-            // Discard waves by stopping waveform monitoring (frontend should clear visualization on waveformDestroy)
-            if (waveformDataManager != null) {
-                waveformDataManager.stopMonitoring();
-                Log.d(TAG, "Waveform monitoring stopped (waves discarded)");
+            // Discard waves by stopping wave level monitoring (frontend should clear visualization on waveLevelDestroy)
+            if (waveLevelEmitter != null) {
+                waveLevelEmitter.stopMonitoring();
+                Log.d(TAG, "Wave level monitoring stopped (waves discarded)");
             }
 
             // Keep recordingConfig/maxDuration for resume; mark session as paused state
@@ -345,10 +345,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             throw new IllegalStateException("Segment rolling manager not initialized");
         }
 
-        // Stop waveform data monitoring
-        if (waveformDataManager != null) {
-            waveformDataManager.stopMonitoring();
-            Log.d(TAG, "Waveform data monitoring stopped");
+        // Stop wave level monitoring
+        if (waveLevelEmitter != null) {
+            waveLevelEmitter.stopMonitoring();
+            Log.d(TAG, "Wave level monitoring stopped");
         }
 
         isRecording = false;
@@ -649,74 +649,39 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             int ch = (recordingConfig != null) ? recordingConfig.getChannels() : AudioEngineConfig.Recording.DEFAULT_CHANNELS;
             int br = (recordingConfig != null) ? recordingConfig.getBitrate() : AudioEngineConfig.Recording.DEFAULT_BITRATE;
 
-            // Waveform visualization settings (defaults)
-            int numberOfBars = 128;
-            double debounceTime = 0.05;
-            float debounceInSeconds = (float) debounceTime;
+            // Accept 'EmissionInterval' in ms from the call, fallback to 1000ms if not provided
+            int intervalMs = call.getInt("EmissionInterval", 1000);
 
-            // Speech detection settings (defaults)
-            boolean speechEnabled = false;
-            float speechThreshold = 0.01f;
-            int calibrationDuration = 1000;
+            if (waveLevelEmitter != null) {
+                // Configure sample rate to match recording configuration
+                waveLevelEmitter.setSampleRate(sr);
 
-            // VAD settings (defaults)
-            boolean vadEnabled = false;
-            int vadWindowSize = 5;
-            boolean enableVoiceFilter = true;
+                // Configure emission interval
+                waveLevelEmitter.setEmissionInterval(intervalMs);
 
-            if (waveformDataManager != null) {
-                // Ensure waveform manager is tuned for current recording configuration
-                waveformDataManager.configureForRecording(sr, ch, speechThreshold);
+                Log.d(TAG, "Wave level emitter configured - interval: " + intervalMs + "ms, sampleRate: " + sr + "Hz");
 
-                // Configure waveform visualization with defaults
-                waveformDataManager.configureWaveform(debounceInSeconds, numberOfBars);
-
-                // Configure speech detection with defaults
-                waveformDataManager.configureSpeechDetection(speechEnabled, speechThreshold, vadEnabled, calibrationDuration);
-
-                // Configure VAD with defaults
-                waveformDataManager.configureAdvancedVAD(vadEnabled, vadWindowSize, enableVoiceFilter);
-
-                Log.d(TAG, "Waveform configured with defaults - bars: " + numberOfBars +
-                     ", interval: " + debounceInSeconds + "s" +
-                     ", speech: " + speechEnabled + " (threshold: " + speechThreshold + ")" +
-                     ", VAD: " + vadEnabled + " (window: " + vadWindowSize + ")");
-
-                // Build comprehensive result
+                // Build simplified result
                 JSObject result = new JSObject();
                 result.put("success", true);
 
                 JSObject configuration = new JSObject();
-                configuration.put("numberOfBars", numberOfBars);
-                configuration.put("debounceTimeMs", (int)(debounceInSeconds * 1000));
-
-                JSObject speechConfig = new JSObject();
-                speechConfig.put("enabled", speechEnabled);
-                speechConfig.put("threshold", speechThreshold);
-                speechConfig.put("calibrationDuration", calibrationDuration);
-                configuration.put("speechDetection", speechConfig);
-
-                JSObject vadConfig = new JSObject();
-                vadConfig.put("enabled", vadEnabled);
-                vadConfig.put("windowSize", vadWindowSize);
-                vadConfig.put("estimatedLatencyMs", vadWindowSize * 50);
-                vadConfig.put("enableVoiceFilter", enableVoiceFilter);
-                configuration.put("vad", vadConfig);
-
+                configuration.put("emissionInterval", intervalMs);
                 result.put("configuration", configuration);
+
                 call.resolve(result);
 
                 // Start monitoring if not already active
                 try {
-                    if (!waveformDataManager.isMonitoring()) {
-                        waveformDataManager.startMonitoring();
-                        Log.d(TAG, "Waveform data monitoring started via configureWaveform");
+                    if (!waveLevelEmitter.isMonitoring()) {
+                        waveLevelEmitter.startMonitoring();
+                        Log.d(TAG, "Wave level monitoring started via configuration");
                     }
                 } catch (Exception e) {
-                    Log.w(TAG, "Unable to start waveform monitoring from configureWaveform", e);
+                    Log.w(TAG, "Unable to start wave level monitoring from configuration", e);
                 }
             } else {
-                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+                call.reject("WAVE_EMITTER_ERROR", "Wave level emitter not initialized");
             }
         } catch (Exception e) {
             Log.e(TAG, "Failed to configure waveform", e);
@@ -734,19 +699,19 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
     @PluginMethod
     public void destroyWaveform(PluginCall call) {
         try {
-            if (waveformDataManager != null) {
+            if (waveLevelEmitter != null) {
                 // Stop monitoring if active
-                if (waveformDataManager.isMonitoring()) {
-                    Log.d(TAG, "Stopping waveform monitoring before destruction");
+                if (waveLevelEmitter.isMonitoring()) {
+                    Log.d(TAG, "Stopping wave level monitoring before destruction");
                 }
 
-                // Cleanup waveform resources
-                waveformDataManager.cleanup();
-                Log.d(TAG, "Waveform configuration destroyed and resources cleaned up");
+                // Cleanup wave level resources
+                waveLevelEmitter.cleanup();
+                Log.d(TAG, "Wave level configuration destroyed and resources cleaned up");
 
                 call.resolve();
             } else {
-                call.reject("WAVEFORM_MANAGER_ERROR", "Waveform data manager not initialized");
+                call.reject("WAVE_EMITTER_ERROR", "Wave level emitter not initialized");
             }
         } catch (Exception e) {
             Log.e(TAG, "Failed to destroy waveform", e);
@@ -794,11 +759,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
         // Start segment rolling
         segmentRollingManager.startSegmentRolling(recordingConfig);
 
-        // Start waveform data monitoring for real-time audio levels
-        if (waveformDataManager != null) {
-            // Gain factor is now automatically optimized internally based on recording configuration
-            waveformDataManager.startMonitoring();
-            Log.d(TAG, "Waveform data monitoring started with automatic gain optimization");
+        // Start wave level monitoring for real-time audio levels
+        if (waveLevelEmitter != null) {
+            waveLevelEmitter.startMonitoring();
+            Log.d(TAG, "Wave level monitoring started");
         }
 
         isRecording = true;
@@ -825,12 +789,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             }
 
             // Stop waveform data monitoring
-            if (waveformDataManager != null) {
+            if (waveLevelEmitter != null) {
                 try {
-                    waveformDataManager.stopMonitoring();
-                    Log.d(TAG, "Waveform data monitoring cleaned up");
+                    waveLevelEmitter.stopMonitoring();
+                    Log.d(TAG, "Wave level monitoring cleaned up");
                 } catch (Exception e) {
-                    Log.w(TAG, "Error cleaning up waveform data manager", e);
+                    Log.w(TAG, "Error cleaning up wave level emitter", e);
                 }
             }
 
@@ -1325,9 +1289,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
             }
 
             // Clean up waveform data manager
-            if (waveformDataManager != null) {
-                waveformDataManager.cleanup();
-                waveformDataManager = null;
+            if (waveLevelEmitter != null) {
+                waveLevelEmitter.cleanup();
+                waveLevelEmitter = null;
             }
 
             // Unbind recording service
@@ -1458,10 +1422,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                 segmentRollingManager.pauseSegmentRolling();
                 Log.d(TAG, "Segment rolling recording paused");
 
-                // Pause waveform data monitoring
-                if (waveformDataManager != null) {
-                    waveformDataManager.pauseMonitoring();
-                    Log.d(TAG, "Waveform data monitoring paused");
+                // Pause wave level monitoring
+                if (waveLevelEmitter != null) {
+                    waveLevelEmitter.pauseMonitoring();
+                    Log.d(TAG, "Wave level monitoring paused");
                 }
 
                 // Emit pause state change event for consistency
@@ -1507,18 +1471,18 @@ public class CapacitorAudioEnginePlugin extends Plugin implements PermissionMana
                     Log.d(TAG, "Fresh segment rolling started after legacy reset");
                 }
 
-                // Ensure waveform data monitoring restarts fresh if it was stopped by reset
-                if (waveformDataManager != null) {
+                // Ensure wave level monitoring restarts fresh if it was stopped by reset
+                if (waveLevelEmitter != null) {
                     try {
-                        if (!waveformDataManager.isMonitoring()) {
-                            waveformDataManager.startMonitoring();
-                            Log.d(TAG, "Waveform data monitoring started");
+                        if (!waveLevelEmitter.isMonitoring()) {
+                            waveLevelEmitter.startMonitoring();
+                            Log.d(TAG, "Wave level monitoring started");
                         } else {
-                            waveformDataManager.resumeMonitoring();
-                            Log.d(TAG, "Waveform data monitoring resumed");
+                            waveLevelEmitter.resumeMonitoring();
+                            Log.d(TAG, "Wave level monitoring resumed");
                         }
                     } catch (Exception e) {
-                        Log.w(TAG, "Unable to start/resume waveform monitoring", e);
+                        Log.w(TAG, "Unable to start/resume wave level monitoring", e);
                     }
                 }
 

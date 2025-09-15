@@ -2,7 +2,13 @@ import type { PluginListenerHandle } from '@capacitor/core';
 
 export type RecordingStatus = 'idle' | 'recording' | 'paused';
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
-export type AudioRecordingEventName = 'durationChange' | 'error' | 'waveformData' | 'waveformInit' | 'waveformDestroy';
+export type AudioRecordingEventName =
+  | 'durationChange'
+  | 'error'
+  | 'waveLevel'
+  | 'waveLevelInit'
+  | 'waveLevelDestroy'
+  | 'waveLevelError';
 export type AudioPlaybackEventName =
   | 'trackChanged'
   | 'trackEnded'
@@ -26,9 +32,10 @@ export interface AudioPlaybackEvent<T = any> {
 export type AudioRecordingEventMap = {
   durationChange: DurationChangeData;
   error: ErrorEventData;
-  waveformData: WaveformData;
-  waveformInit: WaveformInitData;
-  waveformDestroy: WaveformDestroyData;
+  waveLevel: WaveLevelData;
+  waveLevelInit: WaveLevelInitData;
+  waveLevelDestroy: WaveLevelDestroyData;
+  waveLevelError: ErrorEventData;
 };
 
 export type AudioPlaybackEventMap = {
@@ -47,22 +54,20 @@ export interface DurationChangeData {
   duration: number;
 }
 
-export interface WaveformData {
+export interface WaveLevelData {
   level: number;
   timestamp: number;
 }
 
-export interface WaveformInitData {
-  numberOfBars: number;
-  speechOnlyMode?: boolean;
-  speechThreshold?: number;
-  vadEnabled?: boolean;
-  calibrationDuration?: number;
+export interface WaveLevelInitData {
+  status: string;
+  emissionInterval: number;
+  sampleRate: number;
 }
 
-export interface WaveformDestroyData {
+export interface WaveLevelDestroyData {
+  status: string;
   reason: string;
-  timestamp: number;
 }
 
 export interface ErrorEventData {
@@ -226,135 +231,35 @@ export interface SwitchMicrophoneResult {
   microphoneId: number;
 }
 
-// Enums for configuration parameters
-export enum WaveformBarsCount {
-  BARS_16 = 16,
-  BARS_32 = 32,
-  BARS_64 = 64,
-  BARS_128 = 128,
-  BARS_256 = 256,
-}
-
-export enum WaveformDebounceTime {
-  /** Real-time visualization (20ms) */
-  REALTIME = 0.02,
-  /** Very fast updates (50ms) */
-  VERY_FAST = 0.05,
-  /** Fast updates (100ms) */
-  FAST = 0.1,
-  /** Medium updates (250ms) */
-  MEDIUM = 0.25,
-  /** Slow updates (500ms) */
-  SLOW = 0.5,
-  /** Very slow updates (1000ms) - Default */
-  VERY_SLOW = 1.0,
-}
-
-export enum SpeechThreshold {
-  /** Very sensitive (0.005) */
-  VERY_SENSITIVE = 0.005,
-  /** Sensitive (0.01) */
-  SENSITIVE = 0.01,
-  /** Normal (0.02) */
-  NORMAL = 0.02,
-  /** Moderate (0.04) */
-  MODERATE = 0.04,
-  /** Less sensitive (0.06) */
-  LESS_SENSITIVE = 0.06,
-  /** Not sensitive (0.1) */
-  NOT_SENSITIVE = 0.1,
-}
-
-export enum VADWindowSize {
-  /** Minimum latency (~150ms) */
-  MINIMAL = 3,
-  /** Low latency (~200ms) */
-  LOW = 4,
-  /** Normal latency (~250ms) */
-  NORMAL = 5,
-  /** Medium latency (~400ms) */
-  MEDIUM = 8,
-  /** High accuracy (~500ms) */
-  HIGH = 10,
-  /** Maximum accuracy (~750ms) */
-  MAXIMUM = 15,
-}
-
-export enum CalibrationDuration {
-  /** Quick calibration (500ms) */
-  QUICK = 500,
-  /** Normal calibration (1000ms) */
-  NORMAL = 1000,
-  /** Extended calibration (2000ms) */
-  EXTENDED = 2000,
-  /** Long calibration (3000ms) */
-  LONG = 3000,
-}
-
-export enum GainFactor {
-  /** Minimal gain (5.0) */
-  MINIMAL = 5.0,
-  /** Low gain (10.0) */
-  LOW = 10.0,
-  /** Standard gain (15.0) */
-  STANDARD = 15.0,
-  /** Medium gain (20.0) - Default */
-  MEDIUM = 20.0,
-  /** High gain (30.0) */
-  HIGH = 30.0,
-  /** Maximum gain (50.0) */
-  MAXIMUM = 50.0,
+// Wave Level Configuration Enums
+export enum WaveLevelEmissionInterval {
+  /** Real-time emission (50ms) - Minimum allowed */
+  REALTIME = 50,
+  /** Very fast updates (100ms) */
+  VERY_FAST = 100,
+  /** Fast updates (200ms) */
+  FAST = 200,
+  /** Medium updates (500ms) - Maximum allowed */
+  MEDIUM = 500,
+  /** Default emission (1000ms) - As per SRS */
+  DEFAULT = 1000,
 }
 
 /**
- * Unified waveform configuration options combining all waveform features
+ * Simplified wave level configuration options
  */
-export interface WaveformConfiguration {
-  /** Number of bars in the waveform visualization (default: 128) */
-  numberOfBars?: WaveformBarsCount | number;
-  /** Debounce time in seconds between waveform data emissions (default: 1.0) */
-  debounceTime?: WaveformDebounceTime | number;
-
-  /** Speech detection configuration */
-  speechDetection?: {
-    /** Enable speech-only detection */
-    enabled: boolean;
-    /** Speech detection sensitivity threshold */
-    threshold?: SpeechThreshold | number;
-    /** Background noise calibration duration */
-    calibrationDuration?: CalibrationDuration | number;
-  };
-
-  /** Voice Activity Detection (VAD) configuration */
-  vad?: {
-    /** Enable VAD for improved speech detection */
-    enabled: boolean;
-    /** VAD analysis window size (affects latency vs accuracy) */
-    windowSize?: VADWindowSize | number;
-    /** Enable human voice band filtering (85Hz-3400Hz) */
-    enableVoiceFilter?: boolean;
-  };
+export interface WaveLevelConfiguration {
+  /** Emission interval in milliseconds (50-500ms, default: 1000ms) */
+  emissionInterval?: WaveLevelEmissionInterval | number;
 }
 
 /**
- * Result of waveform configuration
+ * Result of wave level configuration
  */
-export interface WaveformConfigurationResult {
+export interface WaveLevelConfigurationResult {
   success: boolean;
   configuration: {
-    numberOfBars: number;
-    debounceTimeMs: number;
-    speechDetection: {
-      enabled: boolean;
-      threshold: number;
-      calibrationDuration: number;
-    };
-    vad: {
-      enabled: boolean;
-      windowSize: number;
-      estimatedLatencyMs: number;
-      enableVoiceFilter: boolean;
-    };
+    emissionInterval: number;
   };
 }
 
@@ -616,40 +521,60 @@ export interface CapacitorAudioEnginePlugin {
   switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
 
   /**
-   * Configure waveform visualization and monitoring settings with default values.
-   * This method sets up real-time waveform data collection using quality-aware
-   * defaults based on current recording configuration.
+   * Configure wave level monitoring for real-time audio level emission.
+   * This method sets up real-time wave level collection that emits normalized
+   * audio levels (0.0-1.0) at configurable intervals during recording.
    *
-   * @returns Promise that resolves with complete configuration result
+   * @returns Promise that resolves with wave level configuration result
    * @throws {Error} If configuration fails
    * @platform web Not supported
-   * @platform android Configures real-time PCM audio processing with speech detection and VAD
-   * @platform ios Configures AVAudioEngine audio tap with speech detection and VAD
+   * @platform android Configures real-time PCM audio processing with RMS calculation
+   * @platform ios Configures AVAudioEngine audio tap with RMS calculation
    *
    * @example
    * ```typescript
-   * // Configure waveform with default settings
+   * // Configure wave level monitoring with default settings (1000ms intervals)
    * await CapacitorAudioEngine.configureWaveform();
    *
-   * // Listen for waveform data events during recording
-   * const waveformListener = await CapacitorAudioEngine.addListener('waveformData', (data) => {
-   *   console.log('Amplitude level:', data.level); // Single normalized value (0-1)
+   * // Listen for wave level events during recording
+   * const waveLevelListener = await CapacitorAudioEngine.addListener('waveLevel', (data) => {
+   *   console.log('Audio level:', data.level); // Normalized value (0.0-1.0)
+   *   console.log('Timestamp:', data.timestamp); // Timestamp in milliseconds
    * });
    * ```
    */
-  configureWaveform(): Promise<WaveformConfigurationResult>;
+  /**
+   * Configure wave level monitoring for real-time audio level emission.
+   * This method sets up real-time wave level collection that emits normalized
+   * audio levels (0.0-1.0) at configurable intervals during recording.
+   *
+   * @param options - Optional configuration object
+   * @param options.EmissionInterval - Emission interval in milliseconds (50-500ms, default: 1000ms)
+   * @returns Promise that resolves with wave level configuration result
+   * @throws {Error} If configuration fails
+   * @platform web Not supported
+   * @platform android Configures real-time PCM audio processing with RMS calculation
+   * @platform ios Configures AVAudioEngine audio tap with RMS calculation
+   *
+   * @example
+   * ```typescript
+   * // Configure wave level monitoring with 200ms intervals
+   * await CapacitorAudioEngine.configureWaveform({ EmissionInterval: 200 });
+   * ```
+   */
+  configureWaveform(options?: { EmissionInterval?: number }): Promise<WaveLevelConfigurationResult>;
 
   /**
-   * Destroy waveform configuration and clean up resources.
-   * This will stop waveform monitoring if active and reset configuration to defaults.
-   * @returns Promise that resolves when waveform configuration is destroyed
+   * Destroy wave level configuration and clean up resources.
+   * This will stop wave level monitoring if active and reset configuration to defaults.
+   * @returns Promise that resolves when wave level configuration is destroyed
    * @platform web Not supported
-   * @platform android Stops waveform monitoring and releases AudioRecord resources
+   * @platform android Stops wave level monitoring and releases AudioRecord resources
    * @platform ios Stops AVAudioEngine tap and cleans up resources
    *
    * @example
    * ```typescript
-   * // Destroy waveform configuration when no longer needed
+   * // Destroy wave level configuration when no longer needed
    * await CapacitorAudioEngine.destroyWaveform();
    * ```
    */

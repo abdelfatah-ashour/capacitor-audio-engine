@@ -9,7 +9,7 @@ import Capacitor
  */
 
 @objc(CapacitorAudioEnginePlugin)
-public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingManagerDelegate, PlaybackManagerDelegate, WaveformEventCallback {
+public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingManagerDelegate, PlaybackManagerDelegate, WaveLevelEventCallback {
     public let identifier = "CapacitorAudioEnginePlugin"
     public let jsName = "CapacitorAudioEngine"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -50,7 +50,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
     private var recordingManager: RecordingManager!
     private var playbackManager: PlaybackManager!
-    private var waveformDataManager: WaveformDataManager!
+    private var waveLevelEmitter: WaveLevelEmitter!
     private var pendingStopRecordingCall: CAPPluginCall?
     private var stopRecordingTimeoutTask: DispatchWorkItem?
     private var currentRecordingSampleRate: Int = Int(AudioEngineConstants.defaultSampleRate)
@@ -159,8 +159,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         playbackManager = PlaybackManager()
         playbackManager.delegate = self
 
-        // Initialize the waveform data manager and set self as delegate
-        waveformDataManager = WaveformDataManager(eventCallback: self)
+        // Initialize the wave level emitter and set self as delegate
+        waveLevelEmitter = WaveLevelEmitter(eventCallback: self)
 
         // Set up initial audio session that supports both recording and playback
         do {
@@ -259,15 +259,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
         recordingManager.startRecording(with: settings)
 
-        // Configure waveform manager for optimal performance with current recording settings
-        let sampleRateInt = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
-        let channelsInt = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-        waveformDataManager.configureForRecording(sampleRate: sampleRateInt, channels: channelsInt, speechThreshold: 0.01)
-
-        // Gain factor is now automatically optimized internally based on recording configuration
-
-        // Start waveform data monitoring for real-time audio levels
-        waveformDataManager.startMonitoring()
+        // Start wave level monitoring for real-time audio levels
+        waveLevelEmitter.startMonitoring()
 
         call.resolve()
     }
@@ -275,8 +268,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     @objc func pauseRecording(_ call: CAPPluginCall) {
         recordingManager.pauseRecording()
 
-        // Pause waveform data monitoring
-        waveformDataManager.pauseMonitoring()
+        // Pause wave level monitoring
+        waveLevelEmitter.pauseMonitoring()
 
         call.resolve()
     }
@@ -284,8 +277,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     @objc func resumeRecording(_ call: CAPPluginCall) {
         recordingManager.resumeRecording()
 
-        // Resume waveform data monitoring
-        waveformDataManager.resumeMonitoring()
+        // Resume wave level monitoring
+        waveLevelEmitter.resumeMonitoring()
 
         call.resolve()
     }
@@ -311,8 +304,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         // Reset recording manager state (discards segments, duration, keeps config, pauses)
         recordingManager.resetRecording()
 
-        // Discard waveform data by stopping monitoring so UI can clear on waveformDestroy
-        waveformDataManager.stopMonitoring()
+        // Discard wave data by stopping monitoring so UI can clear on waveLevelDestroy
+        waveLevelEmitter.stopMonitoring()
 
         call.resolve()
     }
@@ -401,63 +394,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     @objc func configureWaveform(_ call: CAPPluginCall) {
-        // Waveform visualization settings (defaults)
-        let numberOfBars = 128
-        let debounceTime = 0.05
-        let debounceInSeconds = Float(debounceTime)
+        // Accept 'EmissionInterval' in ms from the call, fallback to 1000ms if not provided
+        let intervalMs = call.getInt("EmissionInterval") ?? 1000
+        waveLevelEmitter.setEmissionInterval(intervalMs)
 
-        // Speech detection settings (defaults)
-        let speechEnabled = false
-        let speechThreshold: Float = 0.01
-        let calibrationDuration = 1000
+        log("Wave level emitter configured - interval: \(intervalMs)ms")
 
-        // VAD settings (defaults)
-        let vadEnabled = false
-        let vadWindowSize = 5
-        let enableVoiceFilter = true
-
-        // Ensure waveform manager is tuned for current recording configuration
-        waveformDataManager.configureForRecording(sampleRate: currentRecordingSampleRate, channels: currentRecordingChannels, speechThreshold: speechThreshold)
-
-        // Configure waveform visualization with defaults
-        waveformDataManager.configureWaveform(debounceInSeconds: debounceInSeconds, bars: numberOfBars)
-
-        // Configure speech detection with defaults
-        waveformDataManager.configureSpeechDetection(
-            enabled: speechEnabled,
-            threshold: speechThreshold,
-            useVAD: vadEnabled,
-            calibrationDuration: calibrationDuration
-        )
-
-        // Configure VAD with defaults
-        waveformDataManager.configureAdvancedVAD(
-            enabled: vadEnabled,
-            windowSize: vadWindowSize,
-            enableVoiceFilter: enableVoiceFilter
-        )
-
-        log("Waveform configured with defaults - bars: \(numberOfBars), interval: \(debounceInSeconds)s, speech: \(speechEnabled) (threshold: \(speechThreshold)), VAD: \(vadEnabled) (window: \(vadWindowSize))")
-
-        // Build comprehensive result
-        let speechConfig: [String: Any] = [
-            "enabled": speechEnabled,
-            "threshold": speechThreshold,
-            "calibrationDuration": calibrationDuration
-        ]
-
-        let vadConfig: [String: Any] = [
-            "enabled": vadEnabled,
-            "windowSize": vadWindowSize,
-            "estimatedLatencyMs": vadWindowSize * 50,
-            "enableVoiceFilter": enableVoiceFilter
-        ]
-
+        // Build simplified result
         let configuration: [String: Any] = [
-            "numberOfBars": numberOfBars,
-            "debounceTimeMs": Int(debounceInSeconds * 1000),
-            "speechDetection": speechConfig,
-            "vad": vadConfig
+            "emissionInterval": intervalMs
         ]
 
         let result: [String: Any] = [
@@ -467,9 +412,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         call.resolve(result)
 
         // Start monitoring if not already active
-        if !waveformDataManager.isMonitoring() {
-            waveformDataManager.startMonitoring()
-            log("Waveform data monitoring started via configureWaveform")
+        if !waveLevelEmitter.isMonitoring() {
+            waveLevelEmitter.startMonitoring()
+            log("Wave level monitoring started via configuration")
         }
     }
 
@@ -478,13 +423,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
     @objc func destroyWaveform(_ call: CAPPluginCall) {
         // Stop monitoring if active
-        if waveformDataManager.isMonitoring() {
-            log("Stopping waveform monitoring before destruction")
+        if waveLevelEmitter.isMonitoring() {
+            log("Stopping wave level monitoring before destruction")
         }
 
-        // Cleanup waveform resources
-        waveformDataManager.cleanup()
-        log("Waveform configuration destroyed and resources cleaned up")
+        // Cleanup wave level resources
+        waveLevelEmitter.cleanup()
+        log("Wave level configuration destroyed and resources cleaned up")
 
         call.resolve()
     }
@@ -718,9 +663,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             log("Stop recording timeout cancelled - recording completed successfully")
         }
 
-        // Stop waveform data monitoring
-        waveformDataManager.stopMonitoring()
-        log("Waveform data monitoring stopped")
+        // Stop wave level monitoring
+        waveLevelEmitter.stopMonitoring()
+        log("Wave level monitoring stopped")
 
         // Reconfigure audio session for optimal playback after recording
         do {

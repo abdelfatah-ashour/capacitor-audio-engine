@@ -78,7 +78,7 @@ import type {
   PlaybackPausedData,
   ErrorEventData,
   PreloadedTrackInfo,
-  WaveformData,
+  WaveLevelData,
 } from 'capacitor-audio-engine';
 import { IntelligentWaveformComponent } from '../components/intelligent-waveform.component';
 import { Filesystem } from '@capacitor/filesystem';
@@ -897,7 +897,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   private setupWaveformEventListeners(): void {
     // Listen for waveform data
-    CapacitorAudioEngine.addListener('waveformData', (event: WaveformData) => {
+    CapacitorAudioEngine.addListener('waveLevel', (event: WaveLevelData) => {
       // Track emission statistics
       const currentTime = Date.now();
       this.lastEmissionTime.set(currentTime);
@@ -1192,7 +1192,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Unified waveform configuration method
   async configureUnifiedWaveform(): Promise<void> {
     try {
-      await CapacitorAudioEngine.configureWaveform();
+      await CapacitorAudioEngine.configureWaveform({
+        EmissionInterval: 200,
+      });
     } catch (error: any) {
       console.error('Error configuring unified waveform:', error);
       await this.showToast(`Error configuring unified waveform: ${error.message}`, 'danger');
