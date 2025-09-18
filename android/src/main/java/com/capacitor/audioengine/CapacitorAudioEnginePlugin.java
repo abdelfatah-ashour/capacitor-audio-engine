@@ -44,7 +44,7 @@ import com.getcapacitor.annotation.PermissionCallback;
         )
     }
 )
-public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, RecordingServiceListener, AudioInterruptionManager.InterruptionCallback {
+public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.EventCallback, PlaybackManager.PlaybackManagerListener, AudioInterruptionManager.InterruptionCallback {
     private static final String TAG = "CapacitorAudioEngine";
 
     // Core managers
@@ -64,6 +64,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     // Segment rolling support
     private SegmentRollingManager segmentRollingManager;
     private boolean isSegmentRollingEnabled = false;
+
+    // Segment rolling configuration
+    private Integer segmentLengthSeconds = 60; // Default 60 seconds (1 minute) per segment
 
     // Recording state
     private boolean isRecording = false;
@@ -120,7 +123,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             // Use interface to decouple from concrete service implementation
             if (service instanceof ServiceBinder binder) {
               recordingService = binder.getService();
-                recordingService.setRecordingServiceListener(CapacitorAudioEnginePlugin.this);
                 isServiceBound = true;
             }
         }
@@ -241,6 +243,43 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         int channels = getIntegerSafely(call, "channels", AudioEngineConfig.Recording.DEFAULT_CHANNELS);
         int bitrate = getIntegerSafely(call, "bitrate", AudioEngineConfig.Recording.DEFAULT_BITRATE);
 
+        // Get audio format (optional, defaults to M4A)
+        String formatString = call.getString("format", "m4a");
+        AudioRecordingFormat audioFormat = AudioRecordingFormat.fromString(formatString);
+        Log.d(TAG, "Using audio format: " + audioFormat + " (requested: " + formatString + ")");
+
+        // Enhanced sample rate validation
+        if (sampleRate < 8000 || sampleRate > 48000) {
+            throw new IllegalArgumentException("Sample rate must be between 8000 and 48000 Hz, got: " + sampleRate);
+        }
+
+        // Validate maxDuration is provided and reasonable
+        Integer maxDuration = call.getInt("maxDuration"); // Can be null
+        Log.d(TAG, "Received maxDuration from call: " + maxDuration);
+
+        if (maxDuration == null || maxDuration <= 0) {
+            Log.e(TAG, "Invalid maxDuration: " + maxDuration + " - must be greater than 0 seconds");
+            throw new IllegalArgumentException("maxDuration is required and must be greater than 0 seconds, got: " + maxDuration);
+        }
+        if (maxDuration > 7200) { // 2 hours max
+            Log.e(TAG, "maxDuration too large: " + maxDuration + " seconds");
+            throw new IllegalArgumentException("maxDuration cannot exceed 7200 seconds (2 hours), got: " + maxDuration);
+        }
+
+        Log.d(TAG, "Validated maxDuration: " + maxDuration + " seconds");
+
+        // Get segment length configuration (optional, defaults to 10 seconds)
+        Integer segmentLength = call.getInt("segmentLength");
+        if (segmentLength != null) {
+            if (segmentLength < 1 || segmentLength > 60) {
+                throw new IllegalArgumentException("segmentLength must be between 1 and 60 seconds, got: " + segmentLength);
+            }
+            segmentLengthSeconds = segmentLength;
+            Log.d(TAG, "Using custom segment length: " + segmentLengthSeconds + " seconds");
+        } else {
+            Log.d(TAG, "Using default segment length: " + segmentLengthSeconds + " seconds");
+        }
+
         // Create recording configuration
         recordingConfig = new AudioRecordingConfig.Builder()
             .sampleRate(sampleRate)
@@ -250,8 +289,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
         Log.d(TAG, "Using config - SampleRate: " + sampleRate +
               ", Channels: " + channels + ", Bitrate: " + bitrate);
-
-        Integer maxDuration = call.getInt("maxDuration"); // Can be null
 
         // Store maxDuration for use in recording logic
         maxDurationSeconds = maxDuration;
@@ -263,7 +300,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
         // Always use segment rolling for recording
         isSegmentRollingEnabled = true;
-        Log.d(TAG, "Using segment rolling mode for recording");
+        Log.d(TAG, "Using segment rolling mode for recording with format: " + audioFormat);
         try {
             startSegmentRollingRecording();
         } catch (Exception e) {
@@ -355,6 +392,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         // Stop segment rolling and merge segments
         if (segmentRollingManager != null) {
             File mergedFile = segmentRollingManager.stopSegmentRolling();
+
+            if (mergedFile == null) {
+                Log.e(TAG, "Segment rolling returned null - no valid segments found");
+                throw new IllegalStateException("No valid audio segments found to return");
+            }
+
             fileToReturn = mergedFile.getAbsolutePath();
 
             // Stop recording service as recording is complete
@@ -440,6 +483,38 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     }
 
     @PluginMethod
+    public void getSegmentInfo(PluginCall call) {
+        if (segmentRollingManager == null) {
+            call.reject("No active segment rolling manager");
+            return;
+        }
+
+        try {
+            JSObject result = new JSObject();
+            result.put("segmentCount", segmentRollingManager.getCurrentSegments().size());
+            result.put("bufferedDuration", segmentRollingManager.getBufferedDuration() / 1000.0); // Convert to seconds
+            result.put("segmentLength", segmentLengthSeconds);
+            result.put("maxDuration", maxDurationSeconds);
+            result.put("debugInfo", "");
+
+            call.resolve(result);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get segment info", e);
+            call.reject("Failed to get segment info: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void setDebugMode(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", false);
+
+        segmentRollingManager.setDebugMode(enabled);
+        Log.d(TAG, "Debug mode " + (enabled ? "enabled" : "disabled") + " for segment rolling");
+
+        call.resolve();
+    }
+
+    @PluginMethod
     public void trimAudio(PluginCall call) {
         try {
             // Validate input parameters
@@ -492,7 +567,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             // Perform trimming using AudioFileProcessor with clamped end time
             AudioFileProcessor.trimAudioFile(new File(actualPath), outputFile, startTime, actualEndTime);
 
-            JSObject response = AudioFileProcessor.getAudioFileInfo(outputFile.getAbsolutePath());
+            JSObject response = AudioFileProcessor.getAudioFileInfo(outputFile.getAbsolutePath(), getContext());
             call.resolve(response);
 
         } catch (SecurityException e) {
@@ -526,7 +601,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 actualPath = uri.substring(7);
             }
 
-            JSObject response = AudioFileProcessor.getAudioFileInfo(actualPath);
+            JSObject response = AudioFileProcessor.getAudioFileInfo(actualPath, getContext());
             call.resolve(response);
 
         } catch (Exception e) {
@@ -663,9 +738,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         try {
             // Derive current recording parameters
             int sr = (recordingConfig != null) ? recordingConfig.getSampleRate() : AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
-            int ch = (recordingConfig != null) ? recordingConfig.getChannels() : AudioEngineConfig.Recording.DEFAULT_CHANNELS;
-            int br = (recordingConfig != null) ? recordingConfig.getBitrate() : AudioEngineConfig.Recording.DEFAULT_BITRATE;
-
             // Accept 'EmissionInterval' in ms from the call, fallback to 1000ms if not provided
             int intervalMs = call.getInt("EmissionInterval", 1000);
 
@@ -742,17 +814,40 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         // Initialize segment rolling manager if needed
         if (segmentRollingManager == null) {
             File baseDirectory = fileManager.getRecordingsDirectory();
-            // Initialize segment rolling manager with context for interruption handling
-            segmentRollingManager = new SegmentRollingManager(getContext(), baseDirectory);
 
+            // Create segment rolling configuration
+            // Provide default values if not set
+            int maxDuration = (maxDurationSeconds != null) ? maxDurationSeconds : 300; // Default 5 minutes
+            int segmentLength = (segmentLengthSeconds != null) ? segmentLengthSeconds : 60; // Default 60 seconds (1 minute)
 
+            Log.d(TAG, "Building segment rolling config:");
+            Log.d(TAG, "  - maxDurationSeconds (from call): " + maxDurationSeconds);
+            Log.d(TAG, "  - segmentLengthSeconds (from call): " + segmentLengthSeconds);
+            Log.d(TAG, "  - final maxDuration: " + maxDuration + "s");
+            Log.d(TAG, "  - final segmentLength: " + segmentLength + "s");
 
-        }
+            // Additional validation before building config
+            if (maxDuration <= 0) {
+                Log.e(TAG, "ERROR: maxDuration is invalid: " + maxDuration);
+                throw new IllegalArgumentException("maxDuration must be positive, got: " + maxDuration);
+            }
+            if (segmentLength <= 0) {
+                Log.e(TAG, "ERROR: segmentLength is invalid: " + segmentLength);
+                throw new IllegalArgumentException("segmentLength must be positive, got: " + segmentLength);
+            }
 
-        // Set maximum duration in segment rolling manager for rolling window management
-        if (maxDurationSeconds != null && maxDurationSeconds > 0) {
-            segmentRollingManager.setMaxDuration(maxDurationSeconds * 1000); // Convert to milliseconds
-            Log.d(TAG, "Segment rolling will maintain a rolling window of " + maxDurationSeconds + " seconds");
+            // Enhanced configuration with mobile-optimized defaults
+            SegmentRollingConfig config = new SegmentRollingConfig.Builder()
+                .setMaxDurationSeconds(maxDuration)
+                .setSegmentLengthMs(segmentLength * 1000)  // Convert seconds to milliseconds
+                .setBufferPaddingSegments(1)  // Keep 1 extra segment for safety
+                .setQualityProfile(QualityProfile.BALANCED)  // Use balanced quality profile
+                .setOutputDirectory(baseDirectory)
+                .build();
+
+            // Initialize segment rolling manager
+            segmentRollingManager = new SegmentRollingManager(getContext(), config);
+            Log.d(TAG, "Segment rolling manager initialized with config: " + config);
         }
 
         // Set duration change callback for segment rolling to emit events
@@ -765,16 +860,18 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             }
         });
 
-        // Configure enhanced features for production robustness
-        segmentRollingManager.configureSafetyMargins(1.5, 4); // 50% memory margin, 4 extra segments for 30s precision
-        segmentRollingManager.setSegmentCompressionEnabled(false); // Disable compression by default
-        segmentRollingManager.setPersistentIndexingEnabled(true); // Enable crash recovery
-
         // Start foreground service for background recording
         startRecordingService();
 
         // Start segment rolling
-        segmentRollingManager.startSegmentRolling(recordingConfig);
+        try {
+            Log.d(TAG, "Starting refactored segment rolling with segment length: " + segmentLengthSeconds + "s, max duration: " + maxDurationSeconds + "s");
+            segmentRollingManager.startSegmentRolling();
+            Log.d(TAG, "Refactored segment rolling start completed successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start refactored segment rolling", e);
+            throw e;
+        }
 
         // Start wave level monitoring for real-time audio levels
         if (waveLevelEmitter != null) {
@@ -784,7 +881,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
         isRecording = true;
 
-        Log.d(TAG, "Started segment rolling recording with rolling window: " + maxDurationSeconds + " seconds");
+        Log.d(TAG, "Started refactored segment rolling recording with segment length: " + segmentLengthSeconds + "s, max duration: " + maxDurationSeconds + "s");
 
         // Emit recording state change event
         JSObject stateData = new JSObject();
@@ -798,9 +895,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             // Stop and release segment rolling manager
             if (segmentRollingManager != null) {
                 try {
-                    segmentRollingManager.release();
+                    segmentRollingManager.shutdown();
                 } catch (Exception e) {
-                    Log.w(TAG, "Error releasing segment rolling manager during cleanup", e);
+                    Log.w(TAG, "Error shutting down segment rolling manager during cleanup", e);
                 }
                 segmentRollingManager = null;
             }
@@ -832,98 +929,114 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     }
 
     /**
-     * Create quick file info for fast stop recording response without expensive metadata operations
-     */
-    private JSObject createQuickFileInfo(String filePath) {
-        File file = new File(filePath);
-        JSObject info = new JSObject();
-
-        try {
-            // Basic file info only - no expensive MediaMetadataRetriever operations
-            info.put("uri", "file://" + filePath);
-            info.put("path", filePath);
-            info.put("name", file.getName());
-            info.put("size", file.length());
-            info.put("exists", file.exists());
-            info.put("mimeType", "audio/mp4"); // Default for M4A files
-            info.put("duration", 0); // Set to 0 for quick response, can be calculated later if needed
-
-            // Use the current recording config for quick response
-            if (recordingConfig != null) {
-                info.put("sampleRate", recordingConfig.getSampleRate());
-                info.put("channels", recordingConfig.getChannels());
-                info.put("bitrate", recordingConfig.getBitrate());
-            } else {
-                // Fallback to defaults
-                info.put("sampleRate", 22050);
-                info.put("channels", 1);
-                info.put("bitrate", 64000);
-            }
-
-            Log.d(TAG, "Created quick file info for: " + file.getName() + " (size: " + file.length() + " bytes)");
-
-        } catch (Exception e) {
-            Log.e(TAG, "Error creating quick file info", e);
-            info.put("error", e.getMessage());
-        }
-
-        return info;
-    }
-
-    /**
      * Create file info with actual duration calculation for stop recording response
      */
     private JSObject createFileInfoWithDuration(String filePath) {
-        File file = new File(filePath);
-        JSObject info = new JSObject();
-
         try {
-            // Basic file info - matching iOS format
-            info.put("path", filePath);
-            info.put("uri", "file://" + filePath);
-            info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
-            info.put("filename", file.getName());
-            info.put("size", file.length());
-            info.put("mimeType", "audio/m4a"); // Default for M4A files
-            info.put("createdAt", file.lastModified());
+            File file = new File(filePath);
 
-            // Calculate duration
-            double actualDuration = 0.0;
+            // Ensure file exists and is properly finalized
+            if (!file.exists()) {
+                Log.e(TAG, "File does not exist: " + filePath);
+                throw new IllegalStateException("Recording file not found: " + filePath);
+            }
+
+            // Wait briefly to ensure file is fully written and finalized
+            if (file.length() > 0) {
+                try {
+                    // Brief pause to ensure file system operations are complete
+                    Thread.sleep(50);
+
+                    // Force file system sync by checking file properties
+                    long fileSize = file.length();
+                    long lastModified = file.lastModified();
+                    Log.d(TAG, "File ready for metadata reading - Size: " + fileSize + " bytes, Modified: " + lastModified);
+
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    Log.w(TAG, "File sync wait interrupted");
+                }
+            }
+
+            // Use the enhanced AudioFileProcessor method with secure URIs
+            JSObject info = AudioFileProcessor.getAudioFileInfo(filePath, getContext());
+
+            // Override/add specific fields for recording response format
+            info.put("mimeType", "audio/m4a"); // Ensure M4A format for recordings
 
             // Handle empty files (created after reset with no recording)
             if (file.length() == 0) {
                 Log.d(TAG, "Empty file detected (created after reset), setting duration to 0");
-                actualDuration = 0.0;
+                info.put("duration", 0.0);
             } else {
-                // Calculate actual duration using AudioFileProcessor
-                actualDuration = AudioFileProcessor.getAudioDuration(filePath);
-                Log.d(TAG, "Calculated duration: " + actualDuration + " seconds for file: " + file.getName());
+                // Verify duration is correctly set - get it again if it's 0
+                double duration = info.optDouble("duration", 0.0);
+                if (duration == 0.0) {
+                    Log.w(TAG, "Initial duration was 0, attempting direct calculation");
+                    // Try direct duration calculation as fallback
+                    double directDuration = AudioFileProcessor.getAudioDuration(filePath);
+                    if (directDuration > 0) {
+                        info.put("duration", directDuration);
+                        Log.d(TAG, "Successfully recovered duration using direct calculation: " + directDuration + "s");
+                    } else {
+                        Log.e(TAG, "Failed to get duration even with direct calculation for file: " + file.getName());
+
+                        // Final fallback: estimate duration based on file size and bitrate
+                        int bitrate = info.optInt("bitrate", 0);
+
+                        // If bitrate is 0 from metadata, try to use recording config bitrate
+                        if (bitrate == 0 && recordingConfig != null) {
+                            bitrate = recordingConfig.getBitrate();
+                            Log.w(TAG, "Using recording config bitrate for estimation: " + bitrate);
+                        }
+
+                        // If still no bitrate, use a reasonable default for M4A AAC
+                        if (bitrate == 0) {
+                            bitrate = 128000; // 128 kbps is a common default for AAC
+                            Log.w(TAG, "Using default bitrate for estimation: " + bitrate);
+                        }
+
+                        if (file.length() > 0) {
+                            // Estimated duration = (file size in bits) / (bitrate in bits per second)
+                            double estimatedDuration = (file.length() * 8.0) / bitrate;
+                            if (estimatedDuration > 0 && estimatedDuration < 3600) { // Sanity check: less than 1 hour
+                                info.put("duration", estimatedDuration);
+                                Log.w(TAG, "Using estimated duration based on file size and bitrate (" + bitrate + "): " +
+                                      estimatedDuration + "s for " + file.getName());
+                            } else {
+                                Log.e(TAG, "Estimated duration seems unrealistic: " + estimatedDuration + "s");
+                            }
+                        } else {
+                            Log.e(TAG, "Cannot estimate duration - file size is 0");
+                        }
+                    }
+                }
             }
 
-            info.put("duration", actualDuration);
-
-            // Use the current recording config
+            // Override with current recording config if available
             if (recordingConfig != null) {
                 info.put("sampleRate", recordingConfig.getSampleRate());
                 info.put("channels", recordingConfig.getChannels());
                 info.put("bitrate", recordingConfig.getBitrate());
-            } else {
-                // Fallback to defaults
-                info.put("sampleRate", 22050);
-                info.put("channels", 1);
-                info.put("bitrate", 64000);
             }
 
-            Log.d(TAG, "Created file info with duration: " + actualDuration + "s for: " + file.getName() +
+            double finalDuration = info.optDouble("duration", 0.0);
+            Log.d(TAG, "Created file info with duration: " + finalDuration + "s for: " + file.getName() +
                   " (size: " + file.length() + " bytes)");
 
+            return info;
         } catch (Exception e) {
             Log.e(TAG, "Error creating file info with duration", e);
-            info.put("error", e.getMessage());
-            info.put("duration", 0); // Fallback to 0 on error
+            // Fallback to basic info
+            JSObject fallbackInfo = new JSObject();
+            File file = new File(filePath);
+            fallbackInfo.put("path", filePath);
+            fallbackInfo.put("filename", file.getName());
+            fallbackInfo.put("size", file.length());
+            fallbackInfo.put("duration", 0.0);
+            fallbackInfo.put("error", e.getMessage());
+            return fallbackInfo;
         }
-
-        return info;
     }
 
     // ==================== PLAYBACK METHODS ====================
@@ -936,9 +1049,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 call.reject("Invalid tracks array - expected array of URLs");
                 return;
             }
-
-            // Get preloadNext option (default to true for backwards compatibility)
-            boolean preloadNext = call.getBoolean("preloadNext", true);
 
             List<String> trackUrls = new ArrayList<>();
 
@@ -1374,32 +1484,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         unbindRecordingService();
     }
 
-    // MARK: - AudioRecordingService.RecordingServiceListener Implementation
-
-    @Override
-    public void onScreenLocked() {
-        Log.d(TAG, "Screen locked - segment rolling manager handles its own state");
-        // Segment rolling manager handles screen lock internally
-    }
-
-    @Override
-    public void onScreenUnlocked() {
-        Log.d(TAG, "Screen unlocked - segment rolling manager handles its own state");
-        // Segment rolling manager handles screen unlock internally
-    }
-
-    @Override
-    public void onRecordingStateChanged(boolean isRecording) {
-        Log.d(TAG, "Recording service state changed: " + (isRecording ? "started" : "stopped"));
-
-        // Could emit events to frontend if needed
-        if (eventManager != null) {
-            JSObject eventData = new JSObject();
-            eventData.put("serviceState", isRecording ? "started" : "stopped");
-            eventManager.emitRecordingStateChange("service", eventData);
-        }
-    }
-
     // MARK: - AudioInterruptionManager.InterruptionCallback Implementation
 
     @Override
@@ -1480,7 +1564,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 } else {
                     // Legacy case - manager exists but not active, need to restart fresh
                     Log.d(TAG, "Segment rolling not active (legacy state), restarting segment rolling");
-                    segmentRollingManager.startSegmentRolling(recordingConfig);
+                    segmentRollingManager.startSegmentRolling();
                     Log.d(TAG, "Fresh segment rolling started after legacy reset");
                 }
 
@@ -1514,6 +1598,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 // If segment rolling manager is null, recreate it
                 Log.d(TAG, "Segment rolling manager not initialized, recreating for resume");
                 try {
+                    // Use M4A format as default for resume (could be made configurable)
                     startSegmentRollingRecording();
                     Log.d(TAG, "Segment rolling recording resumed with fresh session");
                     if (call != null) call.resolve();

@@ -190,12 +190,6 @@ public class MediaRecorderManager {
         return isRecording && mediaRecorder != null;
     }
 
-    /**
-     * Get the MediaRecorder instance (for advanced operations)
-     */
-    public MediaRecorder getMediaRecorder() {
-        return mediaRecorder;
-    }
 
     /**
      * Check if pause/resume is supported on this device

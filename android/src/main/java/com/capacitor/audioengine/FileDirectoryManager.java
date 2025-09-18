@@ -32,20 +32,6 @@ public class FileDirectoryManager {
     }
 
     /**
-     * Get trimmed audio directory, creating it if it doesn't exist
-     */
-    public File getTrimmedDirectory() throws IOException {
-        File trimmedDir = new File(context.getExternalFilesDir(null), "Trimmed");
-        if (!trimmedDir.exists()) {
-            if (!trimmedDir.mkdirs()) {
-                throw new IOException("Failed to create trimmed audio directory");
-            }
-        }
-        Log.d(TAG, "Trimmed directory: " + trimmedDir.getAbsolutePath());
-        return trimmedDir;
-    }
-
-    /**
      * Get processed audio directory, creating it if it doesn't exist
      */
     public File getProcessedDirectory() throws IOException {
@@ -74,16 +60,6 @@ public class FileDirectoryManager {
     }
 
     /**
-     * Create a recording file with timestamp
-     */
-    public File createRecordingFile(String prefix) throws IOException {
-        File recordingsDir = getRecordingsDirectory();
-        long timestamp = System.currentTimeMillis();
-        String filename = (prefix != null ? prefix : "recording") + "_" + timestamp + ".m4a";
-        return new File(recordingsDir, filename);
-    }
-
-    /**
      * Create a processed file with timestamp
      */
     public File createProcessedFile(String prefix) throws IOException {
@@ -91,16 +67,6 @@ public class FileDirectoryManager {
         long timestamp = System.currentTimeMillis();
         String filename = (prefix != null ? prefix : "processed") + "_" + timestamp + ".m4a";
         return new File(processedDir, filename);
-    }
-
-    /**
-     * Create a temporary file in cache
-     */
-    public File createTempFile(String prefix, String suffix) throws IOException {
-        File cacheDir = getCacheDirectory();
-        long timestamp = System.currentTimeMillis();
-        String filename = (prefix != null ? prefix : "temp") + "_" + timestamp + (suffix != null ? suffix : ".tmp");
-        return new File(cacheDir, filename);
     }
 
     /**
@@ -131,19 +97,6 @@ public class FileDirectoryManager {
     }
 
     /**
-     * Clean up cache directory
-     */
-    public void cleanupCache() {
-        try {
-            File cacheDir = getCacheDirectory();
-            // Clean up files older than 1 hour
-            cleanupOldFiles(cacheDir, 60 * 60 * 1000);
-        } catch (IOException e) {
-            Log.w(TAG, "Failed to cleanup cache directory", e);
-        }
-    }
-
-    /**
      * Get available storage space in bytes
      */
     public long getAvailableSpace() {
@@ -154,20 +107,5 @@ public class FileDirectoryManager {
             Log.e(TAG, "Failed to get available space", e);
             return 0;
         }
-    }
-
-    /**
-     * Check if there's enough space for recording
-     */
-    public boolean hasEnoughSpace(long estimatedSizeBytes) {
-        long availableSpace = getAvailableSpace();
-        long requiredSpace = estimatedSizeBytes + (100 * 1024 * 1024); // Add 100MB buffer
-
-        boolean hasSpace = availableSpace > requiredSpace;
-        Log.d(TAG, "Available space: " + (availableSpace / 1024 / 1024) + "MB, " +
-              "Required: " + (requiredSpace / 1024 / 1024) + "MB, " +
-              "Has enough: " + hasSpace);
-
-        return hasSpace;
     }
 }

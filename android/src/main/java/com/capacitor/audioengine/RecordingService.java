@@ -6,12 +6,6 @@ package com.capacitor.audioengine;
  */
 public interface RecordingService {
     /**
-     * Set the listener for recording service events
-     * @param listener The listener to receive service events
-     */
-    void setRecordingServiceListener(RecordingServiceListener listener);
-
-    /**
      * Start foreground recording service
      */
     void startForegroundRecording();

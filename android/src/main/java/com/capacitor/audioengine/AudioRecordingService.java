@@ -26,7 +26,6 @@ public class AudioRecordingService extends Service implements RecordingService {
     // Interface moved to separate file to avoid circular dependencies
 
     private final IBinder binder = new LocalBinder();
-    private RecordingServiceListener listener;
     private BroadcastReceiver screenStateReceiver;
     private boolean isScreenLocked = false;
     private boolean isRecordingActive = false;
@@ -72,20 +71,12 @@ public class AudioRecordingService extends Service implements RecordingService {
         super.onDestroy();
     }
 
-    public void setRecordingServiceListener(RecordingServiceListener listener) {
-        this.listener = listener;
-    }
-
     public void startForegroundRecording() {
         Log.d(TAG, "Starting foreground recording service");
         isRecordingActive = true;
 
         Notification notification = createRecordingNotification();
         startForeground(NOTIFICATION_ID, notification);
-
-        if (listener != null) {
-            listener.onRecordingStateChanged(true);
-        }
     }
 
     public void stopForegroundRecording() {
@@ -94,10 +85,6 @@ public class AudioRecordingService extends Service implements RecordingService {
 
         stopForeground(true);
         stopSelf();
-
-        if (listener != null) {
-            listener.onRecordingStateChanged(false);
-        }
     }
 
     public boolean isRecordingActive() {
@@ -150,15 +137,9 @@ public class AudioRecordingService extends Service implements RecordingService {
                 if (Intent.ACTION_SCREEN_OFF.equals(action)) {
                     Log.d(TAG, "Screen locked - maintaining recording in background");
                     isScreenLocked = true;
-                    if (listener != null) {
-                        listener.onScreenLocked();
-                    }
                 } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
                     Log.d(TAG, "Screen unlocked - recording continues");
                     isScreenLocked = false;
-                    if (listener != null) {
-                        listener.onScreenUnlocked();
-                    }
                 }
             }
         };
