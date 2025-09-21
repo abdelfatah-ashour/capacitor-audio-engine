@@ -8,7 +8,6 @@ import android.media.MediaMuxer;
 import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
-import androidx.core.content.FileProvider;
 
 import com.getcapacitor.JSObject;
 
@@ -277,9 +276,9 @@ public class AudioFileProcessor {
     }
 
     /**
-     * Get audio file information with secure FileProvider URIs
+     * Get audio file information with legacy file:// URIs
      * @param filePath The file path
-     * @param context The context for FileProvider (optional, will use file:// if null)
+     * @param context The context (ignored, kept for compatibility)
      */
     public static JSObject getAudioFileInfo(String filePath, Context context) {
         File file = new File(filePath);
@@ -292,28 +291,10 @@ public class AudioFileProcessor {
             info.put("size", file.length());
             info.put("createdAt", file.lastModified());
 
-            // Generate secure URI using FileProvider if context is available
-            if (context != null) {
-                try {
-                    Uri secureUri = FileProvider.getUriForFile(
-                        context,
-                        context.getPackageName() + ".fileprovider",
-                        file
-                    );
-                    info.put("uri", secureUri.toString());
-                    info.put("webPath", secureUri.toString());
-                    Log.d(TAG, "Generated secure URI: " + secureUri.toString());
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to generate FileProvider URI, falling back to file://", e);
-                    // Fallback to file:// URI
-                    info.put("uri", "file://" + filePath);
-                    info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
-                }
-            } else {
-                // Legacy file:// URI when context is not available
-                info.put("uri", "file://" + filePath);
-                info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
-            }
+            // Always use legacy file:// URI format for compatibility
+            info.put("uri", "file://" + filePath);
+            info.put("webPath", "capacitor://localhost/_capacitor_file_" + filePath);
+            Log.d(TAG, "Generated legacy URI: file://" + filePath);
 
             if (file.exists() && file.length() > 0) {
                 // First validate file integrity

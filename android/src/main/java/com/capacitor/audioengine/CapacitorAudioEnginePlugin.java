@@ -528,13 +528,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             Double startTime = call.getDouble("start", 0.0);
             Double endTime = call.getDouble("end", 0.0);
 
-            // Handle Capacitor file URI format
+            Log.d(TAG, "trimAudio called with URI: " + sourcePath + ", start: " + startTime + ", end: " + endTime);
+
+            // Handle legacy URI formats (simplified for legacy compatibility)
             String actualPath = sourcePath;
             if (sourcePath.contains("capacitor://localhost/_capacitor_file_")) {
                 actualPath = sourcePath.replace("capacitor://localhost/_capacitor_file_", "");
             } else if (sourcePath.startsWith("file://")) {
                 actualPath = sourcePath.substring(7);
             }
+
+            Log.d(TAG, "Resolved URI to file path: " + actualPath);
 
             // Validate file exists and is accessible
             ValidationUtils.validateFileExists(actualPath);
@@ -593,7 +597,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 return;
             }
 
-            // Handle Capacitor file URI format
+            // Handle legacy URI formats (simplified for legacy compatibility)
             String actualPath = uri;
             if (uri.contains("capacitor://localhost/_capacitor_file_")) {
                 actualPath = uri.replace("capacitor://localhost/_capacitor_file_", "");
