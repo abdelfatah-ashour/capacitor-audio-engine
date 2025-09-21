@@ -30,8 +30,9 @@ import java.util.concurrent.atomic.AtomicLong;
 public class SegmentRollingManager implements AudioInterruptionManager.InterruptionCallback {
     private static final String TAG = "SegmentRollingManager";
     private static final String SEGMENT_PREFIX = "segment_";
-    private static final String PREMERGED_FILENAME = "premerged.m4a";
-    private static final String TEMP_PREMERGED_FILENAME = "temp_premerged.m4a";
+    private static final String PREMERGED_PREFIX = "audio_";
+    private static final String TEMP_PREMERGED_PREFIX = "temp_audio_";
+    private static final String AUDIO_FORMAT = ".m4a";
 
     // Core components
     private final EnhancedMediaRecorder enhancedRecorder;
@@ -61,6 +62,10 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private final AtomicBoolean isMerging = new AtomicBoolean(false);
     private final AtomicLong totalRecordedDurationMs = new AtomicLong(0);
 
+    // Dynamic filenames based on timestamp
+    private String preMergedFilename;
+    private String tempPreMergedFilename;
+
     // Duration tracking
     private long recordingStartTime = 0;
     private DurationChangeCallback durationCallback;
@@ -70,6 +75,16 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private boolean debugMode = false;
     private final AtomicLong totalMergeTime = new AtomicLong(0);
     private final AtomicInteger mergeCount = new AtomicInteger(0);
+
+    /**
+     * Generate timestamp-based filenames for premerged files
+     */
+    private void generateTimestampFilenames() {
+        long timestamp = System.currentTimeMillis();
+        this.preMergedFilename = PREMERGED_PREFIX + timestamp + AUDIO_FORMAT;
+        this.tempPreMergedFilename = TEMP_PREMERGED_PREFIX + timestamp + AUDIO_FORMAT;
+        Log.d(TAG, "Generated filenames - premerged: " + preMergedFilename + ", temp: " + tempPreMergedFilename);
+    }
 
     public SegmentRollingManager(Context context, SegmentRollingConfig config) throws IOException {
         Log.d(TAG, "=== SegmentRollingManager CONSTRUCTOR (Refactored) ===");
@@ -91,7 +106,10 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         this.enhancedRecorder = new EnhancedMediaRecorder();
         this.interruptionManager = new AudioInterruptionManager(context);
         this.interruptionManager.setInterruptionCallback(this);
-        this.preMergedFile = new File(segmentsDirectory, PREMERGED_FILENAME);
+
+        // Generate initial filenames - will be regenerated when recording starts
+        generateTimestampFilenames();
+        this.preMergedFile = new File(segmentsDirectory, preMergedFilename);
 
         // Clean up any leftover files
         cleanupLeftoverFiles();
@@ -118,6 +136,10 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         recordingStartTime = System.currentTimeMillis();
         totalRecordedDurationMs.set(0);
         clearSegmentDeque();
+
+        // Generate new timestamp-based filenames for this recording session
+        generateTimestampFilenames();
+        this.preMergedFile = new File(segmentsDirectory, preMergedFilename);
 
         // Delete old premerged file
         if (preMergedFile.exists()) {
@@ -508,7 +530,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             Log.d(TAG, "Starting background merge of " + segments.size() + " segments");
 
             // Create temporary file for atomic swap
-            File tempFile = new File(segmentsDirectory, TEMP_PREMERGED_FILENAME);
+            File tempFile = new File(segmentsDirectory, tempPreMergedFilename);
             if (tempFile.exists()) {
                 tempFile.delete();
             }
@@ -539,7 +561,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
             Log.e(TAG, "Background merge failed", e);
 
             // Clean up temp file on error
-            File tempFile = new File(segmentsDirectory, TEMP_PREMERGED_FILENAME);
+            File tempFile = new File(segmentsDirectory, tempPreMergedFilename);
             if (tempFile.exists()) {
                 tempFile.delete();
             }
@@ -658,8 +680,8 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         if (files != null) {
             for (File file : files) {
                 if (file.getName().startsWith(SEGMENT_PREFIX) ||
-                    file.getName().equals(PREMERGED_FILENAME) ||
-                    file.getName().equals(TEMP_PREMERGED_FILENAME)) {
+                    file.getName().startsWith(PREMERGED_PREFIX) ||
+                    file.getName().startsWith(TEMP_PREMERGED_PREFIX)) {
 
                     if (!file.delete()) {
                         Log.w(TAG, "Failed to delete leftover file: " + file.getName());
