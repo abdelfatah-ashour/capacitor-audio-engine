@@ -14,6 +14,8 @@ import com.getcapacitor.JSObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Handles audio file processing operations including trimming and merging
@@ -241,6 +243,117 @@ public class AudioFileProcessor {
             }
             throw new IOException("Failed to trim audio file: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Concatenate multiple AAC/M4A files into a single M4A by container copy.
+     * Assumes all input files share compatible audio formats (AAC in MP4/M4A).
+     */
+    public static void concatenateAudioFiles(List<File> inputFiles, File outputFile) throws IOException {
+        if (inputFiles == null || inputFiles.isEmpty()) {
+            throw new IOException("No input files provided for concatenation");
+        }
+
+        // Filter only existing, non-empty files
+        List<File> validInputs = new ArrayList<>();
+        for (File f : inputFiles) {
+            if (f != null && f.exists() && f.length() > 0) {
+                validInputs.add(f);
+            }
+        }
+
+        if (validInputs.isEmpty()) {
+            throw new IOException("All input segment files are missing or empty");
+        }
+
+        // Prepare muxer with the audio format of the first file
+        try (ResourceManager.SafeMediaExtractor firstExtractorWrap = new ResourceManager.SafeMediaExtractor();
+             ResourceManager.SafeMediaMuxer muxerWrap = new ResourceManager.SafeMediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)) {
+
+            MediaExtractor firstExtractor = firstExtractorWrap.getExtractor();
+            MediaMuxer muxer = muxerWrap.getMuxer();
+
+            firstExtractor.setDataSource(validInputs.get(0).getAbsolutePath());
+            int audioTrack = findAudioTrack(firstExtractor);
+            if (audioTrack == -1) {
+                throw new IOException("No audio track in first input: " + validInputs.get(0).getName());
+            }
+            MediaFormat audioFormat = firstExtractor.getTrackFormat(audioTrack);
+            int muxerTrack = muxer.addTrack(audioFormat);
+            muxer.start();
+
+            long presentationTimeOffsetUs = 0;
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(128 * 1024); // 128KB
+            android.media.MediaCodec.BufferInfo bufferInfo = new android.media.MediaCodec.BufferInfo();
+
+            for (File input : validInputs) {
+                try (ResourceManager.SafeMediaExtractor extractorWrap = new ResourceManager.SafeMediaExtractor()) {
+                    MediaExtractor extractor = extractorWrap.getExtractor();
+                    extractor.setDataSource(input.getAbsolutePath());
+
+                    int track = findAudioTrack(extractor);
+                    if (track == -1) {
+                        Log.w(TAG, "Skipping file with no audio track: " + input.getName());
+                        continue;
+                    }
+
+                    extractor.selectTrack(track);
+
+                    while (true) {
+                        int sampleSize = extractor.readSampleData(buffer, 0);
+                        if (sampleSize < 0) break;
+
+                        long sampleTimeUs = extractor.getSampleTime();
+                        bufferInfo.offset = 0;
+                        bufferInfo.size = sampleSize;
+                        bufferInfo.presentationTimeUs = presentationTimeOffsetUs + Math.max(0, sampleTimeUs);
+                        bufferInfo.flags = convertExtractorFlags(extractor.getSampleFlags());
+
+                        muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
+                        extractor.advance();
+                    }
+
+                    // Update offset by the duration of this input (best-effort)
+                    double partDuration = getAudioDuration(input.getAbsolutePath());
+                    if (partDuration > 0) {
+                        presentationTimeOffsetUs += (long)(partDuration * 1_000_000L);
+                    } else {
+                        // Fallback: small safety gap (20ms) to keep monotonic pts
+                        presentationTimeOffsetUs += 20_000;
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Error while concatenating segment: " + input.getName(), e);
+                }
+            }
+
+            Log.d(TAG, "Concatenation completed into: " + outputFile.getName());
+        } catch (Exception e) {
+            // Clean up on failure
+            if (outputFile.exists() && outputFile.length() == 0) {
+                // Best effort delete incomplete
+                //noinspection ResultOfMethodCallIgnored
+                outputFile.delete();
+            }
+            throw new IOException("Failed to concatenate audio files: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Append partFile to baseFile and write to outFile (container copy).
+     * If baseFile doesn't exist or is empty, this behaves like copying partFile to outFile.
+     */
+    public static void appendAudioFiles(File baseFile, File partFile, File outFile) throws IOException {
+        List<File> inputs = new ArrayList<>();
+        if (baseFile != null && baseFile.exists() && baseFile.length() > 0) {
+            inputs.add(baseFile);
+        }
+        if (partFile != null && partFile.exists() && partFile.length() > 0) {
+            inputs.add(partFile);
+        }
+        if (inputs.isEmpty()) {
+            throw new IOException("No valid input files to append");
+        }
+        concatenateAudioFiles(inputs, outFile);
     }
 
     /**

@@ -6,11 +6,11 @@ import java.io.File;
 import java.io.IOException;
 
 /**
- * Enhanced MediaRecorder wrapper that provides additional functionality
- * for segment-based audio recording with improved error handling and state management
+ * MediaRecorder wrapper that provides additional functionality
+ * for audio recording with improved error handling and state management
  */
-public class EnhancedMediaRecorder {
-    private static final String TAG = "EnhancedMediaRecorder";
+public class MediaRecorderWrapper {
+    private static final String TAG = "MediaRecorderWrapper";
 
     private MediaRecorder mediaRecorder;
     private boolean isRecording = false;
@@ -21,8 +21,8 @@ public class EnhancedMediaRecorder {
     /**
      * Constructor
      */
-    public EnhancedMediaRecorder() {
-        this.mediaRecorder = new MediaRecorder();
+    public MediaRecorderWrapper() {
+        this.mediaRecorder = new android.media.MediaRecorder();
     }
 
     /**
@@ -81,10 +81,10 @@ public class EnhancedMediaRecorder {
 
             // Configure AAC encoder for better gapless performance
             try {
-                // Ensure optimal AAC encoding settings for segment consistency
+                // Ensure optimal AAC encoding settings for recording consistency
                 // MediaRecorder will use AAC-LC profile by default with MPEG_4 container
 
-                // Set consistent bit rate for uniform encoding across segments
+                // Set consistent bit rate for uniform encoding
                 if (config.getBitrate() > 0) {
                     mediaRecorder.setAudioEncodingBitRate(config.getBitrate());
                 }
@@ -193,7 +193,7 @@ public class EnhancedMediaRecorder {
      * @return Debug information string
      */
     public String getDebugInfo() {
-        return "EnhancedMediaRecorder{" +
+        return "MediaRecorderWrapper{" +
                "isRecording=" + isRecording +
                ", currentOutputFile=" + (currentOutputFile != null ? currentOutputFile.getName() : "null") +
                ", recordingDuration=" + (recordingStartTime > 0 ? (System.currentTimeMillis() - recordingStartTime) : 0) + "ms" +

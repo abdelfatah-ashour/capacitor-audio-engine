@@ -61,17 +61,15 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     private RecordingService recordingService;
     private boolean isServiceBound = false;
 
-    // Segment rolling support
-    private SegmentRollingManager segmentRollingManager;
-    private boolean isSegmentRollingEnabled = false;
-
-    // Segment rolling configuration
-    private Integer segmentLengthSeconds = 60; // Default 60 seconds (1 minute) per segment
-
-    // Recording state
+    // Simple recording state
     private boolean isRecording = false;
     private AudioRecordingConfig recordingConfig;
-    private Integer maxDurationSeconds; // Maximum recording duration in seconds
+    private MediaRecorderWrapper mediaRecorder;
+    private File currentRecordingFile;
+    private DurationMonitor durationMonitor;
+
+    // Rolling segments manager (Android-only enhancement)
+    private RollingRecordingManager rollingRecordingManager;
 
     // Thread management
     private Handler mainHandler;
@@ -136,8 +134,37 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     };
 
     private void initializeCallbackManagers() {
-        // Callback managers removed since segment rolling handles its own timing and duration
-        Log.d(TAG, "Segment rolling manager will handle all timing and duration callbacks");
+        // Initialize duration monitor for simple recording
+        durationMonitor = new DurationMonitor(mainHandler, new DurationMonitor.DurationCallback() {
+            @Override
+            public void onDurationChanged(double duration) {
+                if (eventManager != null) {
+                    eventManager.emitDurationChange(duration);
+                }
+            }
+
+            @Override
+            public void onMaxDurationReached() {
+                // Auto-stop recording when max duration is reached
+                try {
+                    JSObject result = stopRecordingInternal();
+                    // Emit recording completed event
+                    if (eventManager != null) {
+                        JSObject eventData = new JSObject();
+                        eventData.put("filePath", result.getString("filePath"));
+                        eventData.put("duration", result.getDouble("duration"));
+                        eventManager.emitRecordingStateChange("completed", eventData);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to auto-stop recording at max duration", e);
+                    JSObject errorData = AudioEngineError.OPERATION_TIMEOUT.toJSObject("Recording reached maximum duration");
+                    if (eventManager != null) {
+                        eventManager.emitError(errorData);
+                    }
+                }
+            }
+        });
+        Log.d(TAG, "Duration monitor initialized for simple recording");
     }
 
     /**
@@ -185,13 +212,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         permissionService.handleDetailedPermissionCallback(call);
     }
 
-  // Implementation of PermissionRequestCallback interface
-    // Not an override: PermissionServiceCallback is implemented as an anonymous inner class, not here.
     public void requestPermission(String alias, PluginCall call, String callbackMethod) {
         requestPermissionForAlias(alias, call, callbackMethod);
     }
 
-    // Implementation of EventCallback interface
     @Override
     public void notifyListeners(String eventName, JSObject data) {
         super.notifyListeners(eventName, data);
@@ -225,8 +249,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     private void startRecordingInternal(PluginCall call) throws Exception {
         Log.d(TAG, "startRecording called - current state: isRecording=" + isRecording);
 
-        // Validate state - check if segment rolling is already active
-        if (isRecording || (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive())) {
+        // Validate state - check if recording is already active
+        if (isRecording) {
             call.reject(AudioEngineError.RECORDING_IN_PROGRESS.getCode(),
                        AudioEngineError.RECORDING_IN_PROGRESS.getMessage());
             return;
@@ -253,34 +277,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             throw new IllegalArgumentException("Sample rate must be between 8000 and 48000 Hz, got: " + sampleRate);
         }
 
-        // Validate maxDuration is provided and reasonable
+        // Get maxDuration (optional parameter)
         Integer maxDuration = call.getInt("maxDuration"); // Can be null
         Log.d(TAG, "Received maxDuration from call: " + maxDuration);
 
-        if (maxDuration == null || maxDuration <= 0) {
-            Log.e(TAG, "Invalid maxDuration: " + maxDuration + " - must be greater than 0 seconds");
-            throw new IllegalArgumentException("maxDuration is required and must be greater than 0 seconds, got: " + maxDuration);
-        }
-        if (maxDuration > 7200) { // 2 hours max
-            Log.e(TAG, "maxDuration too large: " + maxDuration + " seconds");
-            throw new IllegalArgumentException("maxDuration cannot exceed 7200 seconds (2 hours), got: " + maxDuration);
-        }
-
-        Log.d(TAG, "Validated maxDuration: " + maxDuration + " seconds");
-
-        // Get segment length configuration (optional, defaults to 10 seconds)
-        Integer segmentLength = call.getInt("segmentLength");
-        if (segmentLength != null) {
-            if (segmentLength < 1 || segmentLength > 60) {
-                throw new IllegalArgumentException("segmentLength must be between 1 and 60 seconds, got: " + segmentLength);
-            }
-            segmentLengthSeconds = segmentLength;
-            Log.d(TAG, "Using custom segment length: " + segmentLengthSeconds + " seconds");
-        } else {
-            Log.d(TAG, "Using default segment length: " + segmentLengthSeconds + " seconds");
-        }
-
-        // Create recording configuration
         recordingConfig = new AudioRecordingConfig.Builder()
             .sampleRate(sampleRate)
             .channels(channels)
@@ -290,23 +290,46 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         Log.d(TAG, "Using config - SampleRate: " + sampleRate +
               ", Channels: " + channels + ", Bitrate: " + bitrate);
 
-        // Store maxDuration for use in recording logic
-        maxDurationSeconds = maxDuration;
-
-        // Validate audio parameters
         ValidationUtils.validateAudioParameters(sampleRate, channels, bitrate);
 
-        Log.d(TAG, "Starting recording with maxDuration: " + maxDuration + " seconds");
+        if (maxDuration != null && maxDuration > 0) {
+            Log.d(TAG, "Starting rolling segment recording with maxDuration: " + maxDuration + " seconds");
+            try {
+                // Initialize and start rolling segments
+                rollingRecordingManager = new RollingRecordingManager(getContext(), fileManager, recordingConfig, maxDuration);
+                rollingRecordingManager.start();
 
-        // Always use segment rolling for recording
-        isSegmentRollingEnabled = true;
-        Log.d(TAG, "Using segment rolling mode for recording with format: " + audioFormat);
-        try {
-            startSegmentRollingRecording();
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to start segment rolling recording", e);
-            cleanupRecordingState();
-            throw e;
+                // Start duration monitoring and service
+                if (durationMonitor != null) {
+                    durationMonitor.resetDuration();
+                    durationMonitor.startMonitoring();
+                }
+                startRecordingService();
+
+                // Wave levels
+                if (waveLevelEmitter != null) {
+                    waveLevelEmitter.startMonitoring();
+                    Log.d(TAG, "Wave level monitoring started (rolling)");
+                }
+
+                isRecording = true;
+                JSObject stateData = new JSObject();
+                eventManager.emitRecordingStateChange("recording", stateData);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to start rolling recording", e);
+                cleanupRecordingState();
+                throw e;
+            }
+        } else {
+            Log.d(TAG, "Starting simple single-file recording without duration limit");
+            // Start simple single-file recording
+            try {
+                startSimpleRecording();
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to start simple recording", e);
+                cleanupRecordingState();
+                throw e;
+            }
         }
 
         call.resolve();
@@ -325,19 +348,26 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @PluginMethod
     public void resetRecording(PluginCall call) {
         // Ensure there is an active recording session context to reset
-        boolean sessionActive = isRecording ||
-            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
-
-        if (!sessionActive) {
+        if (!isRecording) {
             call.reject("No active recording session to reset");
             return;
         }
 
         try {
-            // Discard current recording segments and reset duration inside manager
-            if (segmentRollingManager != null) {
-                segmentRollingManager.resetSegmentRolling();
-                Log.d(TAG, "Segment rolling reset successfully");
+            // Stop current recording and discard the file
+            if (mediaRecorder != null && mediaRecorder.isRecording()) {
+                mediaRecorder.stopSafely();
+                // Delete the current recording file since we're resetting
+                if (currentRecordingFile != null && currentRecordingFile.exists()) {
+                    if (!currentRecordingFile.delete()) {
+                        Log.w(TAG, "Failed to delete recording file during reset: " + currentRecordingFile.getName());
+                    }
+                }
+            }
+
+            // Reset duration monitor
+            if (durationMonitor != null) {
+                durationMonitor.resetDuration();
             }
 
             // Discard waves by stopping wave level monitoring (frontend should clear visualization on waveLevelDestroy)
@@ -378,48 +408,75 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
      * Used by both the public stopRecording method and the max duration callback
      */
     private JSObject stopRecordingInternal() throws Exception {
+        long stopStartNs = System.nanoTime();
         // Check if any recording is active
-        boolean hasActiveRecording = isRecording ||
-            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
-
-        if (!hasActiveRecording) {
+        if (!isRecording) {
             throw new IllegalStateException("No active recording to stop");
         }
 
         String fileToReturn;
 
-        Log.d(TAG, "Stopping segment rolling recording...");
-        // Stop segment rolling and merge segments
-        if (segmentRollingManager != null) {
-            File mergedFile = segmentRollingManager.stopSegmentRolling();
-
-            if (mergedFile == null) {
-                Log.e(TAG, "Segment rolling returned null - no valid segments found");
-                throw new IllegalStateException("No valid audio segments found to return");
-            }
-
-            fileToReturn = mergedFile.getAbsolutePath();
-
-            // Stop recording service as recording is complete
+        if (rollingRecordingManager != null && rollingRecordingManager.isActive()) {
+            Log.d(TAG, "Stopping rolling recording and assembling final...");
+            long assembleStartNs = System.nanoTime();
+            File finalFile = rollingRecordingManager.stopAndAssembleFinal();
+            long assembleEndNs = System.nanoTime();
+            Log.i(TAG, "[Stop] Rolling assembly time: " + ((assembleEndNs - assembleStartNs) / 1_000_000) + " ms");
+            fileToReturn = finalFile.getAbsolutePath();
             stopRecordingService();
-
-            Log.d(TAG, "Segment rolling stopped and merged to: " + mergedFile.getName());
+            Log.d(TAG, "Rolling recording stopped -> " + finalFile.getName());
         } else {
-            Log.e(TAG, "Segment rolling manager is null!");
-            throw new IllegalStateException("Segment rolling manager not initialized");
+            Log.d(TAG, "Stopping simple recording...");
+            // Stop simple recording
+            if (mediaRecorder != null && mediaRecorder.isRecording()) {
+                long simpleStopStartNs = System.nanoTime();
+                File recordingFile = mediaRecorder.stopSafely();
+                long simpleStopEndNs = System.nanoTime();
+                Log.i(TAG, "[Stop] Simple stop time: " + ((simpleStopEndNs - simpleStopStartNs) / 1_000_000) + " ms");
+
+                if (recordingFile == null || !recordingFile.exists()) {
+                    Log.e(TAG, "Recording file is null or doesn't exist");
+                    throw new IllegalStateException("No valid recording file found to return");
+                }
+
+                fileToReturn = recordingFile.getAbsolutePath();
+
+                // Stop recording service as recording is complete
+                stopRecordingService();
+
+                Log.d(TAG, "Simple recording stopped: " + recordingFile.getName());
+            } else {
+                Log.e(TAG, "Media recorder is null or not recording!");
+                throw new IllegalStateException("Media recorder not initialized or not recording");
+            }
         }
 
-        // Stop wave level monitoring
+            // Stop wave level monitoring
         if (waveLevelEmitter != null) {
             waveLevelEmitter.stopMonitoring();
             Log.d(TAG, "Wave level monitoring stopped");
         }
 
+        // Stop and reset duration monitoring
+        if (durationMonitor != null) {
+            try {
+                durationMonitor.stopMonitoring();
+            } catch (Exception e) {
+                Log.w(TAG, "Error stopping duration monitor on stop", e);
+            }
+            durationMonitor.resetDuration();
+        }
+
         isRecording = false;
+        rollingRecordingManager = null;
 
         // Get file info and return - with actual duration calculation
-        // Create response with actual duration calculation
+        long infoStartNs = System.nanoTime();
         JSObject response = createFileInfoWithDuration(fileToReturn);
+        long infoEndNs = System.nanoTime();
+        Log.i(TAG, "[Stop] File info time: " + ((infoEndNs - infoStartNs) / 1_000_000) + " ms");
+        long stopEndNs = System.nanoTime();
+        Log.i(TAG, "[Stop] Total stop processing time: " + ((stopEndNs - stopStartNs) / 1_000_000) + " ms");
         Log.d(TAG, "Recording stopped - File: " + new File(fileToReturn).getName());
 
         return response;
@@ -427,21 +484,18 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
     @PluginMethod
     public void getDuration(PluginCall call) {
-        boolean hasActiveRecording = isRecording ||
-            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
-
-        if (hasActiveRecording) {
+        if (isRecording) {
             JSObject result = new JSObject();
 
-            if (segmentRollingManager != null) {
-                // Use the segment manager's duration which respects the rolling window
-                long segmentDuration = segmentRollingManager.getElapsedRecordingTime();
-                result.put("duration", segmentDuration / 1000.0); // Convert to seconds
-                Log.d(TAG, "Segment rolling current duration: " + (segmentDuration / 1000.0) + " seconds");
+            if (durationMonitor != null) {
+                // Use the duration monitor's current duration
+                double currentDuration = durationMonitor.getCurrentDuration();
+                result.put("duration", currentDuration);
+                Log.d(TAG, "Simple recording current duration: " + currentDuration + " seconds");
             } else {
-                // If recording session is active but segment manager is null (reset state), return 0
+                // If duration monitor is null, return 0
                 result.put("duration", 0.0);
-                Log.d(TAG, "Recording session active but in reset state - duration: 0");
+                Log.d(TAG, "Duration monitor not available - duration: 0");
             }
 
             call.resolve(result);
@@ -453,65 +507,26 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @PluginMethod
     public void getStatus(PluginCall call) {
         String status;
-        boolean sessionActive = isRecording ||
-            (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
 
-        if (sessionActive) {
-            // If recording is active but segment manager is null or not active, it's in paused/reset state
-            if (isRecording && (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
-                status = "paused"; // Reset state is effectively paused
-            } else {
-                status = "recording";
-            }
+        if (isRecording) {
+            status = "recording";
         } else {
             status = "idle";
         }
 
         JSObject result = new JSObject();
         result.put("status", status);
-        result.put("isRecording", sessionActive);
+        result.put("isRecording", isRecording);
 
-        if (segmentRollingManager != null) {
-            // Use the segment manager's duration which respects the rolling window
-            long segmentDuration = segmentRollingManager.getElapsedRecordingTime();
-            result.put("duration", segmentDuration / 1000.0); // Convert to seconds
+        if (durationMonitor != null) {
+            // Use the duration monitor's current duration
+            double currentDuration = durationMonitor.getCurrentDuration();
+            result.put("duration", currentDuration);
         } else {
             result.put("duration", 0.0);
         }
 
         call.resolve(result);
-    }
-
-    @PluginMethod
-    public void getSegmentInfo(PluginCall call) {
-        if (segmentRollingManager == null) {
-            call.reject("No active segment rolling manager");
-            return;
-        }
-
-        try {
-            JSObject result = new JSObject();
-            result.put("segmentCount", segmentRollingManager.getCurrentSegments().size());
-            result.put("bufferedDuration", segmentRollingManager.getBufferedDuration() / 1000.0); // Convert to seconds
-            result.put("segmentLength", segmentLengthSeconds);
-            result.put("maxDuration", maxDurationSeconds);
-            result.put("debugInfo", "");
-
-            call.resolve(result);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to get segment info", e);
-            call.reject("Failed to get segment info: " + e.getMessage());
-        }
-    }
-
-    @PluginMethod
-    public void setDebugMode(PluginCall call) {
-        boolean enabled = call.getBoolean("enabled", false);
-
-        segmentRollingManager.setDebugMode(enabled);
-        Log.d(TAG, "Debug mode " + (enabled ? "enabled" : "disabled") + " for segment rolling");
-
-        call.resolve();
     }
 
     @PluginMethod
@@ -634,9 +649,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             }
 
             // Check if our own app is currently recording
-            boolean appRecording = isRecording || (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive());
-            Log.d(TAG, "App currently recording: " + appRecording + " (isRecording: " + isRecording + ", segmentRollingActive: " +
-                  (segmentRollingManager != null && segmentRollingManager.isSegmentRollingActive()) + ")");
+            boolean appRecording = isRecording;
+            Log.d(TAG, "App currently recording: " + appRecording + " (isRecording: " + isRecording + ")");
 
             if (appRecording) {
                 Log.d(TAG, "App is recording, returning busy=true");
@@ -814,68 +828,26 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
     // Helper methods for the refactored implementation
 
-    private void startSegmentRollingRecording() throws IOException {
-        // Initialize segment rolling manager if needed
-        if (segmentRollingManager == null) {
-            File baseDirectory = fileManager.getRecordingsDirectory();
+    private void startSimpleRecording() throws IOException {
+        // Create output file
+        File outputDirectory = fileManager.getRecordingsDirectory();
+        String filename = "recording_" + System.currentTimeMillis() + ".m4a";
+        currentRecordingFile = new File(outputDirectory, filename);
 
-            // Create segment rolling configuration
-            // Provide default values if not set
-            int maxDuration = (maxDurationSeconds != null) ? maxDurationSeconds : 300; // Default 5 minutes
-            int segmentLength = (segmentLengthSeconds != null) ? segmentLengthSeconds : 60; // Default 60 seconds (1 minute)
+        Log.d(TAG, "Starting simple recording to file: " + currentRecordingFile.getName());
 
-            Log.d(TAG, "Building segment rolling config:");
-            Log.d(TAG, "  - maxDurationSeconds (from call): " + maxDurationSeconds);
-            Log.d(TAG, "  - segmentLengthSeconds (from call): " + segmentLengthSeconds);
-            Log.d(TAG, "  - final maxDuration: " + maxDuration + "s");
-            Log.d(TAG, "  - final segmentLength: " + segmentLength + "s");
+        // Initialize media recorder
+        mediaRecorder = new MediaRecorderWrapper();
+        mediaRecorder.configureAndStart(recordingConfig, currentRecordingFile);
 
-            // Additional validation before building config
-            if (maxDuration <= 0) {
-                Log.e(TAG, "ERROR: maxDuration is invalid: " + maxDuration);
-                throw new IllegalArgumentException("maxDuration must be positive, got: " + maxDuration);
-            }
-            if (segmentLength <= 0) {
-                Log.e(TAG, "ERROR: segmentLength is invalid: " + segmentLength);
-                throw new IllegalArgumentException("segmentLength must be positive, got: " + segmentLength);
-            }
-
-            // Enhanced configuration with mobile-optimized defaults
-            SegmentRollingConfig config = new SegmentRollingConfig.Builder()
-                .setMaxDurationSeconds(maxDuration)
-                .setSegmentLengthMs(segmentLength * 1000)  // Convert seconds to milliseconds
-                .setBufferPaddingSegments(1)  // Keep 1 extra segment for safety
-                .setQualityProfile(QualityProfile.BALANCED)  // Use balanced quality profile
-                .setOutputDirectory(baseDirectory)
-                .build();
-
-            // Initialize segment rolling manager
-            segmentRollingManager = new SegmentRollingManager(getContext(), config);
-            Log.d(TAG, "Segment rolling manager initialized with config: " + config);
+        // Start duration monitoring
+        if (durationMonitor != null) {
+            durationMonitor.resetDuration();
+            durationMonitor.startMonitoring();
         }
-
-        // Set duration change callback for segment rolling to emit events
-        segmentRollingManager.setDurationChangeCallback(durationMs -> {
-            // Emit duration change event for consistency with linear recording
-            if (eventManager != null) {
-                double durationSeconds = durationMs / 1000.0;
-                eventManager.emitDurationChange(durationSeconds);
-                Log.d(TAG, "Segment rolling duration change: " + durationSeconds + "s");
-            }
-        });
 
         // Start foreground service for background recording
         startRecordingService();
-
-        // Start segment rolling
-        try {
-            Log.d(TAG, "Starting refactored segment rolling with segment length: " + segmentLengthSeconds + "s, max duration: " + maxDurationSeconds + "s");
-            segmentRollingManager.startSegmentRolling();
-            Log.d(TAG, "Refactored segment rolling start completed successfully");
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to start refactored segment rolling", e);
-            throw e;
-        }
 
         // Start wave level monitoring for real-time audio levels
         if (waveLevelEmitter != null) {
@@ -885,9 +857,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
         isRecording = true;
 
-        Log.d(TAG, "Started refactored segment rolling recording with segment length: " + segmentLengthSeconds + "s, max duration: " + maxDurationSeconds + "s");
-
-        // Emit recording state change event
         JSObject stateData = new JSObject();
         eventManager.emitRecordingStateChange("recording", stateData);
     }
@@ -896,14 +865,26 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         try {
             Log.d(TAG, "Cleaning up recording state...");
 
-            // Stop and release segment rolling manager
-            if (segmentRollingManager != null) {
+            // Stop and release media recorder
+            if (mediaRecorder != null) {
                 try {
-                    segmentRollingManager.shutdown();
+                    if (mediaRecorder.isRecording()) {
+                        mediaRecorder.stopSafely();
+                    }
+                    mediaRecorder.release();
                 } catch (Exception e) {
-                    Log.w(TAG, "Error shutting down segment rolling manager during cleanup", e);
+                    Log.w(TAG, "Error releasing media recorder during cleanup", e);
                 }
-                segmentRollingManager = null;
+                mediaRecorder = null;
+            }
+
+            // Stop duration monitoring
+            if (durationMonitor != null) {
+                try {
+                    durationMonitor.stopMonitoring();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping duration monitor", e);
+                }
             }
 
             // Stop waveform data monitoring
@@ -921,14 +902,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
             // Reset all recording state flags
             isRecording = false;
-            isSegmentRollingEnabled = false;
+            // Simple recording mode
 
             Log.d(TAG, "Recording state cleaned up successfully");
         } catch (Exception e) {
             Log.e(TAG, "Error during cleanup", e);
             // Force reset state even if cleanup partially failed
             isRecording = false;
-            isSegmentRollingEnabled = false;
+            // Simple recording mode
         }
     }
 
@@ -1493,13 +1474,70 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @Override
     public void onInterruptionBegan(AudioInterruptionManager.InterruptionType type) {
         Log.d(TAG, "Audio interruption began: " + type);
-        // Segment rolling handles its own interruptions, so no action needed here
+        try {
+            // Finalize current work and move to paused state
+            if (rollingRecordingManager != null && isRecording) {
+                rollingRecordingManager.pauseForInterruption();
+            } else if (mediaRecorder != null && mediaRecorder.isRecording()) {
+                // For simple mode, finalize current file and keep path
+                File file = mediaRecorder.stopSafely();
+                if (file != null && file.exists()) {
+                    currentRecordingFile = file;
+                }
+            }
+
+            if (durationMonitor != null) {
+                durationMonitor.pauseDuration();
+            }
+            if (waveLevelEmitter != null) {
+                waveLevelEmitter.pauseMonitoring();
+            }
+
+            JSObject errorData = new JSObject();
+            errorData.put("message", "Recording paused due to interruption: " + type);
+            errorData.put("code", type.name());
+            eventManager.emitError(errorData);
+
+            JSObject pauseData = new JSObject();
+            pauseData.put("status", "paused");
+            pauseData.put("isRecording", true);
+            pauseData.put("reason", type.name());
+            eventManager.emitRecordingStateChange("paused", pauseData);
+        } catch (Exception e) {
+            Log.w(TAG, "Error handling interruption begin", e);
+        }
     }
 
     @Override
     public void onInterruptionEnded(AudioInterruptionManager.InterruptionType type, boolean shouldResume) {
         Log.d(TAG, "Audio interruption ended: " + type + ", should resume: " + shouldResume);
-        // Segment rolling handles its own interruptions, so no action needed here
+        if (!isRecording) return;
+        if (!shouldResume) return;
+        try {
+            if (rollingRecordingManager != null) {
+                rollingRecordingManager.resumeAfterInterruption();
+            } else {
+                // Simple mode: start a fresh file to continue
+                startSimpleRecording();
+            }
+
+            if (durationMonitor != null) {
+                durationMonitor.resumeDuration();
+            }
+            if (waveLevelEmitter != null) {
+                try {
+                    if (!waveLevelEmitter.isMonitoring()) waveLevelEmitter.startMonitoring();
+                    else waveLevelEmitter.resumeMonitoring();
+                } catch (Exception ignored) {}
+            }
+
+            JSObject resumeData = new JSObject();
+            resumeData.put("status", "recording");
+            resumeData.put("isRecording", true);
+            eventManager.emitRecordingStateChange("recording", resumeData);
+        } catch (Exception e) {
+            Log.w(TAG, "Error resuming after interruption", e);
+        }
     }
 
     @Override
@@ -1512,37 +1550,44 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
      * Internal pause recording method that can be called without PluginCall
      */
     private void pauseRecordingInternal(PluginCall call) {
-        if (!isRecording && (segmentRollingManager == null || !segmentRollingManager.isSegmentRollingActive())) {
+        if (!isRecording) {
             if (call != null) call.reject("No active recording session to pause");
             return;
         }
 
         try {
-            // Pause segment rolling
-            if (segmentRollingManager != null) {
-                segmentRollingManager.pauseSegmentRolling();
-                Log.d(TAG, "Segment rolling recording paused");
-
-                // Pause wave level monitoring
-                if (waveLevelEmitter != null) {
-                    waveLevelEmitter.pauseMonitoring();
-                    Log.d(TAG, "Wave level monitoring paused");
-                }
-
-                // Emit pause state change event for consistency
-                if (eventManager != null) {
-                    JSObject pauseData = new JSObject();
-                    long currentDuration = segmentRollingManager.getElapsedRecordingTime();
-                    pauseData.put("duration", currentDuration / 1000.0);
-                    pauseData.put("isRecording", true); // Session is still active
-                    pauseData.put("status", "paused");
-                    eventManager.emitRecordingStateChange("paused", pauseData);
-                }
-
-                if (call != null) call.resolve();
-            } else {
-                if (call != null) call.reject("Segment rolling manager not initialized");
+            // Pause media recorder (if supported)
+            if (mediaRecorder != null && mediaRecorder.isRecording()) {
+                // Note: Standard MediaRecorder doesn't support pause/resume
+                // For now, we'll just pause the duration monitor and wave level monitoring
+                Log.d(TAG, "Pausing recording (duration and wave monitoring)");
             }
+
+            // Pause duration monitoring
+            if (durationMonitor != null) {
+                durationMonitor.pauseDuration();
+            }
+
+            // Pause wave level monitoring
+            if (waveLevelEmitter != null) {
+                waveLevelEmitter.pauseMonitoring();
+                Log.d(TAG, "Wave level monitoring paused");
+            }
+
+            // Emit pause state change event
+            if (eventManager != null) {
+                JSObject pauseData = new JSObject();
+                if (durationMonitor != null) {
+                    pauseData.put("duration", durationMonitor.getCurrentDuration());
+                } else {
+                    pauseData.put("duration", 0.0);
+                }
+                pauseData.put("isRecording", true); // Session is still active
+                pauseData.put("status", "paused");
+                eventManager.emitRecordingStateChange("paused", pauseData);
+            }
+
+            if (call != null) call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "Failed to pause recording", e);
             if (call != null) call.reject("Failed to pause recording: " + e.getMessage());
@@ -1559,58 +1604,47 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         }
 
         try {
-            // Resume segment rolling
-            if (segmentRollingManager != null) {
-                if (segmentRollingManager.isSegmentRollingActive()) {
-                    // Normal resume case - manager is active (including after reset with paused segment)
-                    segmentRollingManager.resumeSegmentRolling();
-                    Log.d(TAG, "Segment rolling recording resumed from pause/reset state");
-                } else {
-                    // Legacy case - manager exists but not active, need to restart fresh
-                    Log.d(TAG, "Segment rolling not active (legacy state), restarting segment rolling");
-                    segmentRollingManager.startSegmentRolling();
-                    Log.d(TAG, "Fresh segment rolling started after legacy reset");
-                }
+            // Resume media recorder (if supported)
+            if (mediaRecorder != null && mediaRecorder.isRecording()) {
+                // Note: Standard MediaRecorder doesn't support pause/resume
+                // For now, we'll just resume the duration monitor and wave level monitoring
+                Log.d(TAG, "Resuming recording (duration and wave monitoring)");
+            }
 
-                // Ensure wave level monitoring restarts fresh if it was stopped by reset
-                if (waveLevelEmitter != null) {
-                    try {
-                        if (!waveLevelEmitter.isMonitoring()) {
-                            waveLevelEmitter.startMonitoring();
-                            Log.d(TAG, "Wave level monitoring started");
-                        } else {
-                            waveLevelEmitter.resumeMonitoring();
-                            Log.d(TAG, "Wave level monitoring resumed");
-                        }
-                    } catch (Exception e) {
-                        Log.w(TAG, "Unable to start/resume wave level monitoring", e);
-                    }
-                }
+            // Resume duration monitoring
+            if (durationMonitor != null) {
+                durationMonitor.resumeDuration();
+            }
 
-                // Emit recording state change event for consistency
-                if (eventManager != null) {
-                    JSObject resumeData = new JSObject();
-                    long currentDuration = segmentRollingManager.getElapsedRecordingTime();
-                    resumeData.put("duration", currentDuration / 1000.0);
-                    resumeData.put("isRecording", true);
-                    resumeData.put("status", "recording");
-                    eventManager.emitRecordingStateChange("recording", resumeData);
-                }
-
-                if (call != null) call.resolve();
-            } else {
-                // If segment rolling manager is null, recreate it
-                Log.d(TAG, "Segment rolling manager not initialized, recreating for resume");
+            // Resume wave level monitoring
+            if (waveLevelEmitter != null) {
                 try {
-                    // Use M4A format as default for resume (could be made configurable)
-                    startSegmentRollingRecording();
-                    Log.d(TAG, "Segment rolling recording resumed with fresh session");
-                    if (call != null) call.resolve();
-                } catch (Exception ex) {
-                    Log.e(TAG, "Failed to start fresh segment rolling session", ex);
-                    if (call != null) call.reject("Failed to resume recording: " + ex.getMessage());
+                    if (!waveLevelEmitter.isMonitoring()) {
+                        waveLevelEmitter.startMonitoring();
+                        Log.d(TAG, "Wave level monitoring started");
+                    } else {
+                        waveLevelEmitter.resumeMonitoring();
+                        Log.d(TAG, "Wave level monitoring resumed");
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Unable to start/resume wave level monitoring", e);
                 }
             }
+
+            // Emit recording state change event
+            if (eventManager != null) {
+                JSObject resumeData = new JSObject();
+                if (durationMonitor != null) {
+                    resumeData.put("duration", durationMonitor.getCurrentDuration());
+                } else {
+                    resumeData.put("duration", 0.0);
+                }
+                resumeData.put("isRecording", true);
+                resumeData.put("status", "recording");
+                eventManager.emitRecordingStateChange("recording", resumeData);
+            }
+
+            if (call != null) call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "Failed to resume recording", e);
             if (call != null) call.reject("Failed to resume recording: " + e.getMessage());
