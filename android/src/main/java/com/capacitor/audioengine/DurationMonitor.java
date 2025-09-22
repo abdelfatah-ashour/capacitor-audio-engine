@@ -20,10 +20,10 @@ public class DurationMonitor {
     private final DurationCallback callback;
 
     private Timer durationTimer;
-    private double currentDuration = 0.0;
-    private boolean isMonitoring = false;
-    private boolean isPaused = false; // Track if duration monitoring is paused
-    private Integer maxDurationSeconds; // Maximum duration in seconds
+    private volatile double currentDuration = 0.0;
+    private volatile boolean isMonitoring = false;
+    private volatile boolean isPaused = false; // Track if duration monitoring is paused
+    private volatile Integer maxDurationSeconds; // Maximum duration in seconds
 
     public DurationMonitor(Handler mainHandler, DurationCallback callback) {
         this.mainHandler = mainHandler;
@@ -38,6 +38,12 @@ public class DurationMonitor {
         Log.d(TAG, "Starting duration monitoring");
 
         isMonitoring = true;
+        scheduleTimer();
+
+        Log.d(TAG, "Duration timer started successfully");
+    }
+
+    private void scheduleTimer() {
         durationTimer = new Timer();
         durationTimer.schedule(new TimerTask() {
             @Override
@@ -70,8 +76,6 @@ public class DurationMonitor {
                 });
             }
         }, 1000, 1000);
-
-        Log.d(TAG, "Duration timer started successfully");
     }
 
     /**
@@ -93,7 +97,12 @@ public class DurationMonitor {
     public void pauseDuration() {
         if (!isPaused) {
             isPaused = true;
-            Log.d(TAG, "Duration monitoring paused at " + currentDuration + " seconds");
+            // Cancel timer to ensure no increments happen while paused regardless of thread visibility
+            if (durationTimer != null) {
+                durationTimer.cancel();
+                durationTimer = null;
+            }
+            Log.d(TAG, "Duration monitoring paused at " + currentDuration + " seconds (timer cancelled)");
         }
     }
 
@@ -104,7 +113,11 @@ public class DurationMonitor {
     public void resumeDuration() {
         if (isPaused) {
             isPaused = false;
-            Log.d(TAG, "Duration monitoring resumed at " + currentDuration + " seconds");
+            // Recreate timer if monitoring is still active
+            if (isMonitoring && durationTimer == null) {
+                scheduleTimer();
+            }
+            Log.d(TAG, "Duration monitoring resumed at " + currentDuration + " seconds (timer restarted)");
         }
     }
 

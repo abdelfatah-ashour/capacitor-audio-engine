@@ -67,7 +67,9 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
     private String tempPreMergedFilename;
 
     // Duration tracking
-    private long recordingStartTime = 0;
+    private volatile long recordingStartTime = 0;
+    private final AtomicLong totalPausedDurationMs = new AtomicLong(0);
+    private final AtomicLong pauseStartTimeMs = new AtomicLong(0);
     private DurationChangeCallback durationCallback;
     private Timer durationTimer;
 
@@ -134,6 +136,8 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         // Reset state
         segmentIndex.set(0);
         recordingStartTime = System.currentTimeMillis();
+        totalPausedDurationMs.set(0);
+        pauseStartTimeMs.set(0);
         totalRecordedDurationMs.set(0);
         clearSegmentDeque();
 
@@ -169,6 +173,8 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
 
         Log.d(TAG, "Pausing segment rolling");
         isPaused.set(true);
+        // mark pause start
+        pauseStartTimeMs.set(System.currentTimeMillis());
         stopCurrentSegment();
         stopSegmentTimer();
         stopDurationTimer();
@@ -183,6 +189,12 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         }
 
         Log.d(TAG, "Resuming segment rolling");
+        // accumulate paused duration
+        long pauseStart = pauseStartTimeMs.getAndSet(0);
+        if (pauseStart > 0) {
+            long pausedFor = Math.max(0, System.currentTimeMillis() - pauseStart);
+            totalPausedDurationMs.addAndGet(pausedFor);
+        }
         isPaused.set(false);
         startNewSegment();
         startDurationTimer();
@@ -203,6 +215,7 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         // Set state to stopped
         isRecording.set(false);
         isPaused.set(false);
+        pauseStartTimeMs.set(0);
 
         // Stop current segment
         stopCurrentSegment();
@@ -714,7 +727,15 @@ public class SegmentRollingManager implements AudioInterruptionManager.Interrupt
         if (recordingStartTime == 0) {
             return 0;
         }
-        return System.currentTimeMillis() - recordingStartTime;
+        long now = System.currentTimeMillis();
+        long paused = totalPausedDurationMs.get();
+        // If currently paused and pause start set, include ongoing pause interval
+        long pauseStart = pauseStartTimeMs.get();
+        if (isPaused.get() && pauseStart > 0) {
+            paused += Math.max(0, now - pauseStart);
+        }
+        long elapsed = now - recordingStartTime - paused;
+        return Math.max(0, elapsed);
     }
 
     public void setDurationChangeCallback(DurationChangeCallback callback) {
