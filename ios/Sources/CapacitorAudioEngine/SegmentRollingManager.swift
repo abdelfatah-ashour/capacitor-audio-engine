@@ -111,6 +111,23 @@ class SegmentRollingManager: NSObject {
     // Config flags
     private var enableContinuousRecording: Bool = true
 
+    // Pre-merge rolling file flags and state
+    private var enablePreMergeRollingFile: Bool = true
+    private var preferPCMForSegments: Bool = false
+    private let mergeQueue = DispatchQueue(label: "segment-rolling-merge-queue", qos: .utility)
+    private var isPreMergeInProgress: Bool = false
+    private var preMergedOutputURL: URL?
+    private var lastPreMergedSegmentIndex: Int = -1
+
+    // Strict exact mode flags/state (defaults enabled)
+    private var strictExactEnabled: Bool = true
+    private enum ExactOutputFormat { case pcm, aac }
+    private var exactOutputFormat: ExactOutputFormat = .aac
+    private var backgroundPreEncodeEnabled: Bool = true
+    private let exactQueue = DispatchQueue(label: "segment-rolling-exact-queue", qos: .utility)
+    private var isExactBuildInProgress: Bool = false
+    private var exactRollingAACURL: URL?
+
     // External audio session configuration (optional)
     private var externalAudioCategory: AVAudioSession.Category?
     private var externalAudioMode: AVAudioSession.Mode?
@@ -342,9 +359,62 @@ class SegmentRollingManager: NSObject {
             throw SegmentRecordingError.alreadyActive
         }
 
+        // Apply optional controls from settings with sensible defaults
+        var effectiveSettings = settings
+
+        // 1) Max duration (rolling window seconds)
+        if let maxDur = settings["maxDuration"] as? Double {
+            setMaxDuration(maxDur)
+        }
+
+        // 2) Segment duration override (seconds)
+        if let segDur = settings["segmentDuration"] as? Double, segDur > 0 {
+            setSegmentDuration(segDur)
+        }
+
+        // 3) Format choice: "aac" (default) or "pcm"
+        if let formatChoice = (settings["format"] as? String)?.lowercased() {
+            if formatChoice == "pcm" {
+                setPreferPCMForSegments(true)
+            } else {
+                setPreferPCMForSegments(false)
+            }
+        }
+
+        // 3b) Strict exact options with defaults (user-agreed)
+        if let strict = settings["strictExact"] as? Bool {
+            strictExactEnabled = strict
+        } else {
+            strictExactEnabled = true
+        }
+        if let exactFmt = (settings["exactOutputFormat"] as? String)?.lowercased() {
+            exactOutputFormat = (exactFmt == "pcm") ? .pcm : .aac
+        } else {
+            exactOutputFormat = .aac
+        }
+        if let bg = settings["backgroundPreEncode"] as? Bool {
+            backgroundPreEncodeEnabled = bg
+        } else {
+            backgroundPreEncodeEnabled = true
+        }
+
+        // 4) Recorder defaults if caller omitted
+        if effectiveSettings[AVFormatIDKey] == nil {
+            effectiveSettings[AVFormatIDKey] = kAudioFormatMPEG4AAC
+        }
+        if effectiveSettings[AVEncoderBitRateKey] == nil {
+            effectiveSettings[AVEncoderBitRateKey] = NSNumber(value: AudioEngineConstants.defaultBitrate)
+        }
+        if effectiveSettings[AVSampleRateKey] == nil {
+            effectiveSettings[AVSampleRateKey] = NSNumber(value: AudioEngineConstants.defaultSampleRate)
+        }
+        if effectiveSettings[AVNumberOfChannelsKey] == nil {
+            effectiveSettings[AVNumberOfChannelsKey] = NSNumber(value: AudioEngineConstants.defaultChannels)
+        }
+
         // Store recording settings
-        recordingSettings = settings
-        log("Recording settings stored")
+        recordingSettings = effectiveSettings
+        log("Recording settings stored: format=\(String(describing: recordingSettings[AVFormatIDKey])) sr=\(String(describing: recordingSettings[AVSampleRateKey])) ch=\(String(describing: recordingSettings[AVNumberOfChannelsKey])) br=\(String(describing: recordingSettings[AVEncoderBitRateKey]))")
 
         // Configure audio session for recording
         log("Getting audio session instance")
@@ -353,7 +423,8 @@ class SegmentRollingManager: NSObject {
         // Configure category and mode for recording per checklist (allow external override)
         let category = self.externalAudioCategory ?? .playAndRecord
         let mode = self.externalAudioMode ?? .default
-        let options = self.externalAudioOptions ?? [.allowBluetooth, .duckOthers]
+        // Use non-intrusive options by default: do not duck other audio; allow mixing and default to speaker
+        let options = self.externalAudioOptions ?? [.allowBluetooth, .mixWithOthers, .defaultToSpeaker]
         try audioSession.setCategory(category, mode: mode, options: options)
         // Apply preferred hardware parameters
         if let sr = recordingSettings[AVSampleRateKey] as? Double {
@@ -379,6 +450,12 @@ class SegmentRollingManager: NSObject {
         totalPausedDuration = 0
         pausedTime = nil
         isPaused = false
+        // Reset pre-merge state
+        preMergedOutputURL = nil
+        isPreMergeInProgress = false
+        // Reset exact rolling state
+        isExactBuildInProgress = false
+        exactRollingAACURL = nil
 
         // Determine recording mode based on maxDuration
         // Always use segment rolling
@@ -510,6 +587,12 @@ class SegmentRollingManager: NSObject {
             }
             segmentBuffer.removeAll()
 
+            // Reset pre-merge file
+            if let preURL = preMergedOutputURL {
+                try? FileManager.default.removeItem(at: preURL)
+                preMergedOutputURL = nil
+            }
+
             // Reset all duration and timing counters
             segmentCounter = 0
             totalRecordingDuration = 0
@@ -564,37 +647,41 @@ class SegmentRollingManager: NSObject {
 
             var finalFileURL: URL
 
-            log("Stopping segment rolling - attempting to use continuous recorder output for instant final file")
-
-            // Attempt to stop continuous recorder and get its file
-            if let continuousURL = stopContinuousRecorderAndReturnFile() {
+            // Prefer exact rolling AAC (strictExact background) first for instant exact output
+            if strictExactEnabled, exactOutputFormat == .aac, backgroundPreEncodeEnabled,
+               let exactURL = exactRollingAACURL, FileManager.default.fileExists(atPath: exactURL.path) {
+                log("Using exact rolling AAC for instant exact stop")
+                finalFileURL = exactURL
+            } else if let continuousURL = stopContinuousRecorderAndReturnFile() {
                 log("Continuous recording file ready: \(continuousURL.lastPathComponent)")
-                // Apply trimming to last maxDuration seconds if configured
                 if let maxDuration = maxDuration {
                     log("Trimming continuous file to last \(maxDuration)s for exact rolling window")
                     finalFileURL = try trimMergedFile(continuousURL, maxDuration: maxDuration)
                 } else {
                     finalFileURL = continuousURL
                 }
-            } else {
-                // Fallback: use segment merge path
-                log("Continuous recorder unavailable - falling back to merging \(segmentBuffer.count) segments")
-
-                // Add current segment to buffer if it exists and has content
-                if let lastSegmentURL = getLastSegmentURL() {
-                    addSegmentToBuffer(lastSegmentURL)
-                }
-
-                guard !segmentBuffer.isEmpty else {
-                    log("Warning: No segments in buffer, this might be a very short recording")
-                    throw SegmentRecordingError.noValidSegments
-                }
-
-                let mergedFileURL = try mergeSegments()
+            } else if enablePreMergeRollingFile, let preURL = preMergedOutputURL, FileManager.default.fileExists(atPath: preURL.path) {
+                log("Using pre-merged rolling file path (continuous unavailable)")
+                // If maxDuration set, ensure exact trim
                 if let maxDuration = maxDuration {
-                    finalFileURL = try trimMergedFile(mergedFileURL, maxDuration: maxDuration)
+                    finalFileURL = try trimMergedFile(preURL, maxDuration: maxDuration)
                 } else {
-                    finalFileURL = mergedFileURL
+                    finalFileURL = preURL
+                }
+            } else {
+                // Fallback: quickly merge only the needed tail segments then trim
+                log("Merging tail segments for finalization path")
+                let segments = segmentBuffer.toArray()
+                let neededCount: Int = {
+                    if let maxD = maxDuration { return max(1, Int(ceil(maxD / self.segmentDuration)) + 1) }
+                    return segments.count
+                }()
+                let tail = Array(segments.suffix(neededCount))
+                let tailURL = try self.mergeSpecificSegments(tail)
+                if let maxDuration = maxDuration {
+                    finalFileURL = try self.trimMergedFile(tailURL, maxDuration: maxDuration)
+                } else {
+                    finalFileURL = tailURL
                 }
             }
 
@@ -606,6 +693,12 @@ class SegmentRollingManager: NSObject {
             pausedTime = nil
             isPaused = false
             cleanupSegments()
+
+            // Do not delete the finalFileURL; cleanup temp pre-merge file reference
+            if let preURL = preMergedOutputURL, preURL != finalFileURL {
+                try? FileManager.default.removeItem(at: preURL)
+            }
+            preMergedOutputURL = nil
 
             return finalFileURL
         }
@@ -749,9 +842,14 @@ class SegmentRollingManager: NSObject {
                     }
 
                     var finalFileURL: URL
-                    self.log("Stopping segment rolling (async) - attempting to use continuous recorder output")
+                    // Ensure last segment is included
+                    if let last = self.getLastSegmentURL() { self.addSegmentToBuffer(last) }
 
-                    if let continuousURL = self.stopContinuousRecorderAndReturnFile() {
+                    if self.strictExactEnabled, self.exactOutputFormat == .aac, self.backgroundPreEncodeEnabled,
+                       let exactURL = self.exactRollingAACURL, FileManager.default.fileExists(atPath: exactURL.path) {
+                        self.log("Using exact rolling AAC for instant exact stop (async)")
+                        finalFileURL = exactURL
+                    } else if let continuousURL = self.stopContinuousRecorderAndReturnFile() {
                         self.log("Continuous recording file ready: \(continuousURL.lastPathComponent)")
                         if let maxDuration = self.maxDuration {
                             self.log("Trimming continuous file to last \(maxDuration)s for exact rolling window (async)")
@@ -759,17 +857,27 @@ class SegmentRollingManager: NSObject {
                         } else {
                             finalFileURL = continuousURL
                         }
+                    } else if self.enablePreMergeRollingFile, let preURL = self.preMergedOutputURL, FileManager.default.fileExists(atPath: preURL.path) {
+                        self.log("Using pre-merged rolling file path (continuous unavailable, async)")
+                        if let maxDuration = self.maxDuration {
+                            finalFileURL = try await self.trimMergedFileAsync(preURL, maxDuration: maxDuration)
+                        } else {
+                            finalFileURL = preURL
+                        }
                     } else {
                         // Fallback: merge segments
-                        self.log("Continuous recorder unavailable - falling back to merging \(self.segmentBuffer.count) segments (async)")
-                        if let lastSegmentURL = self.getLastSegmentURL() {
-                            self.addSegmentToBuffer(lastSegmentURL)
-                        }
+                        self.log("Continuous recorder unavailable - falling back to merging tail segments (async)")
                         guard !self.segmentBuffer.isEmpty else {
                             self.log("Warning: No segments in buffer, this might be a very short recording")
                             throw SegmentRecordingError.noValidSegments
                         }
-                        let mergedFileURL = try await self.mergeSegmentsAsync()
+                        let segments = self.segmentBuffer.toArray()
+                        let neededCount: Int = {
+                            if let maxD = self.maxDuration { return max(1, Int(ceil(maxD / self.segmentDuration)) + 1) }
+                            return segments.count
+                        }()
+                        let tail = Array(segments.suffix(neededCount))
+                        let mergedFileURL = try await self.mergeSpecificSegmentsAsync(tail)
                         if let maxDuration = self.maxDuration {
                             finalFileURL = try await self.trimMergedFileAsync(mergedFileURL, maxDuration: maxDuration)
                         } else {
@@ -1137,6 +1245,10 @@ class SegmentRollingManager: NSObject {
                 // Add completed segment to buffer
                 let segmentURL = self.getSegmentURL(for: self.segmentCounter)
                 self.addSegmentToBuffer(segmentURL)
+                // Schedule background pre-merge update
+                self.schedulePreMergeRollingFile()
+                // Schedule exact background pre-encode if enabled
+                self.scheduleExactRollingPreEncode()
             }
 
             // Move to next segment
@@ -1225,6 +1337,174 @@ class SegmentRollingManager: NSObject {
         if segmentBuffer.count % 5 == 0 || segmentBuffer.count >= effectiveMaxSegments {
             let totalDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
             log("Buffer status: \(segmentBuffer.count)/\(effectiveMaxSegments) segments (maxDuration: \(maxDuration?.description ?? "unlimited")s, total recording: \(totalDuration)s)")
+        }
+
+        // Schedule background pre-merge update whenever buffer changes
+        schedulePreMergeRollingFile()
+        // Schedule exact background pre-encode if enabled
+        scheduleExactRollingPreEncode()
+    }
+
+    // MARK: - Pre-merge Rolling File
+
+    /// Enable/disable pre-merge rolling file optimization
+    func setPreMergeEnabled(_ enabled: Bool) {
+        performQueueSafeOperation { self.enablePreMergeRollingFile = enabled }
+    }
+
+    /// Prefer PCM segments for gapless concatenation (future path with AVAudioEngine)
+    func setPreferPCMForSegments(_ preferPCM: Bool) {
+        performQueueSafeOperation { self.preferPCMForSegments = preferPCM }
+    }
+
+    /// Schedule building/updating the pre-merged rolling file in background
+    private func schedulePreMergeRollingFile() {
+        guard enablePreMergeRollingFile else { return }
+        // Avoid piling up jobs; coalesce
+        if isPreMergeInProgress { return }
+        isPreMergeInProgress = true
+        let snapshot = performQueueSafeOperation { () -> ([URL], TimeInterval?, TimeInterval) in
+            let urls = segmentBuffer.toArray()
+            return (urls, maxDuration, segmentDuration)
+        }
+
+        mergeQueue.async {
+            Task {
+                defer { self.isPreMergeInProgress = false }
+                do {
+                    let outputURL = try await self.buildPreMergedRollingFileAsync(segments: snapshot.0, maxDuration: snapshot.1, segmentDuration: snapshot.2)
+
+                    // Atomically publish the new pre-merged file
+                    self.performQueueSafeOperation {
+                        // Track for later cleanup
+                        if !self.tempOutputFiles.contains(outputURL) { self.tempOutputFiles.append(outputURL) }
+                        self.preMergedOutputURL = outputURL
+                    }
+                } catch {
+                    self.log("Pre-merge build failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Schedule maintaining an exact rolling AAC file (strictExact + backgroundPreEncode)
+    private func scheduleExactRollingPreEncode() {
+        guard strictExactEnabled, exactOutputFormat == .aac, backgroundPreEncodeEnabled else { return }
+        if isExactBuildInProgress { return }
+        guard let maxD = maxDuration else { return }
+
+        // Prefer continuous file as source; if not available yet, skip this cycle
+        guard let sourceURL = continuousOutputURL, FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+
+        isExactBuildInProgress = true
+        let sampleRate = (recordingSettings[AVSampleRateKey] as? NSNumber)?.doubleValue ?? AudioEngineConstants.defaultSampleRate
+
+        exactQueue.async {
+            Task {
+                defer { self.isExactBuildInProgress = false }
+                do {
+                    let exactURL = try await self.buildExactRollingAACAsync(sourceURL: sourceURL, maxDuration: maxD, sampleRate: sampleRate)
+                    self.performQueueSafeOperation {
+                        if !self.tempOutputFiles.contains(exactURL) { self.tempOutputFiles.append(exactURL) }
+                        self.exactRollingAACURL = exactURL
+                    }
+                } catch {
+                    self.log("Exact background pre-encode failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Build an exact-length AAC rolling file by re-encoding last maxDuration seconds
+    private func buildExactRollingAACAsync(sourceURL: URL, maxDuration: TimeInterval, sampleRate: Double) async throws -> URL {
+        let asset = AVAsset(url: sourceURL)
+        let duration = asset.duration.seconds
+        guard duration > 0 else { throw SegmentRecordingError.noValidSegments }
+
+        // Choose a slightly early start to ensure enough frames, then we will rely on writer packet sizes to closely match
+        let startTime = CMTime(seconds: max(0, duration - maxDuration), preferredTimescale: CMTimeScale(sampleRate))
+        let endTime = CMTime(seconds: duration, preferredTimescale: CMTimeScale(sampleRate))
+        let timeRange = CMTimeRange(start: startTime, end: endTime)
+
+        // Reuse fast reader/writer path
+        let tempDir = FileManager.default.temporaryDirectory
+        let outURL = tempDir.appendingPathComponent("exact_rolling_\(Int(Date().timeIntervalSince1970)).m4a")
+        if FileManager.default.fileExists(atPath: outURL.path) { try? FileManager.default.removeItem(at: outURL) }
+        let url = try await trimMergedFileFastAsync(sourceURL, trimmedURL: outURL, timeRange: timeRange)
+        return url
+    }
+
+    /// Build the pre-merged rolling file to reflect the current buffer (takes last maxDuration seconds if set)
+    private func buildPreMergedRollingFileAsync(segments: [URL], maxDuration: TimeInterval?, segmentDuration: TimeInterval) async throws -> URL {
+        guard !segments.isEmpty else { throw SegmentRecordingError.noValidSegments }
+
+        // Select subset covering last maxDuration seconds if provided
+        let selectedSegments: [URL]
+        if let maxD = maxDuration {
+            let neededCount = max(1, Int(ceil(maxD / segmentDuration)) + 1)
+            selectedSegments = Array(segments.suffix(neededCount))
+        } else {
+            selectedSegments = segments
+        }
+
+        // Compose and export to temp file
+        let tempDir = FileManager.default.temporaryDirectory
+        let tempOut = tempDir.appendingPathComponent("rolling_premerged_\(Int(Date().timeIntervalSince1970)).m4a")
+
+        // Build composition
+        let composition = AVMutableComposition()
+        guard let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw SegmentRecordingError.audioTrackCreationFailed
+        }
+
+        var insertTime = CMTime.zero
+        var added = 0
+        for url in selectedSegments {
+            let asset = AVAsset(url: url)
+            if let track = asset.tracks(withMediaType: .audio).first {
+                let range = CMTimeRange(start: .zero, duration: asset.duration)
+                do {
+                    try audioTrack.insertTimeRange(range, of: track, at: insertTime)
+                    insertTime = CMTimeAdd(insertTime, asset.duration)
+                    added += 1
+                } catch {
+                    log("Pre-merge: failed to insert segment \(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }
+        guard added > 0 else { throw SegmentRecordingError.noValidSegments }
+
+        // Try passthrough, then AppleM4A
+        func runExport(preset: String, fileType: AVFileType?) async throws -> URL {
+            guard let export = AVAssetExportSession(asset: composition, presetName: preset) else {
+                throw SegmentRecordingError.exportSessionCreationFailed
+            }
+            export.outputURL = tempOut
+            if let ft = fileType { export.outputFileType = ft }
+            else if export.supportedFileTypes.contains(.m4a) { export.outputFileType = .m4a }
+            return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
+                export.exportAsynchronously {
+                    switch export.status {
+                    case .completed:
+                        cont.resume(returning: tempOut)
+                    case .failed:
+                        cont.resume(throwing: export.error ?? SegmentRecordingError.exportFailed("Unknown export failure"))
+                    case .cancelled:
+                        cont.resume(throwing: SegmentRecordingError.exportFailed("Export cancelled"))
+                    default:
+                        cont.resume(throwing: SegmentRecordingError.exportFailed("\(export.status)"))
+                    }
+                }
+            }
+        }
+
+        do {
+            return try await runExport(preset: AVAssetExportPresetPassthrough, fileType: nil)
+        } catch {
+            log("Pre-merge passthrough failed: \(error.localizedDescription). Falling back to AppleM4A.")
+            // Remove partial
+            if FileManager.default.fileExists(atPath: tempOut.path) { try? FileManager.default.removeItem(at: tempOut) }
+            return try await runExport(preset: AVAssetExportPresetAppleM4A, fileType: .m4a)
         }
     }
 
@@ -1315,6 +1595,53 @@ class SegmentRollingManager: NSObject {
         return outputURL
     }
 
+    /// Merge only specific segment URLs (synchronous)
+    private func mergeSpecificSegments(_ segments: [URL]) throws -> URL {
+        log("Starting mergeSpecificSegments with \(segments.count) segments")
+        guard !segments.isEmpty else { throw SegmentRecordingError.noValidSegments }
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let outputURL = tempDir.appendingPathComponent("merged_tail_\(Int(Date().timeIntervalSince1970)).m4a")
+        tempOutputFiles.append(outputURL)
+
+        let composition = AVMutableComposition()
+        guard let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw SegmentRecordingError.audioTrackCreationFailed
+        }
+
+        var insertTime = CMTime.zero
+        var added = 0
+        for url in segments {
+            let asset = AVAsset(url: url)
+            if let track = asset.tracks(withMediaType: .audio).first {
+                let range = CMTimeRange(start: .zero, duration: asset.duration)
+                do {
+                    try audioTrack.insertTimeRange(range, of: track, at: insertTime)
+                    insertTime = CMTimeAdd(insertTime, asset.duration)
+                    added += 1
+                } catch {
+                    log("Failed to insert segment: \(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }
+        guard added > 0 else { throw SegmentRecordingError.noValidSegments }
+
+        guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
+            throw SegmentRecordingError.exportSessionCreationFailed
+        }
+        export.outputURL = outputURL
+        export.outputFileType = .m4a
+
+        let semaphore = DispatchSemaphore(value: 1)
+        semaphore.wait()
+        export.exportAsynchronously { semaphore.signal() }
+        semaphore.wait()
+        if export.status != .completed {
+            throw SegmentRecordingError.exportFailed("\(export.status)")
+        }
+        return outputURL
+    }
+
     /**
      * Merge all segments asynchronously without blocking the thread. Tries passthrough first, then falls back to AppleM4A.
      */
@@ -1392,6 +1719,87 @@ class SegmentRollingManager: NSObject {
         }
     }
 
+    /// Merge only specific segment URLs (async)
+    private func mergeSpecificSegmentsAsync(_ segments: [URL]) async throws -> URL {
+        guard !segments.isEmpty else { throw SegmentRecordingError.noValidSegments }
+        let tempDir = FileManager.default.temporaryDirectory
+        let outputURL = tempDir.appendingPathComponent("merged_tail_\(Int(Date().timeIntervalSince1970)).m4a")
+        tempOutputFiles.append(outputURL)
+
+        let composition = AVMutableComposition()
+        guard let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw SegmentRecordingError.audioTrackCreationFailed
+        }
+
+        var insertTime = CMTime.zero
+        var added = 0
+        for url in segments {
+            let asset = AVAsset(url: url)
+            if let track = asset.tracks(withMediaType: .audio).first {
+                let range = CMTimeRange(start: .zero, duration: asset.duration)
+                do {
+                    try audioTrack.insertTimeRange(range, of: track, at: insertTime)
+                    insertTime = CMTimeAdd(insertTime, asset.duration)
+                    added += 1
+                } catch {
+                    log("Failed to insert segment: \(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }
+        guard added > 0 else { throw SegmentRecordingError.noValidSegments }
+
+        func runExport(preset: String, fileType: AVFileType?) async throws -> URL {
+            guard let export = AVAssetExportSession(asset: composition, presetName: preset) else {
+                throw SegmentRecordingError.exportSessionCreationFailed
+            }
+            export.outputURL = outputURL
+            if let ft = fileType { export.outputFileType = ft }
+            else if export.supportedFileTypes.contains(.m4a) { export.outputFileType = .m4a }
+            return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
+                export.exportAsynchronously {
+                    switch export.status {
+                    case .completed: cont.resume(returning: outputURL)
+                    case .failed: cont.resume(throwing: export.error ?? SegmentRecordingError.exportFailed("Unknown export failure"))
+                    case .cancelled: cont.resume(throwing: SegmentRecordingError.exportFailed("Export cancelled"))
+                    default: cont.resume(throwing: SegmentRecordingError.exportFailed("\(export.status)"))
+                    }
+                }
+            }
+        }
+
+        do { return try await runExport(preset: AVAssetExportPresetPassthrough, fileType: nil) }
+        catch {
+            log("Tail merge passthrough failed: \(error.localizedDescription). Falling back to AppleM4A.")
+            if FileManager.default.fileExists(atPath: outputURL.path) { try? FileManager.default.removeItem(at: outputURL) }
+            return try await runExport(preset: AVAssetExportPresetAppleM4A, fileType: .m4a)
+        }
+    }
+
+    /// Compose final by remerging tail segments (guarantees last partial included) then trim
+    private func composePreMergedPlusLatestAndTrim(preMergedURL: URL, maxDuration: TimeInterval?) throws -> URL {
+        let segments = segmentBuffer.toArray()
+        let neededCount: Int = {
+            if let maxD = maxDuration { return max(1, Int(ceil(maxD / self.segmentDuration)) + 1) }
+            return segments.count
+        }()
+        let tail = Array(segments.suffix(neededCount))
+        let tailURL = try mergeSpecificSegments(tail)
+        if let maxD = maxDuration { return try trimMergedFile(tailURL, maxDuration: maxD) }
+        return tailURL
+    }
+
+    private func composePreMergedPlusLatestAndTrimAsync(preMergedURL: URL, maxDuration: TimeInterval?) async throws -> URL {
+        let segments = segmentBuffer.toArray()
+        let neededCount: Int = {
+            if let maxD = maxDuration { return max(1, Int(ceil(maxD / self.segmentDuration)) + 1) }
+            return segments.count
+        }()
+        let tail = Array(segments.suffix(neededCount))
+        let tailURL = try await mergeSpecificSegmentsAsync(tail)
+        if let maxD = maxDuration { return try await trimMergedFileAsync(tailURL, maxDuration: maxD) }
+        return tailURL
+    }
+
     /**
      * Trim merged file to specified duration (synchronous version for compatibility)
      *
@@ -1430,11 +1838,12 @@ class SegmentRollingManager: NSObject {
             log("Removed existing trimmed file")
         }
 
-        // Calculate start time to get the last N seconds (matching Android behavior)
-        let startTime = CMTime(seconds: max(0, duration - maxDuration), preferredTimescale: 600)
+        // Safety pad accounts for encoder priming/gap (~50-100 ms). We'll trim a tiny bit extra then export exact range.
+        let safetyPad: Double = 0.1
+        let startTime = CMTime(seconds: max(0, duration - maxDuration - safetyPad), preferredTimescale: 600)
         let endTime = CMTime(seconds: duration, preferredTimescale: 600)
         let timeRange = CMTimeRange(start: startTime, end: endTime)
-        log("Trim range: \(CMTimeGetSeconds(startTime)) to \(CMTimeGetSeconds(endTime)) seconds")
+        log("Trim range (with pad): \(CMTimeGetSeconds(startTime)) to \(CMTimeGetSeconds(endTime)) seconds")
 
         // Create export session
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
@@ -1539,11 +1948,12 @@ class SegmentRollingManager: NSObject {
             log("Removed existing trimmed file")
         }
 
-        // Calculate start time to get the last N seconds (matching Android behavior)
-        let startTime = CMTime(seconds: max(0, duration - maxDuration), preferredTimescale: 600)
+        // Safety pad for encoder priming/gap (~50-100ms)
+        let safetyPad: Double = 0.1
+        let startTime = CMTime(seconds: max(0, duration - maxDuration - safetyPad), preferredTimescale: 600)
         let endTime = CMTime(seconds: duration, preferredTimescale: 600)
         let timeRange = CMTimeRange(start: startTime, end: endTime)
-        log("Trim range: \(CMTimeGetSeconds(startTime)) to \(CMTimeGetSeconds(endTime)) seconds")
+        log("Trim range (with pad): \(CMTimeGetSeconds(startTime)) to \(CMTimeGetSeconds(endTime)) seconds")
 
         // Helper to try export with preset and timeout
         func tryExport(_ preset: String, _ fileType: AVFileType?) async throws -> URL {
@@ -1915,6 +2325,10 @@ class SegmentRollingManager: NSObject {
                 try? FileManager.default.removeItem(at: url)
             }
             tempOutputFiles.removeAll()
+            if let preURL = preMergedOutputURL {
+                try? FileManager.default.removeItem(at: preURL)
+                preMergedOutputURL = nil
+            }
 
             // Stop and release continuous recorder as well
             if let recorder = continuousRecorder {
