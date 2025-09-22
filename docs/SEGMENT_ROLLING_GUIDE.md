@@ -36,13 +36,14 @@ When you provide a `maxDuration` parameter, the system:
 
 ### iOS Implementation
 
-- Uses `AVAudioRecorder` for segment recording
+- Uses `AVAudioRecorder` for segment recording and a continuous full-session file for instant availability
 - `SegmentRollingManager` handles segment rotation and buffer management
-- `AVAssetExportSession` for high-quality audio merging and precision trimming
+- Maintains an exact rolling `.m4a` (AAC) in the background by re-encoding the last `maxDuration` seconds while recording (strict-exact mode, enabled by default)
+- On stop: instantly returns the exact rolling `.m4a` when available; otherwise falls back to continuous+trim
 - Thread-safe operations with dispatch queues
 - Automatic cleanup of temporary segment files
 - Rolling buffer management keeps only recent segments in memory
-- Post-recording trimming for exact duration output
+- Exact duration guarantee: final output equals `maxDuration` seconds when the session exceeded that duration
 
 ### Android Implementation
 
@@ -56,7 +57,7 @@ When you provide a `maxDuration` parameter, the system:
 
 ## Usage Examples
 
-### Basic Usage
+### Basic Usage (iOS defaults to exact `.m4a` + background pre-encode)
 
 ```typescript
 import { CapacitorAudioEngine } from '@capacitor-community/audio-engine';
@@ -73,9 +74,9 @@ await CapacitorAudioEngine.startRecording({
 await CapacitorAudioEngine.pauseRecording();
 await CapacitorAudioEngine.resumeRecording();
 
-// Stop recording - automatically merges all buffered segments
+// Stop recording - returns exact last maxDuration seconds instantly on iOS
 const result = await CapacitorAudioEngine.stopRecording();
-console.log('Final recording duration:', result.duration); // Duration of segments that were kept in buffer
+console.log('Final recording duration:', result.duration); // On iOS equals maxDuration when total recorded time > maxDuration
 ```
 
 ### Long Recording with Efficient Storage
@@ -349,9 +350,9 @@ async function startLongInterview() {
 5. **Recording Stop**: Merges all segments currently in buffer into single file
 6. **Final Output**: Returns merged file containing segments that were kept in the rolling buffer
 
-### Audio Merging Process
+### Audio Merging / Finalization Process
 
-- **iOS**: Uses `AVAssetExportSession` with `AVMutableComposition` for high-quality segment merging
+- **iOS**: Maintains a background exact rolling `.m4a` (AAC) while recording; on stop, returns it instantly. Falls back to continuous+precision trim when needed. Internally uses `AVAssetReader/Writer` for exact-length encoding and `AVAssetExportSession` for fallbacks.
 - **Android**: Uses `MediaMuxer` with `MediaExtractor` for segment merging
 - **Quality**: Lossless merging preserves original audio quality
 - **Format**: Output is always M4A with AAC encoding
@@ -361,7 +362,7 @@ async function startLongInterview() {
 
 - **Memory**: Low memory usage - only segment metadata kept in memory
 - **Storage**: Dynamic storage based on `maxDuration` - never exceeds `ceil(maxDuration/30) * segment_size`
-- **CPU**: Minimal overhead for segment rotation (every 30 seconds) and trimming (only on stop)
+- **CPU**: Minimal overhead for segment rotation (every 30 seconds). On iOS, background pre-encode to exact `.m4a` adds moderate steady CPU but keeps stop instant; on Android, trimming is done after stop.
 - **Battery**: Similar to normal recording, no significant impact
 - **Efficiency**: Old segments deleted immediately, no accumulation of unused files
 
