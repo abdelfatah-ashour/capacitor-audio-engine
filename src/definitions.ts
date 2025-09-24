@@ -37,7 +37,8 @@ export type AudioRecordingEventName =
   | 'waveLevelInit'
   | 'waveLevelDestroy'
   | 'waveLevelError'
-  | 'permissionStatusChanged';
+  | 'permissionStatusChanged'
+  | 'segmentCompleted';
 export type AudioPlaybackEventName =
   | 'trackChanged'
   | 'trackEnded'
@@ -66,6 +67,7 @@ export type AudioRecordingEventMap = {
   waveLevelDestroy: WaveLevelDestroyData;
   waveLevelError: ErrorEventData;
   permissionStatusChanged: PermissionStatusChangedData;
+  segmentCompleted: SegmentCompletedData;
 };
 
 export type AudioPlaybackEventMap = {
@@ -111,6 +113,11 @@ export interface PermissionStatusChangedData {
   status: PermissionStatus;
   previousStatus?: PermissionStatus;
   message?: string;
+}
+
+export interface SegmentCompletedData {
+  segmentIndex: number;
+  duration: number;
 }
 
 export interface AudioTrack {
@@ -210,7 +217,7 @@ export interface RecordingOptions {
   /**
    * Maximum recording duration in seconds.
    * When set, enables segment rolling mode:
-   * - Records in multi-minute segments (2–5 minutes each, default 5 minutes)
+   * - Records in 1-minute segments internally for optimal performance
    * - Maintains a rolling buffer based on the specified max duration
    * - Automatically finalizes prior segments; stop only closes the current segment for minimal latency
    * If not set, segment rolling still improves performance by recording in segments, and the final file will include the full session.
@@ -219,10 +226,11 @@ export interface RecordingOptions {
   /**
    * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
    *
-   * Enhanced Recording Features:
-   * - Automatic segment rolling (multi-minute segments, default 5 minutes) for improved reliability and minimal stop latency
+   * Enhanced Recording Features (iOS):
+   * - Rolling segment recording (1-minute segments) for instant stop availability
+   * - Pre-merge background processing maintains ready-to-go merged file
    * - Rolling window retention based on maxDuration for efficient memory usage
-   * - Automatic segment merging when needed (most stops only close the current segment)
+   * - Stop recording always completes in < 1 second regardless of recording duration
    * - Better handling of long recording sessions and interruptions
    */
 }

@@ -22,7 +22,14 @@ internal struct AudioEngineConstants {
     static let resourceTimeout: TimeInterval = 120.0
     static let networkCheckTimeout: TimeInterval = 2.0
 
-    // MARK: - Legacy (removed segment rolling) - intentionally omitted
+    // MARK: - Rolling Recording Configuration
+
+    /// Fixed segment length for rolling recording (1 minute)
+    /// This is an internal implementation detail and cannot be configured by the client
+    static let segmentLength: TimeInterval = 60.0
+
+    /// Default maximum segments to keep in memory (for memory management)
+    static let defaultMaxSegments: Int = 10
 
     // MARK: - Performance Constants
     static let minValidFileSize: Int64 = 100  // Minimum file size to consider valid

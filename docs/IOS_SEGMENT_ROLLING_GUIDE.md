@@ -1,125 +1,70 @@
-# 🎤 Segment-Rolling iOS
+## Requirements Recap
 
-## Rolling Segments with Rotation
+1. **Long recording** — The recorder can run indefinitely.
 
-1. Record in compressed format directly (**AAC in M4A**) → efficient, small memory footprint, avoids uncompressed PCM overhead.
-   - Use **AVAudioRecorder** (simpler) or **AVAssetWriter** (recommended for precise control).
+2. **Keep only the last `X` duration** — Memory/disk shouldn’t grow endlessly.
 
-2. **Segment recording**:
-   - Write audio in **rolling segments** (default **1 minute** each; configurable **1–5 minutes** recommended).
-   - Keep only the **last N completed segments** that cover total duration `X`.
-   - Do **not** count the currently active segment toward retention.
-   - Example: if `X = 20 minutes`, with 1-minute files → keep last **20 completed segments**.
-   - When a new segment starts, delete only the one that falls out of the retention window.
-   - Old segments are deleted automatically to save space.
-
-3. **On stop recording (Pre-Merged Rolling File)**:
-   - Maintain a **rolling merged file** (`rollingMerged.m4a`) during recording by appending each completed segment.
-   - If merged duration exceeds `X`, **head-trim** the merged file by the overflow → keep only the last `X` minutes.
-   - On stop:
-     - Finalize the active segment
-     - Append it once
-     - Trim if needed
-     - Return the merged file (rename/copy).
-   - Stop time is near-constant and very small.
+3. **Instant final file on stop** — When the user taps stop, we must already have the merged file for the last `X` seconds, without a long wait.
 
 ---
 
-## 🔹 Options & Trade-offs
+## Core Challenges
 
-**Rolling segments (with pre-merged file) — recommended**
+- iOS `AVAudioRecorder` doesn’t support "rolling buffer" out-of-the-box.
 
-- ✅ Simple, efficient
-- ✅ Easy to manage memory/disk
-- ✅ Near-constant, sub-second stop latency
-- ✅ Work amortized during recording (append per segment)
-- ⚠️ Slight extra I/O at each rotation (append + occasional head-trim)
+- If you record a single file and then trim the last `X` seconds on stop, you’ll block the UI (slow export for long recordings).
+
+- The solution must **pre-merge** or maintain rolling segments, so that stop is instant.
 
 ---
 
-## 🔹 Suggested Implementation in Plugin
+## Best Strategy: Rolling Segments + Pre-Merge
 
-- Expose Capacitor plugin API like:
+### How it works:
 
-```ts
-startRecording(options?: RecordingOptions): Promise<void>;
-stopRecording(): Promise<AudioFileInfo>;
-```
+1. **Segment Rolling**
+   - Record into **short segments** (e.g., 30s or 1min) using `AVAssetWriter`.
 
-### Under the hood (iOS):
+   - Store them in a queue (`Deque`/`CircularBuffer`).
 
-    - Use AVAssetWriter → AAC/M4A, chunk duration = 1–5 mins.
-    - Maintain a queue of completed segments (for retention) and a rolling merged file (rollingMerged.m4a).
-    - On rotation:
-      - Finalize active segment
-      - Append to merged file
-      - If merged duration > X, head-trim overflow
-      - Delete oldest segment if out of window
-    - On stop:
-      - Finalize active segment
-      - Append once
-      - Optional head-trim
+   - Once the max total duration exceeds `X`, drop the oldest segment.
 
-### 🔄 Recording Lifecycle Flow (iOS)
+2. **Pre-Merge (Background Merge)**
+   - Maintain a **background task** that incrementally merges these segments into a **pre-merged file** (always representing the last `X` seconds).
 
-    ```txt
-    ┌───────────────────────┐
-    │   startRecording()    │
-    └───────────┬───────────┘
-                │
-                ▼
-      ┌──────────────────┐
-      │ Write Segment #1 │ (AVAssetWriter)
-      └───────┬──────────┘
-              │
-              ▼
-      ┌──────────────────┐
-      │ Write Segment #2 │
-      └───────┬──────────┘
-              │
-              ▼
-      ┌──────────────────┐
-      │ Rolling Queue     │
-      │ Keep last N files │ (completed only)
-      │ Delete old files  │
-      └───────┬──────────┘
-              │
-              ▼
-    ┌───────────────────────┐
-    │   stopRecording()     │
-    └───────────┬───────────┘
-                │
-                ▼
-      ┌──────────────────┐
-      │ Append active    │
-      │ Head-trim if > X │
-      │ Return merged    │
-      └───────┬──────────┘
-              │
-              ▼
-      ┌──────────────────┐
-      │ Return final file │
-      └──────────────────┘
-    ```
+   - This way, the file is "ready-to-go" at any moment.
 
-#### 🚀 Recommendation
+3. **Stop Recording**
+   - On stop, simply return the latest **pre-merged file**.
 
-    - Use rolling AAC/M4A segments + pre-merged rolling file, updated at each rotation (append + trim).
-    - On stop, perform one last append and return instantly.
+   - No additional merge/export step → instant availability.
 
-#### This ensures:
+---
 
-    - Long recordings without memory/disk blowup
-    - Always keeping only the last X minutes
-    - Near-instant stop time, independent of session length
+## Implementation Notes
 
-#### ⚙️ Practical Settings (iOS)
+- **Recording**
+  - Use `AVAssetWriter` or `AVAudioEngine` with `AVAudioFile` to record compressed format (AAC in `.m4a`).
 
-      - Segment length: 2–5 minutes for fewer appends; 1 minute is fine if stop latency is acceptable.
-      - Bitrate: 96–128 kbps AAC (optimized for voice, reduces I/O).
-      - Storage: Use app sandbox (Documents/Library) for throughput.
-      - Background mode: Enable Audio background capability in Xcode.
+  - Avoid PCM/WAV unless absolutely needed (huge size).
 
-#### 👉 Best balance for iOS:
+- **Segment Rolling**
+  - Fixed segment length (1 minute) for optimal performance.
 
-Rolling AAC/M4A segments + pre-merged rolling file, with append + trim per rotation, and a single append at stop.
+  - Use a `DispatchQueue` for safe background file handling.
+
+- **Pre-Merge**
+  - Each time a segment finishes, enqueue a background task:
+    - Concatenate segments into a **temp "pre-merged.m4a"** file.
+
+    - Replace old pre-merged file once ready.
+
+  - Keep only `⌈X/segment_length⌉ + 1` files max.
+
+- **Capacitor Plugin**
+  - Expose methods:
+    - `startRecording(maxDuration?: number)` - maxDuration for rolling window
+
+    - `stopRecording()` → returns URI of ready file
+
+    - (optional) `onSegmentReady` for debug
