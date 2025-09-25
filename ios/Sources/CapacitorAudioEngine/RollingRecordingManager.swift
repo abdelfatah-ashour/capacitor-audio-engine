@@ -234,7 +234,7 @@ class RollingRecordingManager: NSObject {
         do {
             // Configure audio session
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try session.setPreferredSampleRate(Double(sampleRate))
             try? session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true)

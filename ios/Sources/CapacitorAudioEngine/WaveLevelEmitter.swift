@@ -168,7 +168,7 @@ class WaveLevelEmitter {
 
             // Configure audio session for recording
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.record, mode: .measurement, options: [])
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try audioSession.setActive(true)
 
             // Install tap on input node for real-time audio processing

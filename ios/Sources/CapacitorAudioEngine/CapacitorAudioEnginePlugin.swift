@@ -628,7 +628,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         // Reconfigure audio session for optimal playback after recording
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             // Ensure session is active for potential immediate playback
             try audioSession.setActive(true)
             log("Audio session reconfigured for playback after recording")

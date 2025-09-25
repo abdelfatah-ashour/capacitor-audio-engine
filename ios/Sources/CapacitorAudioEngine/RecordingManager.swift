@@ -186,7 +186,7 @@ class RecordingManager: NSObject {
         do {
             // Configure audio session
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try session.setPreferredSampleRate(Double(sampleRate))
             try? session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true)
@@ -907,7 +907,7 @@ class RecordingManager: NSObject {
         if let session = recordingSession {
             do {
                 // Maintain .playAndRecord configuration for seamless recording-to-playback transition
-                try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
                 // Keep session active for immediate playback capability
                 try session.setActive(true)
                 log("Audio session maintained for seamless playback transition")
@@ -928,7 +928,7 @@ class RecordingManager: NSObject {
 
         if #available(iOS 14.0, *) {
             do {
-                try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
+                try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
                 try audioSession.setActive(true)
 
                 let availableInputs = audioSession.availableInputs ?? []
