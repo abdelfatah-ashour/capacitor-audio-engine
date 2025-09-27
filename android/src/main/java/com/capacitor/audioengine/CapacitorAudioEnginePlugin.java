@@ -70,6 +70,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
     // Rolling segments manager (Android-only enhancement)
     private RollingRecordingManager rollingRecordingManager;
+    private Integer originalMaxDuration; // Store original maxDuration for resume after reset
 
     // Thread management
     private Handler mainHandler;
@@ -294,6 +295,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
         if (maxDuration != null && maxDuration > 0) {
             Log.d(TAG, "Starting rolling segment recording with maxDuration: " + maxDuration + " seconds");
+            // Store original maxDuration for potential resume after reset
+            originalMaxDuration = maxDuration;
             try {
                 // Initialize and start rolling segments
                 rollingRecordingManager = new RollingRecordingManager(getContext(), fileManager, recordingConfig, maxDuration);
@@ -322,6 +325,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             }
         } else {
             Log.d(TAG, "Starting simple single-file recording without duration limit");
+            // Clear maxDuration for simple recording
+            originalMaxDuration = null;
             // Start simple single-file recording
             try {
                 startSimpleRecording();
@@ -347,48 +352,108 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
     @PluginMethod
     public void resetRecording(PluginCall call) {
-        // Ensure there is an active recording session context to reset
+        // Ensure there is an active recording session to reset
         if (!isRecording) {
             call.reject("No active recording session to reset");
             return;
         }
 
         try {
-            // Stop current recording and discard the file
-            if (mediaRecorder != null && mediaRecorder.isRecording()) {
-                mediaRecorder.stopSafely();
+            // Pause recording first
+            pauseRecordingInternal(null);
+
+            Log.d(TAG, "Resetting recording session - discarding current recording data");
+
+            // Clean up recording files and reset managers
+            if (rollingRecordingManager != null && rollingRecordingManager.isActive()) {
+                // For rolling recording, stop and clean up files but keep manager for resume
+                try {
+                    // Stop current recording
+                    rollingRecordingManager.cleanup();
+                    // Clean up segment files and merged files
+                    cleanUpRecordingFiles();
+                    Log.d(TAG, "Rolling recording files cleaned up");
+                } catch (Exception e) {
+                    Log.w(TAG, "Error cleaning up rolling recording files", e);
+                }
+                // Keep rollingRecordingManager = null for now, will be recreated on resume
+                rollingRecordingManager = null;
+            } else if (mediaRecorder != null) {
+                // For simple recording, stop and delete current file
+                if (mediaRecorder.isRecording()) {
+                    mediaRecorder.stopSafely();
+                }
                 // Delete the current recording file since we're resetting
-                if (currentRecordingFile != null && currentRecordingFile.exists()) {
-                    if (!currentRecordingFile.delete()) {
-                        Log.w(TAG, "Failed to delete recording file during reset: " + currentRecordingFile.getName());
+                if (mediaRecorder.getCurrentOutputFile() != null && mediaRecorder.getCurrentOutputFile().exists()) {
+                    boolean deleted = mediaRecorder.getCurrentOutputFile().delete();
+                    Log.d(TAG, "Current recording file deleted: " + deleted);
+                }
+                mediaRecorder.release();
+                mediaRecorder = null;
+                Log.d(TAG, "Simple recording stopped and discarded");
+            }
+
+            // Reset duration monitor (resetDuration already handles stopping and resetting)
+            if (durationMonitor != null) {
+                durationMonitor.resetDuration();
+                Log.d(TAG, "Duration monitor reset to 0");
+            }
+
+            // Stop waveform monitoring to clear UI data
+            if (waveLevelEmitter != null) {
+                waveLevelEmitter.stopMonitoring();
+                Log.d(TAG, "Wave level monitoring stopped for reset");
+            }
+
+            // Keep isRecording = true to maintain session state
+            // Reset to paused state so user can resume or start fresh
+            JSObject resetData = new JSObject();
+            resetData.put("duration", 0.0);
+            resetData.put("isRecording", true); // Session remains active and resumable
+            resetData.put("status", "paused");
+            eventManager.emitRecordingStateChange("paused", resetData);
+
+            Log.d(TAG, "Recording session reset successfully - ready for new recording");
+            call.resolve();
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to reset recording", e);
+            call.reject("Failed to reset recording: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Clean up recording files (segments and merged files)
+     */
+    private void cleanUpRecordingFiles() {
+        try {
+            File recordingsDir = fileManager.getRecordingsDirectory();
+            File segmentsDir = new File(recordingsDir, "segments");
+
+            if (segmentsDir.exists()) {
+                File[] segmentFiles = segmentsDir.listFiles();
+                if (segmentFiles != null) {
+                    for (File file : segmentFiles) {
+                        if (file.isFile() && (file.getName().endsWith(".m4a") || file.getName().startsWith("seg_") || file.getName().startsWith("rollingMerged"))) {
+                            boolean deleted = file.delete();
+                            Log.d(TAG, "Deleted recording file: " + file.getName() + " - " + deleted);
+                        }
                     }
                 }
             }
 
-            // Reset duration monitor
-            if (durationMonitor != null) {
-                durationMonitor.resetDuration();
+            // Also clean up any temporary files in the main recordings directory
+            File[] recordingFiles = recordingsDir.listFiles();
+            if (recordingFiles != null) {
+                for (File file : recordingFiles) {
+                    if (file.isFile() && (file.getName().startsWith("recording_") || file.getName().startsWith("temp_"))) {
+                        boolean deleted = file.delete();
+                        Log.d(TAG, "Deleted temp recording file: " + file.getName() + " - " + deleted);
+                    }
+                }
             }
-
-            // Discard waves by stopping wave level monitoring (frontend should clear visualization on waveLevelDestroy)
-            if (waveLevelEmitter != null) {
-                waveLevelEmitter.stopMonitoring();
-                Log.d(TAG, "Wave level monitoring stopped (waves discarded)");
-            }
-
-            // Keep recordingConfig/maxDuration for resume; mark session as paused state
-            if (eventManager != null) {
-                JSObject pauseData = new JSObject();
-                pauseData.put("duration", 0.0);
-                pauseData.put("isRecording", true); // Session remains active and resumable
-                pauseData.put("status", "paused");
-                eventManager.emitRecordingStateChange("paused", pauseData);
-            }
-
-            call.resolve();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to reset recording", e);
-            call.reject("Failed to reset recording: " + e.getMessage());
+            Log.w(TAG, "Error cleaning up recording files", e);
         }
     }
 
@@ -1604,30 +1669,68 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         }
 
         try {
-            // Resume media recorder (if supported)
-            if (mediaRecorder != null && mediaRecorder.isRecording()) {
-                // Note: Standard MediaRecorder doesn't support pause/resume
-                // For now, we'll just resume the duration monitor and wave level monitoring
-                Log.d(TAG, "Resuming recording (duration and wave monitoring)");
-            }
+            // Check if recording infrastructure was reset (both managers are null)
+            if (mediaRecorder == null && rollingRecordingManager == null) {
+                Log.d(TAG, "Recording infrastructure was reset, restarting recording...");
 
-            // Resume duration monitoring
-            if (durationMonitor != null) {
-                durationMonitor.resumeDuration();
-            }
+                // Restart recording based on the original configuration
+                if (recordingConfig != null) {
+                    if (originalMaxDuration != null && originalMaxDuration > 0) {
+                        // Restart rolling recording with original maxDuration
+                        Log.d(TAG, "Restarting rolling recording after reset with maxDuration: " + originalMaxDuration);
+                        try {
+                            rollingRecordingManager = new RollingRecordingManager(getContext(), fileManager, recordingConfig, originalMaxDuration);
+                            rollingRecordingManager.start();
 
-            // Resume wave level monitoring
-            if (waveLevelEmitter != null) {
-                try {
-                    if (!waveLevelEmitter.isMonitoring()) {
-                        waveLevelEmitter.startMonitoring();
-                        Log.d(TAG, "Wave level monitoring started");
+                            // Start duration monitoring and service
+                            if (durationMonitor != null) {
+                                durationMonitor.resetDuration();
+                                durationMonitor.startMonitoring();
+                            }
+                            startRecordingService();
+
+                            // Wave levels
+                            if (waveLevelEmitter != null) {
+                                waveLevelEmitter.startMonitoring();
+                                Log.d(TAG, "Wave level monitoring started (rolling)");
+                            }
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to restart rolling recording after reset", e);
+                            if (call != null) call.reject("Failed to restart rolling recording: " + e.getMessage());
+                            return;
+                        }
                     } else {
-                        waveLevelEmitter.resumeMonitoring();
-                        Log.d(TAG, "Wave level monitoring resumed");
+                        // Restart simple recording
+                        Log.d(TAG, "Restarting simple recording after reset");
+                        startSimpleRecording();
                     }
-                } catch (Exception e) {
-                    Log.w(TAG, "Unable to start/resume wave level monitoring", e);
+                } else {
+                    Log.e(TAG, "Cannot resume recording - no recording configuration available");
+                    if (call != null) call.reject("Cannot resume recording - no configuration available");
+                    return;
+                }
+            } else {
+                // Normal resume - just resume monitoring
+                Log.d(TAG, "Resuming existing recording (duration and wave monitoring)");
+
+                // Resume duration monitoring
+                if (durationMonitor != null) {
+                    durationMonitor.resumeDuration();
+                }
+
+                // Resume wave level monitoring
+                if (waveLevelEmitter != null) {
+                    try {
+                        if (!waveLevelEmitter.isMonitoring()) {
+                            waveLevelEmitter.startMonitoring();
+                            Log.d(TAG, "Wave level monitoring started");
+                        } else {
+                            waveLevelEmitter.resumeMonitoring();
+                            Log.d(TAG, "Wave level monitoring resumed");
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Unable to start/resume wave level monitoring", e);
+                    }
                 }
             }
 
