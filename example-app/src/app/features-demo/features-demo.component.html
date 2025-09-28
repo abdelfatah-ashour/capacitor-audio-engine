@@ -222,7 +222,29 @@
             </ion-chip>
 
             @if (recordingDuration() > 0) {
-              <ion-note>{{ formattedDuration() }}</ion-note>
+              <ion-note>
+                {{ formattedDuration() }}
+                @if (
+                  showTrimOptions() &&
+                  trimLastSeconds() > 0 &&
+                  recordingDuration() > trimLastSeconds()
+                ) {
+                  <span class="trim-indicator"> → {{ effectiveDuration() }}</span>
+                }
+              </ion-note>
+            }
+
+            @if (showTrimOptions() && trimLastSeconds() > 0) {
+              <ion-chip color="warning" size="small">
+                <ion-icon name="cut"></ion-icon>
+                <ion-label>Auto-trim: Last {{ trimLastSeconds() }}s</ion-label>
+              </ion-chip>
+            }
+
+            @if (showTrimOptions() && recordingDuration() > 0) {
+              <ion-note class="trim-preview">
+                {{ getTrimPreview() }}
+              </ion-note>
             }
           </div>
 
@@ -406,6 +428,47 @@
                     </ion-grid>
                   </ion-item>
                 }
+
+                <!-- Trimming Options -->
+                <ion-item>
+                  <ion-checkbox
+                    [checked]="showTrimOptions()"
+                    (ionChange)="toggleTrimOptions()"
+                  ></ion-checkbox>
+                  <ion-label class="ion-margin-start">Enable Auto-Trim on Stop</ion-label>
+                </ion-item>
+
+                @if (showTrimOptions()) {
+                  <ion-item>
+                    <ion-label>Keep Last (seconds)</ion-label>
+                    <ion-note>{{ trimLastSeconds() }}s</ion-note>
+                  </ion-item>
+                  <ion-item>
+                    <ion-grid>
+                      <ion-row>
+                        @for (trim of trimOptions; track trim.value) {
+                          <ion-col size="2">
+                            <ion-button
+                              size="small"
+                              [fill]="trimLastSeconds() === trim.value ? 'solid' : 'outline'"
+                              [color]="trimLastSeconds() === trim.value ? 'primary' : 'medium'"
+                              (click)="updateTrimLastSeconds(trim.value)"
+                            >
+                              {{ trim.label }}
+                            </ion-button>
+                          </ion-col>
+                        }
+                      </ion-row>
+                    </ion-grid>
+                  </ion-item>
+                  <ion-note color="medium">
+                    <small>
+                      When stopping recording, automatically trim to keep only the last X seconds.
+                      Start is always 0, end is calculated as (current duration - keep last
+                      seconds).
+                    </small>
+                  </ion-note>
+                }
               </ion-card-content>
             </ion-card>
           }
@@ -490,6 +553,12 @@
                         @if (file.isSegmentRolled) {
                           <ion-chip color="primary" size="small">
                             <ion-label>Segment Rolled</ion-label>
+                          </ion-chip>
+                        }
+                        @if (file.filename.includes('trimmed')) {
+                          <ion-chip color="warning" size="small">
+                            <ion-icon name="cut"></ion-icon>
+                            <ion-label>Auto-trimmed</ion-label>
                           </ion-chip>
                         }
                         @if (isFilePreloaded(file.uri)) {

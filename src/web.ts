@@ -118,10 +118,14 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
 
   /**
    * Stop the current recording and get the recorded file information.
+   * @param options - Optional stop recording options
+   * @param options.start - Optional start time in seconds for trimming (from max duration)
+   * @param options.end - Optional end time in seconds for trimming (from max duration)
    * @returns Promise that resolves with the recorded audio file details
    * @platform web Not supported
    */
-  async stopRecording(): Promise<AudioFileInfo> {
+  async stopRecording(options?: { start?: number; end?: number }): Promise<AudioFileInfo> {
+    void options; // Parameter for API compatibility
     console.warn(
       'stopRecording is not supported on web platform. For web implementation, consider using MediaRecorder API directly.',
     );

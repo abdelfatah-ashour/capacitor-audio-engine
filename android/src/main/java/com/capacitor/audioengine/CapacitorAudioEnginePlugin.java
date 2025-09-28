@@ -460,7 +460,11 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @PluginMethod
     public void stopRecording(PluginCall call) {
         try {
-            JSObject result = stopRecordingInternal();
+            // Get optional trimming parameters
+            Double startTime = call.getDouble("start");
+            Double endTime = call.getDouble("end");
+
+            JSObject result = stopRecordingInternal(startTime, endTime);
             call.resolve(result);
         } catch (Exception e) {
             Log.e(TAG, "Failed to stop recording", e);
@@ -473,6 +477,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
      * Used by both the public stopRecording method and the max duration callback
      */
     private JSObject stopRecordingInternal() throws Exception {
+        return stopRecordingInternal(null, null);
+    }
+
+    /**
+     * Internal method to stop recording with optional trimming parameters
+     * Used by both the public stopRecording method and the max duration callback
+     */
+    private JSObject stopRecordingInternal(Double startTime, Double endTime) throws Exception {
         long stopStartNs = System.nanoTime();
         // Check if any recording is active
         if (!isRecording) {
@@ -535,14 +547,37 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         isRecording = false;
         rollingRecordingManager = null;
 
+        // Apply trimming if start and end parameters are provided
+        String finalFilePath = fileToReturn;
+        if (startTime != null && endTime != null && startTime >= 0 && endTime > startTime) {
+            try {
+                Log.d(TAG, "Trimming recording from " + startTime + "s to " + endTime + "s");
+                long trimStartNs = System.nanoTime();
+
+                // Create trimmed file
+                File trimmedFile = fileManager.createProcessedFile("trimmed");
+                AudioFileProcessor.trimAudioFile(new File(fileToReturn), trimmedFile, startTime, endTime);
+
+                long trimEndNs = System.nanoTime();
+                Log.i(TAG, "[Stop] Trimming time: " + ((trimEndNs - trimStartNs) / 1_000_000) + " ms");
+
+                // Use trimmed file as final result
+                finalFilePath = trimmedFile.getAbsolutePath();
+                Log.d(TAG, "Recording trimmed successfully: " + trimmedFile.getName());
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to trim recording, using original file", e);
+                // Continue with original file if trimming fails
+            }
+        }
+
         // Get file info and return - with actual duration calculation
         long infoStartNs = System.nanoTime();
-        JSObject response = createFileInfoWithDuration(fileToReturn);
+        JSObject response = createFileInfoWithDuration(finalFilePath);
         long infoEndNs = System.nanoTime();
         Log.i(TAG, "[Stop] File info time: " + ((infoEndNs - infoStartNs) / 1_000_000) + " ms");
         long stopEndNs = System.nanoTime();
         Log.i(TAG, "[Stop] Total stop processing time: " + ((stopEndNs - stopStartNs) / 1_000_000) + " ms");
-        Log.d(TAG, "Recording stopped - File: " + new File(fileToReturn).getName());
+        Log.d(TAG, "Recording stopped - File: " + new File(finalFilePath).getName());
 
         return response;
     }

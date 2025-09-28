@@ -269,8 +269,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     @objc func stopRecording(_ call: CAPPluginCall) {
-        // Store the call to resolve it when recording finishes
+        // Get optional trimming parameters
+        let startTime = call.getDouble("start")
+        let endTime = call.getDouble("end")
+
+        // Store the call and trimming parameters to resolve it when recording finishes
         pendingStopRecordingCall = call
+        recordingManager.setTrimmingParameters(start: startTime, end: endTime)
 
         // Set up a timeout to ensure the call is resolved even if trimming takes too long
         let timeoutTask = DispatchWorkItem { [weak self] in

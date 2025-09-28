@@ -291,6 +291,10 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   protected readonly recordedFiles = signal<AudioFileInfoWithMetadata[]>([]);
   protected readonly selectedAudioInfo = signal<AudioFileInfoWithMetadata | null>(null);
 
+  // Trimming signals
+  protected readonly trimLastSeconds = signal<number>(0);
+  protected readonly showTrimOptions = signal<boolean>(false);
+
   // Per-URL Playback signals
   protected readonly trackPlaybackStates = signal<Map<string, PlaybackInfo>>(new Map());
   protected readonly preloadedTracks = signal<Set<string>>(new Set());
@@ -376,6 +380,15 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     { value: 1800, label: '30m' },
   ];
 
+  protected readonly trimOptions = [
+    { value: 0, label: 'No trim' },
+    { value: 5, label: 'Last 5s' },
+    { value: 10, label: 'Last 10s' },
+    { value: 15, label: 'Last 15s' },
+    { value: 30, label: 'Last 30s' },
+    { value: 60, label: 'Last 1m' },
+  ];
+
   // Computed signals
   protected readonly canRecord = computed(
     () => this.hasPermission() && this.recordingStatus() === 'idle'
@@ -398,6 +411,16 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   });
 
   protected readonly formattedDuration = computed(() => this.formatTime(this.recordingDuration()));
+
+  protected readonly effectiveDuration = computed(() => {
+    const duration = this.recordingDuration();
+    const trimLast = this.trimLastSeconds();
+
+    if (trimLast > 0 && duration > trimLast) {
+      return this.formatTime(trimLast);
+    }
+    return this.formatTime(duration);
+  });
 
   // Waveform computed signals
   protected readonly normalizedWaveformHistory = computed(() => {
@@ -619,6 +642,14 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       });
 
       this.recordingStatus.set('recording');
+      this.recordingDuration.set(0);
+      this.waveformHistory.set([]);
+      this.maxWaveformLevel.set(0);
+
+      // Reset trim options when starting new recording
+      this.trimLastSeconds.set(0);
+      this.showTrimOptions.set(false);
+
       await this.showToast('Recording started', 'success');
       this.setupRecordingEventListeners();
       this.startDurationTimer();
@@ -656,8 +687,23 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     this.recordingDuration.set(0);
 
     try {
-      const result = await CapacitorAudioEngine.stopRecording();
+      const currentDuration = this.recordingDuration();
+      const trimLastSeconds = this.trimLastSeconds();
+
+      let result: AudioFileInfo;
+
+      result = await CapacitorAudioEngine.stopRecording({
+        start: 0,
+        end: 10,
+      });
+
+      await this.showToast(
+        `Recording stopped and trimmed (kept last ${trimLastSeconds}s)`,
+        'success'
+      );
+
       console.log('🚀 ~ FeaturesDemoComponent ~ stopRecording ~ result:', result);
+
       // Add metadata for segment rolling demo
       const fileWithMetadata: AudioFileInfoWithMetadata = {
         ...result,
@@ -666,7 +712,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       };
 
       this.recordedFiles.update(files => [...files, fileWithMetadata]);
-      await this.showToast('Recording stopped and saved', 'success');
     } catch (error: any) {
       console.error('Failed to stop recording:', error);
       // Only show toast if it's not a "no active recording" error (which can happen with multiple clicks)
@@ -1263,6 +1308,25 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   updateMaxDuration(value: number): void {
     this.maxDurationSeconds.set(value);
+  }
+
+  updateTrimLastSeconds(value: number): void {
+    this.trimLastSeconds.set(value);
+  }
+
+  toggleTrimOptions(): void {
+    this.showTrimOptions.update(show => !show);
+  }
+
+  getTrimPreview(): string {
+    const duration = this.recordingDuration();
+    const trimLast = this.trimLastSeconds();
+
+    if (trimLast > 0 && duration > trimLast) {
+      const start = duration - trimLast;
+      return `Will trim from ${this.formatTime(start)} to ${this.formatTime(duration)} (${this.formatTime(trimLast)} total)`;
+    }
+    return 'No trimming applied';
   }
 
   // Unified waveform configuration method

@@ -487,11 +487,17 @@ export interface CapacitorAudioEnginePlugin {
 
   /**
    * Stop the current recording and get the recorded file information.
+   * @param options - Optional stop recording options
+   * @param options.start - Optional start time in seconds for trimming (from max duration)
+   * @param options.end - Optional end time in seconds for trimming (from max duration)
    * @returns Promise that resolves with the recorded audio file details
    * @throws {Error} If no active recording exists
    * @throws {Error} If file processing fails
+   * @platform web Not supported
+   * @platform android Uses MediaExtractor and MediaMuxer for trimming
+   * @platform ios Uses AVAssetExportSession for trimming
    */
-  stopRecording(): Promise<AudioFileInfo>;
+  stopRecording(options?: { start?: number; end?: number }): Promise<AudioFileInfo>;
 
   /**
    * Get the current recording duration.

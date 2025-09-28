@@ -376,3 +376,39 @@ ion-grid ion-button {
   word-break: break-all;
   white-space: pre-wrap;
 }
+
+// Trimming UI Styles
+.trim-indicator {
+  color: var(--ion-color-warning);
+  font-weight: bold;
+  margin-left: 0.5rem;
+}
+
+.trim-options {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--ion-color-light);
+  border-radius: 8px;
+  border-left: 4px solid var(--ion-color-warning);
+}
+
+.trim-buttons {
+  margin: 8px 0;
+
+  ion-button {
+    font-weight: 500;
+
+    &[color='warning'] {
+      --background: var(--ion-color-warning);
+      --color: var(--ion-color-warning-contrast);
+    }
+  }
+}
+
+.trim-preview {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--ion-color-medium);
+  font-style: italic;
+}

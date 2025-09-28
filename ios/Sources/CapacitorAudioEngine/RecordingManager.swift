@@ -74,6 +74,10 @@ class RecordingManager: NSObject {
     /// Optional maximum duration to trim to at stop
     private var maxDuration: TimeInterval?
 
+    /// Optional trimming parameters for stop recording
+    private var trimmingStart: Double?
+    private var trimmingEnd: Double?
+
 
     // MARK: - Configuration
 
@@ -123,6 +127,18 @@ class RecordingManager: NSObject {
     }
 
     // MARK: - Recording Methods
+
+    /**
+     * Set trimming parameters for stop recording
+     * - Parameters:
+     *   - start: Start time in seconds for trimming (optional)
+     *   - end: End time in seconds for trimming (optional)
+     */
+    func setTrimmingParameters(start: Double?, end: Double?) {
+        trimmingStart = start
+        trimmingEnd = end
+        log("Trimming parameters set - start: \(start?.description ?? "nil"), end: \(end?.description ?? "nil")")
+    }
 
     /**
      * Starts audio recording with the specified settings
@@ -433,15 +449,24 @@ class RecordingManager: NSObject {
             Task { [weak self] in
                 guard let self = self else { return }
                 do {
-                    // Optionally trim to maxDuration if specified
+                    // Apply trimming based on parameters
                     let finalURL: URL
-                    if let maxDuration = self.maxDuration, maxDuration > 0 {
+                    if let start = self.trimmingStart, let end = self.trimmingEnd, start >= 0 && end > start {
+                        // Use custom start/end trimming
+                        finalURL = try await self.trimAudio(uri: fileURL.absoluteString, start: start, end: end)
+                    } else if let maxDuration = self.maxDuration, maxDuration > 0 {
+                        // Use maxDuration trimming (legacy behavior)
                         finalURL = try await self.trimAudioFile(fileURL, maxDuration: maxDuration)
                     } else {
+                        // No trimming
                         finalURL = fileURL
                     }
 
                     self.processRecordingFile(finalURL)
+
+                    // Clear trimming parameters after use
+                    self.trimmingStart = nil
+                    self.trimmingEnd = nil
                 } catch {
                     self.log("Stop processing error: \(error.localizedDescription)")
                     await MainActor.run {
