@@ -9,22 +9,14 @@ import android.os.Build;
 import android.provider.Settings;
 import android.util.Log;
 
-import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PluginCall;
 
 /**
- * Standalone Permission Manager Service for handling audio recording permissions
- * with detailed status information and granular control.
- *
- * Provides comprehensive permission status mapping for Android:
- * - GRANTED: Permission is granted
- * - DENIED: Permission was denied but can be requested again
- * - DENIED_PERMANENTLY: Permission was denied with "Don't ask again"
- * - NOT_DETERMINED: Permission has never been requested
- * - UNSUPPORTED: Permission not available on current Android version
+ * Simplified permission management service for CapacitorAudioEngine plugin.
+ * Handles microphone and notification permissions with streamlined methods.
  */
 public class PermissionManagerService {
     private static final String TAG = "PermissionManagerService";
@@ -32,58 +24,9 @@ public class PermissionManagerService {
     private final Context context;
     private final PermissionServiceCallback callback;
 
-    /**
-     * Interface for permission service callbacks
-     */
     public interface PermissionServiceCallback {
         void requestPermission(String alias, PluginCall call, String callbackMethod);
         boolean shouldShowRequestPermissionRationale(String permission);
-    }
-
-    /**
-     * Enum for detailed permission status
-     */
-    public enum PermissionStatus {
-        GRANTED("granted"),
-        DENIED("denied"),
-        DENIED_PERMANENTLY("denied_permanently"),
-        NOT_DETERMINED("not_determined"),
-        RESTRICTED("restricted"),
-        UNSUPPORTED("unsupported");
-
-        private final String value;
-
-        PermissionStatus(String value) {
-            this.value = value;
-        }
-
-        public String getValue() {
-            return value;
-        }
-    }
-
-    /**
-     * Enum for permission types
-     */
-    public enum PermissionType {
-        MICROPHONE("microphone", Manifest.permission.RECORD_AUDIO),
-        NOTIFICATIONS("notifications", Manifest.permission.POST_NOTIFICATIONS);
-
-        private final String name;
-        private final String permission;
-
-        PermissionType(String name, String permission) {
-            this.name = name;
-            this.permission = permission;
-        }
-
-        public String getName() {
-            return name;
-        }
-
-        public String getPermission() {
-            return permission;
-        }
     }
 
     public PermissionManagerService(Context context, PermissionServiceCallback callback) {
@@ -92,380 +35,190 @@ public class PermissionManagerService {
     }
 
     /**
-     * Check simplified permission status for all audio-related permissions
+     * Check all permissions status for audio recording
+     * Returns comprehensive permission status including individual permissions
      */
     public JSObject checkPermissions() {
-        Log.d(TAG, "Checking simplified permissions");
+        Log.d(TAG, "Checking audio recording permissions");
 
         // Check microphone permission
-        PermissionStatus microphoneStatus = getDetailedPermissionStatus(PermissionType.MICROPHONE);
+        boolean micGranted = isPermissionGranted(Manifest.permission.RECORD_AUDIO);
+        String micStatus = getPermissionStatusString(Manifest.permission.RECORD_AUDIO);
 
-        // Check notification permission
-        PermissionStatus notificationStatus = getDetailedPermissionStatus(PermissionType.NOTIFICATIONS);
+        // Check notification permission (Android 13+)
+        boolean notifGranted = true; // Default to granted for older Android versions
+        String notifStatus = "unsupported";
 
-        // Determine overall granted status
-        boolean microphoneGranted = microphoneStatus == PermissionStatus.GRANTED;
-        boolean notificationGranted = notificationStatus == PermissionStatus.GRANTED ||
-                                     notificationStatus == PermissionStatus.UNSUPPORTED;
-        boolean overallGranted = microphoneGranted && notificationGranted;
-
-        // Determine overall status - prioritize the most restrictive status
-        PermissionStatus overallStatus;
-        if (overallGranted) {
-            overallStatus = PermissionStatus.GRANTED;
-        } else if (microphoneStatus == PermissionStatus.DENIED_PERMANENTLY ||
-                   notificationStatus == PermissionStatus.DENIED_PERMANENTLY) {
-            overallStatus = PermissionStatus.DENIED_PERMANENTLY;
-        } else if (microphoneStatus == PermissionStatus.DENIED ||
-                   notificationStatus == PermissionStatus.DENIED) {
-            overallStatus = PermissionStatus.DENIED;
-        } else if (microphoneStatus == PermissionStatus.NOT_DETERMINED ||
-                   notificationStatus == PermissionStatus.NOT_DETERMINED) {
-            overallStatus = PermissionStatus.NOT_DETERMINED;
-        } else {
-            overallStatus = PermissionStatus.DENIED;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifGranted = isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS);
+            notifStatus = getPermissionStatusString(Manifest.permission.POST_NOTIFICATIONS);
         }
 
+        // Build response
         JSObject result = new JSObject();
-        result.put("granted", overallGranted);
-        result.put("status", overallStatus.getValue());
+        result.put("granted", micGranted && notifGranted);
+        result.put("status", micGranted && notifGranted ? "granted" : "denied");
 
-        Log.d(TAG, "Simplified permission check completed - Overall granted: " + overallGranted +
-                   ", Status: " + overallStatus.getValue());
-        return result;
-    }
+        JSObject micResult = new JSObject();
+        micResult.put("granted", micGranted);
+        micResult.put("status", micStatus);
+        result.put("microphone", micResult);
 
-    /**
-     * Check microphone permission status with simplified information
-     */
-    public JSObject checkPermissionMicrophone() {
-        Log.d(TAG, "Checking microphone permission");
-        PermissionStatus status = getDetailedPermissionStatus(PermissionType.MICROPHONE);
-        JSObject result = new JSObject();
-        boolean granted = status == PermissionStatus.GRANTED;
-        result.put("granted", granted);
-        result.put("status", status.getValue());
-        return result;
-    }
+        JSObject notifResult = new JSObject();
+        notifResult.put("granted", notifGranted);
+        notifResult.put("status", notifStatus);
+        result.put("notifications", notifResult);
 
-    /**
-     * Check notification permission status with simplified information
-     */
-    public JSObject checkPermissionNotifications() {
-        Log.d(TAG, "Checking notification permission");
-        PermissionStatus status = getDetailedPermissionStatus(PermissionType.NOTIFICATIONS);
-        JSObject result = new JSObject();
-        boolean granted = status == PermissionStatus.GRANTED || status == PermissionStatus.UNSUPPORTED;
-        result.put("granted", granted);
-        result.put("status", status.getValue());
-        return result;
-    }
-
-    /**
-     * Check status for a single permission type
-     */
-    private JSObject checkSinglePermissionStatus(PermissionType permissionType) {
-        JSObject result = new JSObject();
-        result.put("permissionType", permissionType.getName());
-
-        PermissionStatus status = getDetailedPermissionStatus(permissionType);
-        result.put("status", status.getValue());
-
-        // Add additional information
-        switch (status) {
-            case GRANTED:
-                result.put("message", "Permission is granted");
-                result.put("canRequestAgain", false);
-                break;
-            case DENIED:
-                result.put("message", "Permission was denied but can be requested again");
-                result.put("canRequestAgain", true);
-                break;
-            case DENIED_PERMANENTLY:
-                result.put("message", "Permission was permanently denied. Please enable in Settings.");
-                result.put("canRequestAgain", false);
-                break;
-            case NOT_DETERMINED:
-                result.put("message", "Permission has not been requested yet");
-                result.put("canRequestAgain", true);
-                break;
-            case UNSUPPORTED:
-                result.put("message", "Permission not required on this Android version");
-                result.put("canRequestAgain", false);
-                break;
-            case RESTRICTED:
-                result.put("message", "Permission restricted by device policy");
-                result.put("canRequestAgain", false);
-                break;
-        }
+        Log.d(TAG, "Permission check - Mic: " + micStatus + ", Notif: " + notifStatus +
+                   ", Overall: " + (micGranted && notifGranted));
 
         return result;
     }
 
     /**
-     * Get detailed permission status for a specific permission type
+     * Request all required permissions for audio recording
+     * Handles sequential permission requests with proper callbacks
      */
-    private PermissionStatus getDetailedPermissionStatus(PermissionType permissionType) {
-        String permission = permissionType.getPermission();
+    public void requestPermissions(PluginCall call) {
+        Log.d(TAG, "Requesting audio recording permissions");
 
-        // Handle version-specific permissions
-        if (permissionType == PermissionType.NOTIFICATIONS && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            return PermissionStatus.UNSUPPORTED;
-        }
-
-        int permissionCheck = ContextCompat.checkSelfPermission(context, permission);
-
-        if (permissionCheck == PackageManager.PERMISSION_GRANTED) {
-            return PermissionStatus.GRANTED;
-        }
-
-        // Permission is not granted, determine why
-        if (callback.shouldShowRequestPermissionRationale(permission)) {
-            // User denied but can still be asked
-            return PermissionStatus.DENIED;
-        } else {
-            // Either never requested or permanently denied
-            // We need to track this via shared preferences or assume not determined for first time
-            return hasPermissionBeenRequested(permissionType) ?
-                   PermissionStatus.DENIED_PERMANENTLY :
-                   PermissionStatus.NOT_DETERMINED;
-        }
-    }
-
-    /**
-     * Request detailed permissions with options
-     */
-    public void requestPermissions(PluginCall call, JSObject options) {
-        Log.d(TAG, "Requesting detailed permissions");
-
-        // Check current status
+        // Check if already granted
         JSObject currentStatus = checkPermissions();
-    boolean alreadyGranted = currentStatus.getBoolean("granted", false);
-
-        if (alreadyGranted) {
+        if (Boolean.TRUE.equals(currentStatus.getBoolean("granted", false))) {
             Log.d(TAG, "All permissions already granted");
             call.resolve(currentStatus);
             return;
         }
 
-        // Check if we should show rationale
-    boolean showRationale = options != null && options.getBoolean("showRationale", false);
-        if (showRationale) {
-            String rationaleMessage = options != null ? options.getString("rationaleMessage") : null;
-            if (rationaleMessage != null) {
-                // Here you could show a dialog with the rationale message
-                Log.d(TAG, "Rationale message: " + rationaleMessage);
-            }
-        }
-
-        // Start permission request sequence
-        startPermissionRequestSequence(call);
-    }
-
-    /**
-     * Start the sequential permission request process
-     */
-    private void startPermissionRequestSequence(PluginCall call) {
-        // First check microphone permission
-        PermissionStatus micStatus = getDetailedPermissionStatus(PermissionType.MICROPHONE);
-
-        if (micStatus != PermissionStatus.GRANTED) {
-            if (micStatus == PermissionStatus.DENIED_PERMANENTLY) {
-                // Direct user to settings
-                Log.d(TAG, "Microphone permission permanently denied, directing to settings");
-                JSObject result = checkPermissions();
-                call.resolve(result);
-                return;
-            }
-
-            // Request microphone permission
-            Log.d(TAG, "Requesting microphone permission");
-            markPermissionAsRequested(PermissionType.MICROPHONE);
-            callback.requestPermission("microphone", call, "detailedPermissionCallback");
-            return;
-        }
-
-        // Microphone granted, check notifications if needed
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            PermissionStatus notificationStatus = getDetailedPermissionStatus(PermissionType.NOTIFICATIONS);
-
-            if (notificationStatus != PermissionStatus.GRANTED) {
-                if (notificationStatus == PermissionStatus.DENIED_PERMANENTLY) {
-                    Log.d(TAG, "Notification permission permanently denied");
-                    JSObject result = checkPermissions();
-                    call.resolve(result);
-                    return;
-                }
-
-                // Request notification permission
-                Log.d(TAG, "Requesting notification permission");
-                markPermissionAsRequested(PermissionType.NOTIFICATIONS);
-                callback.requestPermission("notifications", call, "detailedPermissionCallback");
-                return;
-            }
-        }
-
-        // All permissions granted
-        Log.d(TAG, "All required permissions granted");
-        JSObject result = checkPermissions();
-        call.resolve(result);
-    }
-
-    /**
-     * Handle detailed permission callback
-     */
-    public void handleDetailedPermissionCallback(PluginCall call) {
-        Log.d(TAG, "Handling detailed permission callback");
-
-        // Check current status after permission response
-        JSObject currentStatus = checkPermissions();
-        try {
-            // Continue with next permission if needed
-            boolean microphoneGranted = "granted".equals(
-                ((JSObject) currentStatus.get("microphone")).getString("status")
-            );
-
-            if (microphoneGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                boolean notificationGranted = "granted".equals(
-                    ((JSObject) currentStatus.get("notifications")).getString("status")
-                );
-
-                if (!notificationGranted) {
-                    PermissionStatus notificationStatus = getDetailedPermissionStatus(PermissionType.NOTIFICATIONS);
-                    if (notificationStatus == PermissionStatus.DENIED) {
-                        // Try to request notification permission
-                        Log.d(TAG, "Requesting notification permission after microphone granted");
-                        callback.requestPermission("notifications", call, "detailedPermissionCallback");
-                        return;
-                    }
-                }
-            }
-        } catch (org.json.JSONException e) {
-            Log.e(TAG, "JSON error while checking permission status", e);
-        }
-
-        // Final result
-        call.resolve(currentStatus);
-    }
-
-    /**
-     * Legacy permission check for backward compatibility
-     */
-    public JSObject checkLegacyPermissions() {
-        boolean audioGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
-                              == PackageManager.PERMISSION_GRANTED;
-
-        boolean notificationGranted = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                                 == PackageManager.PERMISSION_GRANTED;
-        }
-
-        JSObject result = new JSObject();
-        result.put("granted", audioGranted && notificationGranted);
-        result.put("audioPermission", audioGranted);
-        result.put("notificationPermission", notificationGranted);
-
-        return result;
-    }
-
-    /**
-     * Legacy permission request for backward compatibility
-     */
-    public void requestLegacyPermissions(PluginCall call) {
-        boolean audioGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
-                              == PackageManager.PERMISSION_GRANTED;
-        boolean notificationGranted = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                                 == PackageManager.PERMISSION_GRANTED;
-        }
-
-        if (audioGranted && notificationGranted) {
-            JSObject result = new JSObject();
-            result.put("granted", true);
-            result.put("audioPermission", true);
-            result.put("notificationPermission", true);
-            call.resolve(result);
-        } else if (!audioGranted) {
-            markPermissionAsRequested(PermissionType.MICROPHONE);
-            callback.requestPermission("microphone", call, "legacyPermissionCallback");
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationGranted) {
-            markPermissionAsRequested(PermissionType.NOTIFICATIONS);
-            callback.requestPermission("notifications", call, "legacyPermissionCallback");
-        }
-    }
-
-    /**
-     * Handle legacy permission callback
-     */
-    public void handleLegacyPermissionCallback(PluginCall call) {
-        boolean audioGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
-                              == PackageManager.PERMISSION_GRANTED;
-        boolean notificationGranted = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                                 == PackageManager.PERMISSION_GRANTED;
-        }
-
-        // If audio granted but notification needed
-        if (audioGranted && !notificationGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            callback.requestPermission("notifications", call, "legacyPermissionCallback");
-            return;
-        }
-
-        JSObject result = new JSObject();
-        result.put("granted", audioGranted && notificationGranted);
-        result.put("audioPermission", audioGranted);
-        result.put("notificationPermission", notificationGranted);
-        call.resolve(result);
+        // Start with microphone permission
+        requestMicrophonePermission(call);
     }
 
     /**
      * Open app settings for manual permission management
      */
-    public void openAppSettings() {
-        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-        Uri uri = Uri.fromParts("package", context.getPackageName(), null);
-        intent.setData(uri);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        context.startActivity(intent);
+    public void openSettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            Uri uri = Uri.fromParts("package", context.getPackageName(), null);
+            intent.setData(uri);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+            Log.d(TAG, "Opened app settings");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to open settings", e);
+            throw new RuntimeException("Failed to open app settings: " + e.getMessage());
+        }
     }
 
     /**
-     * Validate that recording permissions are granted
+     * Validate recording permissions before starting recording
+     * Throws SecurityException if permissions are not granted
      */
     public void validateRecordingPermissions() throws SecurityException {
-        PermissionStatus micStatus = getDetailedPermissionStatus(PermissionType.MICROPHONE);
-        if (micStatus != PermissionStatus.GRANTED) {
-            throw new SecurityException("Microphone permission is required for recording");
+        // Check microphone permission
+        if (!isPermissionGranted(Manifest.permission.RECORD_AUDIO)) {
+            throw new SecurityException("Microphone permission required for recording");
         }
 
+        // Check notification permission for Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            PermissionStatus notificationStatus = getDetailedPermissionStatus(PermissionType.NOTIFICATIONS);
-            if (notificationStatus == PermissionStatus.DENIED ||
-                notificationStatus == PermissionStatus.DENIED_PERMANENTLY) {
-                throw new SecurityException("Notification permission is required for background recording on Android 13+");
+            if (!isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS)) {
+                throw new SecurityException("Notification permission required for background recording on Android 13+");
             }
         }
     }
 
     /**
-     * Track if a permission has been requested before
-     * This helps distinguish between NOT_DETERMINED and DENIED_PERMANENTLY
+     * Handle permission callback and request next permission if needed
+     * This method is called from the plugin's permissionCallback method
      */
-    private void markPermissionAsRequested(PermissionType permissionType) {
-        context.getSharedPreferences("audio_permissions", Context.MODE_PRIVATE)
-               .edit()
-               .putBoolean(permissionType.getName() + "_requested", true)
-               .apply();
+    public void handlePermissionCallback(PluginCall call, boolean granted) {
+        Log.d(TAG, "Handling permission callback - granted: " + granted);
+
+        if (granted) {
+            // Permission was granted, check if we need to request more permissions
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // Check if we still need notification permission
+                if (!isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS)) {
+                    Log.d(TAG, "Microphone granted, requesting notification permission");
+                    requestNotificationPermissionIfNeeded(call);
+                    return;
+                }
+            }
+
+            // All permissions granted
+            Log.d(TAG, "All permissions granted");
+            call.resolve(checkPermissions());
+        } else {
+            // Permission was denied, return current status
+            Log.d(TAG, "Permission denied, returning current status");
+            call.resolve(checkPermissions());
+        }
+    }
+
+    // ========== Private Helper Methods ==========
+
+    /**
+     * Request microphone permission
+     */
+    private void requestMicrophonePermission(PluginCall call) {
+        if (isPermissionGranted(Manifest.permission.RECORD_AUDIO)) {
+            // Microphone already granted, check notifications
+            requestNotificationPermissionIfNeeded(call);
+            return;
+        }
+
+        Log.d(TAG, "Requesting microphone permission");
+        try {
+            callback.requestPermission("microphone", call, "permissionCallback");
+        } catch (Exception e) {
+            Log.e(TAG, "Error requesting microphone permission", e);
+            call.reject("Failed to request microphone permission: " + e.getMessage());
+        }
     }
 
     /**
-     * Check if a permission has been requested before
+     * Request notification permission if needed (Android 13+)
      */
-    private boolean hasPermissionBeenRequested(PermissionType permissionType) {
-        return context.getSharedPreferences("audio_permissions", Context.MODE_PRIVATE)
-                      .getBoolean(permissionType.getName() + "_requested", false);
+    private void requestNotificationPermissionIfNeeded(PluginCall call) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            // No notification permission needed on older Android versions
+            call.resolve(checkPermissions());
+            return;
+        }
+
+        if (isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS)) {
+            // All permissions granted
+            call.resolve(checkPermissions());
+            return;
+        }
+
+        Log.d(TAG, "Requesting notification permission");
+        try {
+            callback.requestPermission("notifications", call, "permissionCallback");
+        } catch (Exception e) {
+            Log.e(TAG, "Error requesting notification permission", e);
+            call.reject("Failed to request notification permission: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Check if a specific permission is granted
+     */
+    private boolean isPermissionGranted(String permission) {
+        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * Get permission status string
+     */
+    private String getPermissionStatusString(String permission) {
+        if (isPermissionGranted(permission)) {
+            return "granted";
+        }
+
+        boolean shouldShowRationale = callback.shouldShowRequestPermissionRationale(permission);
+        return shouldShowRationale ? "denied" : "denied_permanently";
     }
 }

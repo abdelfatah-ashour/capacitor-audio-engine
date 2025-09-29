@@ -8,7 +8,7 @@ import {
   OnDestroy,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { TitleCasePipe, DecimalPipe, JsonPipe } from '@angular/common';
+import { TitleCasePipe, DecimalPipe, JsonPipe, DatePipe, UpperCasePipe } from '@angular/common';
 import {
   IonContent,
   IonHeader,
@@ -23,10 +23,8 @@ import {
   IonIcon,
   IonList,
   IonItem,
-  IonItemGroup,
   IonItemDivider,
   IonLabel,
-  IonProgressBar,
   IonChip,
   IonGrid,
   IonRow,
@@ -38,6 +36,7 @@ import {
   IonSelectOption,
   IonAccordionGroup,
   IonAccordion,
+  IonProgressBar,
   AlertController,
   ToastController,
 } from '@ionic/angular/standalone';
@@ -61,28 +60,25 @@ import {
   closeCircle,
   pulse,
   analytics,
+  radioButtonOn,
+  radioButtonOff,
+  cloudDownload,
 } from 'ionicons/icons';
 import { addIcons } from 'ionicons';
 import { CapacitorAudioEngine } from 'capacitor-audio-engine';
 import type {
   AudioFileInfo,
-  RecordingOptions,
-  MicrophoneInfo,
-  RecordingStatus,
-  AudioTrack,
   PlaybackInfo,
-  PlaybackStatus,
-  TrackChangedData,
-  TrackEndedData,
   PlaybackStartedData,
   PlaybackPausedData,
-  ErrorEventData,
+  PlaybackStoppedData,
+  PlaybackErrorData,
+  PlaybackProgressData,
   PreloadedTrackInfo,
   WaveLevelData,
 } from 'capacitor-audio-engine';
 import { IntelligentWaveformComponent } from '../components/intelligent-waveform.component';
-import { Filesystem } from '@capacitor/filesystem';
-// Extended interface for demo to track segment rolling metadata
+import { Directory, Filesystem } from '@capacitor/filesystem';
 interface AudioFileInfoWithMetadata extends AudioFileInfo {
   isSegmentRolled?: boolean;
   segmentCount?: number;
@@ -142,6 +138,8 @@ const CalibrationDuration = {
     TitleCasePipe,
     DecimalPipe,
     JsonPipe,
+    DatePipe,
+    UpperCasePipe,
     IonContent,
     IonHeader,
     IonTitle,
@@ -155,10 +153,8 @@ const CalibrationDuration = {
     IonIcon,
     IonList,
     IonItem,
-    IonItemGroup,
     IonItemDivider,
     IonLabel,
-    IonProgressBar,
     IonChip,
     IonGrid,
     IonRow,
@@ -170,6 +166,7 @@ const CalibrationDuration = {
     IonSelectOption,
     IonAccordionGroup,
     IonAccordion,
+    IonProgressBar,
     IntelligentWaveformComponent,
   ],
 })
@@ -198,12 +195,13 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       closeCircle,
       pulse,
       analytics,
+      radioButtonOn,
+      radioButtonOff,
+      cloudDownload,
     });
   }
 
   // Recording status signals
-  protected readonly recordingStatus = signal<RecordingStatus>('idle');
-  protected readonly recordingDuration = signal(0);
 
   // Permission signals
   protected readonly hasPermission = signal(false);
@@ -212,19 +210,11 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   protected readonly notificationPermissionStatus = signal<string>('unknown');
   protected readonly detailedPermissionInfo = signal<any>(null);
 
-  // Recording options signals
-  protected readonly recordingOptions = signal<RecordingOptions>({
-    sampleRate: 44100, // AudioSampleRate.CD_44K
-    channels: 1, // AudioChannels.MONO
-    bitrate: 128000, // AudioBitrate.HIGH
-  });
-
   // Segment rolling signals
   protected readonly isSegmentRollingEnabled = signal(false);
   protected readonly maxDurationSeconds = signal<number | undefined>(undefined);
 
   // Microphone signals
-  protected readonly availableMicrophones = signal<MicrophoneInfo[]>([]);
   protected readonly currentMicrophone = signal<number | null>(null);
   protected readonly microphoneBusy = signal(false);
 
@@ -290,6 +280,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Audio files signals
   protected readonly recordedFiles = signal<AudioFileInfoWithMetadata[]>([]);
   protected readonly selectedAudioInfo = signal<AudioFileInfoWithMetadata | null>(null);
+  protected readonly filesWithInfo = signal<Set<string>>(new Set());
 
   // Trimming signals
   protected readonly trimLastSeconds = signal<number>(0);
@@ -307,35 +298,36 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   protected readonly currentRecordedFile = signal<AudioFileInfoWithMetadata | null>(null);
   protected readonly preloadedFiles = signal<Set<string>>(new Set());
 
-  // Demo playlist for per-URL playback
-  protected readonly demoPlaylist: AudioTrack[] = [
+  // Demo playlist for per-URL playback (simplified)
+  protected readonly demoPlaylist: Array<{
+    id: string;
+    url: string;
+    title: string;
+    artist: string;
+  }> = [
     {
       id: 'demo1',
       url: 'https://cms-public-artifacts.artlist.io/content/music/aac/9479_267163_267163_12_-_Continent_-16-44.1-.aac',
       title: 'Demo Track 1',
       artist: 'Demo Artist',
-      artworkUrl: 'https://via.placeholder.com/300x300/FF6B6B/FFFFFF?text=Track+1',
     },
     {
       id: 'demo2',
       url: 'https://cms-public-artifacts.artlist.io/content/music/aac/5651_257500_257500_01_-_DuDa_-16-44.1-.aac',
       title: 'Demo Track 2',
       artist: 'Demo Artist',
-      artworkUrl: 'https://via.placeholder.com/300x300/4ECDC4/FFFFFF?text=Track+2',
     },
     {
       id: 'demo3',
       url: 'https://cms-public-artifacts.artlist.io/content/music/aac/969633_968857_Yarin_Primak_-_bring_it_back_-_IH-000420_-_Master_V2_-_148_Bpm_-_081024_-_BOV_-_ORG_-_2444.aac',
       title: 'Demo Track 3',
       artist: 'Demo Artist',
-      artworkUrl: 'https://via.placeholder.com/300x300/45B7D1/FFFFFF?text=Track+3',
     },
     {
       id: 'demo4',
       url: 'https://cms-public-artifacts.artlist.io/content/music/aac/969371_969230_Ran_Haim_Raiten_-_Youre_Welcome_to_Hop_-_AO-002482_-_Master_V1_-_158_Bpm_-_BOV_-_ORG_-_2444.aac',
       title: 'Demo Track 4',
       artist: 'Demo Artist',
-      artworkUrl: 'https://via.placeholder.com/300x300/FF9F43/FFFFFF?text=Track+4',
     },
   ];
 
@@ -389,18 +381,21 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     { value: 60, label: 'Last 1m' },
   ];
 
-  // Computed signals
-  protected readonly canRecord = computed(
-    () => this.hasPermission() && this.recordingStatus() === 'idle'
+  // Recording guards
+  protected readonly canStartRecording = computed(
+    () =>
+      this.hasPermission() &&
+      (this.recordingStatus() === 'idle' || this.recordingStatus() === 'stopped')
   );
-  protected readonly canPause = computed(() => this.recordingStatus() === 'recording');
-  protected readonly canResume = computed(() => this.recordingStatus() === 'paused');
-  protected readonly canStop = computed(() =>
+  protected readonly canPauseRecording = computed(() => this.recordingStatus() === 'recording');
+  protected readonly canResumeRecording = computed(() => this.recordingStatus() === 'paused');
+  protected readonly canStopRecording = computed(() =>
     ['recording', 'paused'].includes(this.recordingStatus())
   );
-  protected readonly canReset = computed(() =>
-    ['recording', 'paused'].includes(this.recordingStatus())
+  protected readonly canResetRecording = computed(() =>
+    new Set(['paused', 'recording']).has(this.recordingStatus())
   );
+  protected readonly canGetRecordingStatus = computed(() => this.recordingStatus() !== 'idle');
 
   protected readonly recordingProgressPercent = computed(() => {
     if (!this.isSegmentRollingEnabled()) return 0;
@@ -505,6 +500,46 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       `${this.formatTime(this.recordedPlaybackPosition())} / ${this.formatTime(this.recordedTrackDuration())}`
   );
 
+  // Recording computed properties
+  protected readonly formattedRecordingDuration = computed(() =>
+    this.formatTime(this.recordingDuration())
+  );
+  protected readonly recordingWaveLevelPercent = computed(() =>
+    Math.round(this.recordingWaveLevel() * 100)
+  );
+  protected readonly recordingWaveLevelVisualization = computed(() => {
+    const history = this.recordingWaveLevelHistory();
+    const maxBars = 50; // Limit visualization to 50 bars
+    if (history.length <= maxBars) return history;
+    return history.slice(-maxBars);
+  });
+
+  // Recording signals
+  protected readonly recordingStatus = signal<'idle' | 'recording' | 'paused' | 'stopped'>('idle');
+  protected readonly recordingEndedAt = signal<number | null>(null);
+  protected readonly recordingDetails = signal<{
+    status: string;
+    endedAt?: number;
+    mimeType?: string;
+    path?: string;
+  } | null>(null);
+  protected readonly recordingFilePath = signal<string | null>(null);
+  protected readonly recordingMimeType = signal<string | null>(null);
+  protected readonly recordingEncoding = signal<'aac' | 'opus' | 'pcm16' | null>(null);
+
+  // Last recorded audio file info
+  protected readonly lastRecordedAudioFile = signal<AudioFileInfo | null>(null);
+  protected readonly showRecordedFileActions = signal(false);
+
+  // Recording duration and wave level signals
+  protected readonly recordingDuration = signal(0);
+  protected readonly recordingWaveLevel = signal(0);
+  protected readonly recordingWaveLevelHistory = signal<number[]>([]);
+  protected readonly recordingMaxWaveLevel = signal(0);
+  protected readonly recordingMaxWaveLevelComputed = computed(() =>
+    Math.round(this.recordingMaxWaveLevel() * 100)
+  );
+
   // Recording methods
   async checkPermission(): Promise<void> {
     try {
@@ -525,7 +560,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         this.hasPermission.set(result.granted);
         this.permissionChecked.set(true);
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Permission check failed:', error);
       this.hasPermission.set(false);
       this.permissionChecked.set(true);
@@ -545,7 +580,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         `Microphone: ${result.status}`,
         result.status === 'granted' ? 'success' : 'warning'
       );
-    } catch (error: any) {
+    } catch (error) {
       console.error('Microphone permission check failed:', error);
       await this.showToast(
         'Microphone permission check not available - using legacy method.',
@@ -564,7 +599,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         `Notifications: ${result.status}`,
         result.status === 'granted' ? 'success' : 'warning'
       );
-    } catch (error: any) {
+    } catch (error) {
       console.error('Notification permission check failed:', error);
       await this.showToast(
         'Notification permission check not available - using legacy method.',
@@ -603,7 +638,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
           await this.showToast('Permission granted!', 'success');
         }
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Permission request failed:', error);
       await this.showToast('Permission request failed.', 'danger');
     }
@@ -613,161 +648,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       await CapacitorAudioEngine.openSettings();
       await this.showToast('Opening app permissions...', 'success');
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to open app settings:', error);
       await this.showToast('Failed to open app permissions', 'danger');
-    }
-  }
-
-  async startRecording(): Promise<void> {
-    if (!this.hasPermission()) {
-      await this.requestPermission();
-      if (!this.hasPermission()) return;
-    }
-
-    try {
-      // Configure waveform settings before starting recording using unified method
-      if (this.waveformEnabled()) {
-        await this.configureUnifiedWaveform();
-      }
-
-      const options = this.recordingOptions();
-      const segmentOptions = this.isSegmentRollingEnabled()
-        ? { maxDuration: this.maxDurationSeconds() }
-        : {};
-
-      await CapacitorAudioEngine.startRecording({
-        ...options,
-        ...segmentOptions,
-      });
-
-      this.recordingStatus.set('recording');
-      this.recordingDuration.set(0);
-      this.waveformHistory.set([]);
-      this.maxWaveformLevel.set(0);
-
-      // Reset trim options when starting new recording
-      this.trimLastSeconds.set(0);
-      this.showTrimOptions.set(false);
-
-      await this.showToast('Recording started', 'success');
-      this.setupRecordingEventListeners();
-      this.startDurationTimer();
-    } catch (error: any) {
-      console.error('Failed to start recording:', error);
-      await this.showToast('Failed to start recording', 'danger');
-    }
-  }
-
-  async pauseRecording(): Promise<void> {
-    try {
-      await CapacitorAudioEngine.pauseRecording();
-      this.recordingStatus.set('paused');
-      await this.showToast('Recording paused', 'warning');
-    } catch (error: any) {
-      console.error('Failed to pause recording:', error);
-      await this.showToast('Failed to pause recording', 'danger');
-    }
-  }
-
-  async resumeRecording(): Promise<void> {
-    try {
-      await CapacitorAudioEngine.resumeRecording();
-      this.recordingStatus.set('recording');
-      await this.showToast('Recording resumed', 'success');
-      this.startDurationTimer();
-    } catch (error: any) {
-      console.error('Failed to resume recording:', error);
-      await this.showToast('Failed to resume recording', 'danger');
-    }
-  }
-
-  async stopRecording(): Promise<void> {
-    this.recordingStatus.set('idle');
-    this.recordingDuration.set(0);
-
-    try {
-      const currentDuration = this.recordingDuration();
-      const trimLastSeconds = this.trimLastSeconds();
-
-      let result: AudioFileInfo;
-
-      result = await CapacitorAudioEngine.stopRecording({
-        start: 0,
-        end: 10,
-      });
-
-      await this.showToast(
-        `Recording stopped and trimmed (kept last ${trimLastSeconds}s)`,
-        'success'
-      );
-
-      console.log('🚀 ~ FeaturesDemoComponent ~ stopRecording ~ result:', result);
-
-      // Add metadata for segment rolling demo
-      const fileWithMetadata: AudioFileInfoWithMetadata = {
-        ...result,
-        isSegmentRolled: this.isSegmentRollingEnabled(),
-        maxDurationSeconds: this.maxDurationSeconds(),
-      };
-
-      this.recordedFiles.update(files => [...files, fileWithMetadata]);
-    } catch (error: any) {
-      console.error('Failed to stop recording:', error);
-      // Only show toast if it's not a "no active recording" error (which can happen with multiple clicks)
-      if (!error?.toString().includes('No active recording to stop')) {
-        await this.showToast('Failed to stop recording', 'danger');
-      }
-    }
-  }
-
-  async resetRecording(): Promise<void> {
-    try {
-      await CapacitorAudioEngine.resetRecording();
-      // Reset local UI state to reflect pause with zero duration
-      this.recordingStatus.set('paused');
-      this.recordingDuration.set(0);
-      this.waveformHistory.set([]);
-      await this.showToast('Recording reset - ready to resume fresh', 'success');
-    } catch (error: any) {
-      console.error('Failed to reset recording:', error);
-      await this.showToast('Failed to reset recording', 'danger');
-    }
-  }
-
-  // Microphone methods
-  async loadAvailableMicrophones(): Promise<void> {
-    try {
-      const result = await CapacitorAudioEngine.getAvailableMicrophones();
-      this.availableMicrophones.set(result.microphones);
-    } catch (error: any) {
-      console.error('Failed to load microphones:', error);
-      await this.showToast('Failed to load microphones', 'danger');
-    }
-  }
-
-  async checkMicrophoneStatus(): Promise<void> {
-    try {
-      const result = await CapacitorAudioEngine.isMicrophoneBusy();
-      this.microphoneBusy.set(result.busy);
-    } catch (error: any) {
-      console.error('Failed to check microphone status:', error);
-      await this.showToast('Failed to check microphone status', 'danger');
-    }
-  }
-
-  async switchMicrophone(microphoneId: number): Promise<void> {
-    try {
-      const result = await CapacitorAudioEngine.switchMicrophone({ microphoneId });
-      if (result.success) {
-        this.currentMicrophone.set(result.microphoneId);
-        await this.showToast('Microphone switched successfully', 'success');
-      } else {
-        await this.showToast('Failed to switch microphone', 'warning');
-      }
-    } catch (error: any) {
-      console.error('Failed to switch microphone:', error);
-      await this.showToast('Failed to switch microphone', 'danger');
     }
   }
 
@@ -776,7 +659,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       const result = await CapacitorAudioEngine.preloadTracks({
         tracks: [url],
-        preloadNext: false,
       });
 
       // Update preloaded tracks set
@@ -805,7 +687,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         this.setupPlaybackEventListeners();
         this.setupWaveformEventListeners();
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to preload track:', error);
       await this.showToast('Failed to preload track', 'danger');
     }
@@ -816,7 +698,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       const trackUrls = this.demoPlaylist.map(track => track.url);
       const result = await CapacitorAudioEngine.preloadTracks({
         tracks: trackUrls,
-        preloadNext: true,
       });
 
       // Update preloaded tracks set with successfully loaded tracks
@@ -841,7 +722,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       // Set up event listeners
       this.setupPlaybackEventListeners();
       this.setupWaveformEventListeners();
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to preload all tracks:', error);
       await this.showToast('Failed to preload tracks', 'danger');
     }
@@ -859,7 +740,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
       const track = this.demoPlaylist.find(t => t.url === url);
       await this.showToast(`Playing: ${track?.title || 'Track'}`, 'success');
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to play track:', error);
       await this.showToast('Failed to play track', 'danger');
     }
@@ -869,7 +750,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       await CapacitorAudioEngine.pauseAudio({ url });
       await this.updateTrackPlaybackInfo(url);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to pause track:', error);
       await this.showToast('Failed to pause track', 'danger');
     }
@@ -879,7 +760,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       await CapacitorAudioEngine.resumeAudio({ url });
       await this.updateTrackPlaybackInfo(url);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to resume track:', error);
       await this.showToast('Failed to resume track', 'danger');
     }
@@ -896,7 +777,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         newStates.delete(url);
         return newStates;
       });
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to stop track:', error);
       await this.showToast('Failed to stop track', 'danger');
     }
@@ -906,18 +787,29 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       await CapacitorAudioEngine.seekAudio({ seconds, url });
       await this.updateTrackPlaybackInfo(url);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to seek track:', error);
       await this.showToast('Failed to seek', 'danger');
     }
   }
 
   onSeekChange(event: CustomEvent, url: string): void {
+    // Only seek if this is a user interaction (knobMoveEnd), not a programmatic update
+    // This prevents excessive seeking during playback progress updates
+    const eventType = event.type;
+
+    // Only respond to knobMoveEnd events (when user releases the slider)
+    // or when explicitly called from user interaction
+    if (eventType !== 'ionKnobMoveEnd' && eventType !== 'ionChange') {
+      return;
+    }
+
     const percentage = event.detail.value;
     const duration = this.getTrackDuration(url);
     const seekTime = (percentage / 100) * duration;
 
     if (duration > 0) {
+      console.log(`Seeking to ${seekTime}s (${percentage}%) in track: ${url}`);
       this.seekTrack(url, seekTime);
     }
   }
@@ -932,86 +824,71 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         newStates.set(url, info);
         return newStates;
       });
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to get track playback info:', error);
     }
   }
 
   private setupPlaybackEventListeners(): void {
-    CapacitorAudioEngine.addListener('trackChanged', async (event: TrackChangedData) => {
-      if (event.track?.url) {
-        await this.updateTrackPlaybackInfo(event.track.url);
-      }
-      await this.showToast(`Now playing: ${event.track.title}`, 'success');
-    });
-
-    CapacitorAudioEngine.addListener('trackEnded', async (event: TrackEndedData) => {
-      if (event.track?.url) {
-        await this.updateTrackPlaybackInfo(event.track.url);
-      }
-    });
-
     CapacitorAudioEngine.addListener('playbackStarted', async (event: PlaybackStartedData) => {
-      if (event.track?.url) {
-        await this.updateTrackPlaybackInfo(event.track.url);
+      if (event.url) {
+        await this.updateTrackPlaybackInfo(event.url);
+        const track = this.demoPlaylist.find(t => t.url === event.url);
+        await this.showToast(`Now playing: ${track?.title || 'Track'}`, 'success');
       }
     });
 
     CapacitorAudioEngine.addListener('playbackPaused', async (event: PlaybackPausedData) => {
-      if (event.track?.url) {
-        await this.updateTrackPlaybackInfo(event.track.url);
+      if (event.url) {
+        await this.updateTrackPlaybackInfo(event.url);
       }
     });
 
-    CapacitorAudioEngine.addListener('playbackError', async (event: ErrorEventData) => {
+    CapacitorAudioEngine.addListener('playbackStopped', async (event: PlaybackStoppedData) => {
+      if (event.url) {
+        await this.updateTrackPlaybackInfo(event.url);
+      }
+    });
+
+    CapacitorAudioEngine.addListener('playbackError', async (event: PlaybackErrorData) => {
       console.error('Playback error:', event.message);
       await this.showToast(`Playback error: ${event.message}`, 'danger');
     });
 
     // Listen for real-time progress updates
-    CapacitorAudioEngine.addListener('playbackProgress' as any, (event: any) => {
+    CapacitorAudioEngine.addListener('playbackProgress', event => {
       // Indicate that real-time updates are working
       this.realtimeUpdatesActive.set(true);
 
       // Update track-specific playback info in real-time without API call
-      if (event.track?.url) {
+      if (event.url) {
         this.trackPlaybackStates.update(states => {
           const newStates = new Map(states);
-          const currentState = newStates.get(event.track.url) || {};
+          const currentState = newStates.get(event.url) || {};
+          const track = this.demoPlaylist.find(t => t.url === event.url);
 
-          newStates.set(event.track.url, {
+          newStates.set(event.url, {
             ...currentState,
             currentPosition: event.currentPosition,
             duration: event.duration,
             isPlaying: event.isPlaying,
-            currentTrack: event.track,
+            currentTrack: track ? { id: track.id, url: track.url } : null,
             currentIndex: 0,
-            status: event.isPlaying ? 'playing' : 'paused',
-          });
+          } as PlaybackInfo);
 
           return newStates;
         });
-      }
-    });
 
-    // Listen for status changes
-    CapacitorAudioEngine.addListener('playbackStatusChanged' as any, (event: any) => {
-      // Update track-specific playback info in real-time without API call
-      if (event.track?.url) {
-        this.trackPlaybackStates.update(states => {
-          const newStates = new Map(states);
-
-          newStates.set(event.track.url, {
-            currentTrack: event.track,
-            currentIndex: event.index,
+        // Also update recorded audio playback info if this is the current recorded file
+        if (this.currentRecordedFile() && event.url === this.currentRecordedFile()!.uri) {
+          this.recordedAudioPlaybackInfo.set({
             currentPosition: event.currentPosition,
             duration: event.duration,
             isPlaying: event.isPlaying,
-            status: event.status as PlaybackStatus,
-          });
-
-          return newStates;
-        });
+            currentTrack: { id: 'recorded', url: event.url },
+            currentIndex: 0,
+          } as PlaybackInfo);
+        }
       }
     });
   }
@@ -1026,24 +903,19 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       // Add the new level to the growing history (including silence levels)
       this.waveformHistory.update(history => [...history, event.level]);
     });
-    // Listen for waveform destruction
-    CapacitorAudioEngine.addListener('waveformDestroy' as any, (event: any) => {
-      console.log('Waveform destroyed:', event);
-      this.showToast(`Waveform destroyed. Reason: ${event.reason}`, 'warning');
-
-      // Reset waveform-related state when destroyed
-      this.resetWaveformState();
-    });
   }
 
   // Recorded audio playback methods
   async preloadRecordedAudio(file: AudioFileInfoWithMetadata): Promise<void> {
     try {
+      console.log('🚀 ~ preloadRecordedAudio ~ file.uri:', file.uri);
+
       // Use the file URI directly with the new preloadTracks interface
       const result = await CapacitorAudioEngine.preloadTracks({
         tracks: [file.uri],
-        preloadNext: false,
       });
+
+      console.log('🚀 ~ preloadRecordedAudio ~ result:', result);
 
       const trackInfo = result.tracks.find(t => t.url === file.uri);
 
@@ -1065,7 +937,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       } else {
         await this.showToast(`Failed to preload: ${file.filename}`, 'warning');
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to preload recorded audio:', error);
       await this.showToast('Failed to preload audio', 'danger');
     }
@@ -1073,39 +945,45 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async playRecordedAudio(file?: AudioFileInfoWithMetadata): Promise<void> {
     try {
+      console.log('🚀 ~ playRecordedAudio ~ file:', file);
+      console.log('🚀 ~ playRecordedAudio ~ file?.uri:', file?.uri);
+
       // If file is provided and different from current, preload it first
       if (file && (!this.currentRecordedFile() || this.currentRecordedFile()?.uri !== file.uri)) {
+        console.log('🚀 ~ playRecordedAudio ~ preloading file with URI:', file.uri);
         await this.preloadRecordedAudio(file);
       }
 
       // If no playlist is initialized, preload the first available file
       if (!this.recordedPlaylistInitialized() && this.recordedFiles().length > 0) {
+        console.log('🚀 ~ playRecordedAudio ~ preloading first available file');
         await this.preloadRecordedAudio(this.recordedFiles()[0]);
       }
 
-      await CapacitorAudioEngine.playAudio();
+      console.log('🚀 ~ playRecordedAudio ~ calling playAudio with URL:', file?.uri || '');
+      await CapacitorAudioEngine.playAudio({ url: file?.uri || '' });
       await this.updateRecordedPlaybackInfo();
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to play recorded audio:', error);
       await this.showToast('Failed to play recorded audio', 'danger');
     }
   }
 
-  async pauseRecordedAudio(): Promise<void> {
+  async pauseRecordedAudio(url: string): Promise<void> {
     try {
-      await CapacitorAudioEngine.pauseAudio();
+      await CapacitorAudioEngine.pauseAudio({ url });
       await this.updateRecordedPlaybackInfo();
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to pause recorded audio:', error);
       await this.showToast('Failed to pause recorded audio', 'danger');
     }
   }
 
-  async stopRecordedAudio(): Promise<void> {
+  async stopRecordedAudio(url: string): Promise<void> {
     try {
-      await CapacitorAudioEngine.stopAudio();
+      await CapacitorAudioEngine.stopAudio({ url });
       await this.updateRecordedPlaybackInfo();
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to stop recorded audio:', error);
       await this.showToast('Failed to stop recorded audio', 'danger');
     }
@@ -1115,9 +993,30 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       await CapacitorAudioEngine.seekAudio({ seconds });
       await this.updateRecordedPlaybackInfo();
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to seek recorded audio:', error);
       await this.showToast('Failed to seek', 'danger');
+    }
+  }
+
+  onRecordedSeekChange(event: CustomEvent): void {
+    // Only seek if this is a user interaction (knobMoveEnd), not a programmatic update
+    // This prevents excessive seeking during playback progress updates
+    const eventType = event.type;
+
+    // Only respond to knobMoveEnd events (when user releases the slider)
+    // or when explicitly called from user interaction
+    if (eventType !== 'ionKnobMoveEnd' && eventType !== 'ionChange') {
+      return;
+    }
+
+    const percentage = event.detail.value;
+    const duration = this.recordedTrackDuration();
+    const seekTime = (percentage / 100) * duration;
+
+    if (duration > 0) {
+      console.log(`Seeking recorded audio to ${seekTime}s (${percentage}%)`);
+      this.seekRecordedAudio(seekTime);
     }
   }
 
@@ -1125,7 +1024,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       const info = await CapacitorAudioEngine.getPlaybackInfo();
       this.recordedAudioPlaybackInfo.set(info);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to get recorded playback info:', error);
       // Don't show toast for this error as it might be temporary during initialization
       // The method will be called again when user interacts with playback controls
@@ -1134,6 +1033,10 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   isFilePreloaded(fileUri: string): boolean {
     return this.preloadedFiles().has(fileUri);
+  }
+
+  hasFileInfo(fileUri: string): boolean {
+    return this.filesWithInfo().has(fileUri);
   }
 
   isCurrentlyPlaying(file: AudioFileInfoWithMetadata): boolean {
@@ -1176,22 +1079,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
                 await this.showToast('Invalid time range', 'warning');
                 return;
               }
-
-              const result = await CapacitorAudioEngine.trimAudio({
-                uri: file.uri,
-                start,
-                end,
-              });
-              console.log('🚀 ~ FeaturesDemoComponent ~ trimAudio ~ result:', result);
-
-              const trimmedFile: AudioFileInfoWithMetadata = {
-                ...result,
-                isSegmentRolled: false,
-              };
-
-              this.recordedFiles.update(files => [...files, trimmedFile]);
-              await this.showToast('Audio trimmed successfully', 'success');
-            } catch (error: any) {
+            } catch (error) {
               console.error('Failed to trim audio:', error);
               await this.showToast('Failed to trim audio', 'danger');
             }
@@ -1204,22 +1092,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   }
 
   // Utility methods
-  private durationChangeListener: any = null;
-
-  private setupRecordingEventListeners(): void {
-    // Remove any existing listener first
-    if (this.durationChangeListener) {
-      this.durationChangeListener.remove();
-    }
-
-    // Set up duration change listener for real-time recording duration updates
-    this.durationChangeListener = CapacitorAudioEngine.addListener(
-      'durationChange',
-      (event: { duration: number }) => {
-        this.recordingDuration.set(event.duration);
-      }
-    );
-  }
+  private durationChangeListener = null;
 
   private async startDurationTimer(): Promise<void> {
     // Primary method: Use event listener for real-time duration updates
@@ -1230,7 +1103,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       await CapacitorAudioEngine.addListener('durationChange', event => {
         this.recordingDuration.set(event.duration);
       });
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to get duration:', error);
     }
   }
@@ -1271,11 +1144,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       ].includes(tab)
     ) {
       this.activeTab.set(tab);
-
-      if (tab === 'microphones') {
-        this.loadAvailableMicrophones();
-        this.checkMicrophoneStatus();
-      } else if (tab === 'playback') {
+      if (tab === 'playback') {
         // Refresh playback info for all preloaded tracks
         this.refreshAllTrackStates();
       }
@@ -1287,23 +1156,10 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     for (const url of Array.from(this.preloadedTracks())) {
       try {
         await this.updateTrackPlaybackInfo(url);
-      } catch (error: any) {
+      } catch (error) {
         console.error('Failed to refresh track state:', error);
       }
     }
-  }
-
-  // Recording options update methods
-  updateSampleRate(value: number): void {
-    this.recordingOptions.update(opts => ({ ...opts, sampleRate: value }));
-  }
-
-  updateChannels(value: number): void {
-    this.recordingOptions.update(opts => ({ ...opts, channels: value }));
-  }
-
-  updateBitrate(value: number): void {
-    this.recordingOptions.update(opts => ({ ...opts, bitrate: value }));
   }
 
   updateMaxDuration(value: number): void {
@@ -1335,9 +1191,12 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       await CapacitorAudioEngine.configureWaveform({
         EmissionInterval: 200,
       });
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error configuring unified waveform:', error);
-      await this.showToast(`Error configuring unified waveform: ${error.message}`, 'danger');
+      await this.showToast(
+        `Error configuring unified waveform: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'danger'
+      );
     }
   }
 
@@ -1348,12 +1207,10 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   }
 
   async updateWaveformBars(bars: number): Promise<void> {
-    this.waveformBarsCount.set(bars as any);
     await this.configureUnifiedWaveform();
   }
 
   async updateWaveformDebounceTime(debounceInSeconds: number): Promise<void> {
-    this.waveformDebounceTime.set(debounceInSeconds as any);
     await this.configureUnifiedWaveform();
   }
 
@@ -1361,9 +1218,12 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       await CapacitorAudioEngine.destroyWaveform();
       await this.showToast('Waveform configuration destroyed', 'success');
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error destroying waveform:', error);
-      await this.showToast(`Error destroying waveform: ${error.message}`, 'danger');
+      await this.showToast(
+        `Error destroying waveform: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'danger'
+      );
     }
   }
 
@@ -1391,9 +1251,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     await this.configureUnifiedWaveform();
   }
 
-  updateVadWindowSize(value: any): void {
-    const windowSize = typeof value === 'number' ? value : value.detail?.value || 5;
-    this.vadWindowSize.set(windowSize as any);
+  updateVadWindowSize(value: number | { detail: { value: number } }): void {
     if (this.vadEnabled()) {
       this.configureUnifiedWaveform();
     }
@@ -1416,7 +1274,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   }
 
   async updateSpeechThreshold(threshold: number): Promise<void> {
-    this.speechThreshold.set(threshold as any);
     if (this.speechDetectionEnabled()) {
       await this.configureUnifiedWaveform();
     }
@@ -1431,7 +1288,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   }
 
   async updateCalibrationDuration(duration: number): Promise<void> {
-    this.speechCalibrationDuration.set(duration as any);
     if (this.speechDetectionEnabled()) {
       await this.configureUnifiedWaveform();
     }
@@ -1464,17 +1320,330 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     this.recordedFiles.set([]);
   }
 
+  // Recording methods
+  async startRecording(): Promise<void> {
+    if (!this.hasPermission()) {
+      await this.requestPermission();
+      if (!this.hasPermission()) return;
+    }
+    try {
+      const path = `/audio-files/recording_${Date.now()}.m4a`;
+      await CapacitorAudioEngine.startRecording({
+        path,
+      });
+
+      const encoding = 'aac' as const;
+      const mime = 'audio/aac';
+
+      this.recordingFilePath.set(path);
+
+      this.recordingMimeType.set(mime);
+      this.recordingEncoding.set(encoding);
+
+      this.recordingStatus.set('recording');
+      this.recordingEndedAt.set(null);
+      this.recordingDetails.set({
+        status: 'recording',
+        mimeType: mime,
+        path: this.recordingFilePath() || (undefined as any),
+      });
+
+      // Reset recording monitoring signals
+      this.recordingDuration.set(0);
+      this.recordingWaveLevel.set(0);
+      this.recordingWaveLevelHistory.set([]);
+      this.recordingMaxWaveLevel.set(0);
+      await this.showToast(`Recording started (${encoding.toUpperCase()})`, 'success');
+      this.setupRecordingEventListeners();
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      await this.showToast('Failed to start recording', 'danger');
+    }
+  }
+
+  async pauseRecording(): Promise<void> {
+    try {
+      await CapacitorAudioEngine.pauseRecording();
+      this.recordingStatus.set('paused');
+      await this.showToast('Recording paused', 'warning');
+    } catch (error) {
+      console.error('Failed to pause recording:', error);
+      await this.showToast('Failed to pause recording', 'danger');
+    }
+  }
+
+  async resumeRecording(): Promise<void> {
+    try {
+      await CapacitorAudioEngine.resumeRecording();
+      this.recordingStatus.set('recording');
+      await this.showToast('Recording resumed', 'success');
+    } catch (error) {
+      console.error('Failed to resume recording:', error);
+      await this.showToast('Failed to resume recording', 'danger');
+    }
+  }
+
+  async stopRecording(): Promise<void> {
+    try {
+      const audioFileInfo = await CapacitorAudioEngine.stopRecording();
+      this.recordingStatus.set('stopped');
+      const ended = Date.now();
+      this.recordingEndedAt.set(ended);
+      this.recordingDetails.update(d => ({
+        status: 'stopped',
+        endedAt: ended,
+        mimeType: audioFileInfo.mimeType,
+        path: audioFileInfo.path,
+      }));
+
+      // Store the audio file info
+      this.lastRecordedAudioFile.set(audioFileInfo);
+      this.showRecordedFileActions.set(true);
+
+      // Reset recording monitoring signals
+      this.recordingDuration.set(0);
+      this.recordingWaveLevel.set(0);
+      this.recordingWaveLevelHistory.set([]);
+      this.recordingMaxWaveLevel.set(0);
+
+      // Get file info and register the recorded file
+      await this.registerRecordedFile();
+
+      await this.showToast('Recording stopped - File saved', 'success');
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+      await this.showToast('Failed to stop recording', 'danger');
+    }
+  }
+
+  async getRecordingStatus(): Promise<void> {
+    try {
+      const status = await CapacitorAudioEngine.getRecordingStatus();
+
+      // Update local signals with the status information
+      this.recordingDuration.set(status.duration);
+
+      // Show detailed status information
+      const message = [
+        `Status: ${status.status.toUpperCase()}`,
+        `Duration: ${this.formatTime(status.duration)}`,
+        status.path ? `Path: ${status.path}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      // Show alert with detailed information
+      const alert = await this.alertController.create({
+        header: 'Recording Status',
+        message: message.replace(/\n/g, '<br>'),
+        buttons: ['OK'],
+      });
+
+      await alert.present();
+    } catch (error) {
+      console.error('Failed to get recording status:', error);
+      await this.showToast('Failed to get recording status', 'danger');
+    }
+  }
+
+  async resetRecording(): Promise<void> {
+    try {
+      await CapacitorAudioEngine.resetRecording();
+      // Reflect paused state with zeroed counters locally
+      this.recordingStatus.set('paused');
+      this.recordingDuration.set(0);
+      this.recordingWaveLevel.set(0);
+      this.recordingWaveLevelHistory.set([]);
+      this.recordingMaxWaveLevel.set(0);
+      await this.showToast('Recording reset - ready to resume', 'success');
+    } catch (error) {
+      console.error('Failed to reset recording:', error);
+      await this.showToast('Failed to reset recording', 'danger');
+    }
+  }
+
+  async trimRecordedAudio(): Promise<void> {
+    const audioFile = this.lastRecordedAudioFile();
+    if (!audioFile) {
+      await this.showToast('No recorded audio file available', 'warning');
+      return;
+    }
+
+    // Show prompt to get trim times
+    const alert = await this.alertController.create({
+      header: 'Trim Audio',
+      message: `Duration: ${audioFile.duration.toFixed(2)}s`,
+      inputs: [
+        {
+          name: 'startTime',
+          type: 'number',
+          placeholder: 'Start time (seconds)',
+          value: '0',
+          min: 0,
+          max: audioFile.duration,
+        },
+        {
+          name: 'endTime',
+          type: 'number',
+          placeholder: 'End time (seconds)',
+          value: audioFile.duration.toFixed(2),
+          min: 0,
+          max: audioFile.duration,
+        },
+      ],
+      buttons: [
+        {
+          text: 'Cancel',
+          role: 'cancel',
+        },
+        {
+          text: 'Trim',
+          handler: async data => {
+            const startTime = parseFloat(data.startTime) || 0;
+            const endTime = parseFloat(data.endTime) || audioFile.duration;
+
+            if (startTime < 0 || endTime <= startTime || endTime > audioFile.duration) {
+              await this.showToast('Invalid trim times', 'danger');
+              return;
+            }
+
+            try {
+              const trimmedFile = await CapacitorAudioEngine.trimAudio({
+                uri: audioFile.uri,
+                startTime,
+                endTime,
+              });
+
+              await this.showToast(`Audio trimmed: ${trimmedFile.duration.toFixed(2)}s`, 'success');
+
+              // Update the last recorded file to the trimmed version
+              this.lastRecordedAudioFile.set(trimmedFile);
+
+              // Register the trimmed file
+              this.recordedFiles.update(files => [
+                ...files,
+                { ...trimmedFile, isSegmentRolled: false },
+              ]);
+            } catch (error) {
+              console.error('Failed to trim audio:', error);
+              await this.showToast('Failed to trim audio', 'danger');
+            }
+          },
+        },
+      ],
+    });
+
+    await alert.present();
+  }
+
+  dismissRecordedFileActions(): void {
+    this.showRecordedFileActions.set(false);
+  }
+
+  private async registerRecordedFile(): Promise<void> {
+    try {
+      const fileUri = this.recordingFilePath();
+      if (!fileUri) {
+        console.warn('No recording file URI available for registration');
+        return;
+      }
+
+      // Use the file path stored when recording started
+      const info = await CapacitorAudioEngine.getAudioInfo({ uri: fileUri });
+
+      const file = await Filesystem.readFile({
+        path: fileUri,
+      });
+
+      console.log('🚀 ~ registerRecordedFile ~ file:', file.data);
+
+      console.log('🚀 ~ registerRecordedFile ~ fileUri:', fileUri);
+      console.log('🚀 ~ registerRecordedFile ~ info.uri:', info.uri);
+      console.log('🚀 ~ registerRecordedFile ~ info:', info);
+
+      console.log('🚀 ~ FeaturesDemoComponent ~ registerRecordedFile ~ info:', info);
+      try {
+        const results = await CapacitorAudioEngine.preloadTracks({
+          tracks: [info.uri],
+        });
+        if (!results.tracks || results.tracks.length === 0) {
+          return;
+        }
+      } catch (preloadError) {
+        console.error('🚀 ~ registerRecordedFile ~ preload error:', preloadError);
+        throw preloadError;
+      }
+
+      const recordedFile: AudioFileInfoWithMetadata = {
+        ...info,
+        isSegmentRolled: false,
+      };
+
+      this.recordedFiles.update(files => [...files, recordedFile]);
+      this.currentRecordedFile.set(recordedFile);
+      this.recordedPlaylistInitialized.set(false);
+
+      // Mark this file as having info fetched
+      this.filesWithInfo.update(files => new Set([...Array.from(files), info.uri]));
+    } catch (e) {
+      console.error('Failed to register recorded file', e);
+    }
+  }
+
+  private setupRecordingEventListeners(): void {
+    CapacitorAudioEngine.addListener('recordingStatusChanged', event => {
+      const status = event?.status as 'idle' | 'recording' | 'paused' | 'stopped';
+      if (status) {
+        this.recordingStatus.set(status);
+        if (status === 'stopped') {
+          const ended = Date.now();
+          this.recordingEndedAt.set(ended);
+          this.recordingDetails.update(d => ({
+            status,
+            endedAt: ended,
+            mimeType: d?.mimeType,
+            path: d?.path,
+          }));
+        }
+      }
+    });
+
+    // Listen for duration changes during recording
+    CapacitorAudioEngine.addListener('durationChange', event => {
+      if (event?.duration !== undefined) {
+        this.recordingDuration.set(event.duration);
+      }
+    });
+
+    // Listen for wave level changes during recording
+    CapacitorAudioEngine.addListener('waveLevel', event => {
+      if (event?.level !== undefined) {
+        const level = event.level as number;
+        this.recordingWaveLevel.set(level);
+
+        // Update wave level history
+        this.recordingWaveLevelHistory.update(history => {
+          const newHistory = [...history, level];
+          // Keep only last 100 levels to prevent memory issues
+          return newHistory.length > 100 ? newHistory.slice(-100) : newHistory;
+        });
+
+        // Update max wave level
+        this.recordingMaxWaveLevel.update(max => Math.max(max, level));
+      }
+    });
+  }
+
   // Lifecycle
   async ngOnInit(): Promise<void> {
     await this.checkPermission();
+    this.setupPlaybackEventListeners();
     this.setupWaveformEventListeners();
+    this.setupRecordingEventListeners();
   }
 
   ngOnDestroy(): void {
     // Clean up any remaining listeners
-    if (this.durationChangeListener) {
-      this.durationChangeListener.remove();
-      this.durationChangeListener = null;
-    }
+    CapacitorAudioEngine.removeAllListeners();
   }
 }

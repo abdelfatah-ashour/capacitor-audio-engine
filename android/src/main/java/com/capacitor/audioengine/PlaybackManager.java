@@ -4,864 +4,385 @@ import android.content.Context;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
-import android.media.MediaMetadataRetriever;
+import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
-import android.support.v4.media.MediaMetadataCompat;
-import android.support.v4.media.session.MediaSessionCompat;
-import android.support.v4.media.session.PlaybackStateCompat;
+import android.os.PowerManager;
 import android.util.Log;
-
-import androidx.annotation.NonNull;
-
-import com.getcapacitor.JSObject;
-import com.google.android.exoplayer2.ExoPlayer;
-import com.google.android.exoplayer2.MediaItem;
-import com.google.android.exoplayer2.MediaMetadata;
-import com.google.android.exoplayer2.Player;
-import com.google.android.exoplayer2.source.ConcatenatingMediaSource;
-import com.google.android.exoplayer2.source.MediaSource;
-import com.google.android.exoplayer2.source.ProgressiveMediaSource;
-import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
-import com.google.android.exoplayer2.util.Util;
-
 import java.io.File;
-import java.net.URL;
-import java.net.URLConnection;
-import java.util.ArrayList;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
+import java.util.Map;
 
-public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFocusChangeListener {
+public class PlaybackManager implements MediaPlayer.OnCompletionListener, MediaPlayer.OnPreparedListener, MediaPlayer.OnErrorListener, AudioManager.OnAudioFocusChangeListener {
     private static final String TAG = "PlaybackManager";
 
+    // Simple constants
+    private static final long PROGRESS_UPDATE_INTERVAL_MS = 250;
+    private static final int AUDIO_CONTENT_TYPE = AudioAttributes.CONTENT_TYPE_MUSIC;
+    private static final int AUDIO_USAGE = AudioAttributes.USAGE_MEDIA;
+    private static final long SEEK_THROTTLE_MS = 100; // Minimum time between seeks
+    private static final double SEEK_THRESHOLD_SECONDS = 0.5; // Ignore seeks smaller than this when playing
+
     public interface PlaybackManagerListener {
-        void onTrackChanged(AudioTrack track, int index);
-        void onTrackEnded(AudioTrack track, int index);
-        void onPlaybackStarted(AudioTrack track, int index);
-        void onPlaybackPaused(AudioTrack track, int index);
-        void onPlaybackError(String error);
-        void onPlaybackProgress(AudioTrack track, int index, long currentPosition, long duration, boolean isPlaying);
-        void onPlaybackStatusChanged(AudioTrack track, int index, PlaybackStatus status, long currentPosition, long duration, boolean isPlaying);
+        void onPlaybackStarted(String trackId);
+        void onPlaybackPaused(String trackId);
+        void onPlaybackStopped(String trackId);
+        void onPlaybackError(String trackId, String error);
+        void onPlaybackProgress(String trackId, long currentPosition, long duration);
     }
 
     private final Context context;
     private final PlaybackManagerListener listener;
     private final Handler mainHandler;
 
-    // Audio components
-    private ExoPlayer player;
+    // Essential state only
+    private final Map<String, MediaPlayer> audioPlayers = new HashMap<>();
+    private final Map<String, Boolean> preparedPlayers = new HashMap<>();
+    private final Map<String, String> urlToTrackIdMap = new HashMap<>();
+    private final Map<String, String> trackIdToUrlMap = new HashMap<>();
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
-    private MediaSessionCompat mediaSession;
 
-    // Playlist management
-    private List<AudioTrack> playlist;
-    private int currentIndex = 0;
-    private PlaybackStatus status = PlaybackStatus.IDLE;
-    private HashMap<String, Long> trackPositions = new HashMap<>();
-
-  // Media sources
-    private ConcatenatingMediaSource concatenatingMediaSource;
-    private DefaultDataSourceFactory dataSourceFactory;
-
-    // Progress tracking
-    private static final long PROGRESS_UPDATE_INTERVAL = 500; // 500ms
-    private Runnable progressUpdateRunnable;
+    private String currentTrackId = null;
+    private int trackCounter = 0;
     private boolean isTrackingProgress = false;
+
+    // Minimal seek state to prevent UI progress bar interference
+    private long lastSeekTime = 0;
+    private double lastSeekPosition = 0;
+
+    private final Runnable progressUpdateRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isTrackingProgress && currentTrackId != null) {
+                updateProgress();
+                mainHandler.postDelayed(this, PROGRESS_UPDATE_INTERVAL_MS);
+            }
+        }
+    };
 
     public PlaybackManager(Context context, PlaybackManagerListener listener) {
         this.context = context;
         this.listener = listener;
         this.mainHandler = new Handler(Looper.getMainLooper());
-        this.playlist = new ArrayList<>();
-
-        // Initialize progress tracking runnable
-        this.progressUpdateRunnable = new Runnable() {
-            @Override
-            public void run() {
-                if (isTrackingProgress && player != null) {
-                    updateProgress();
-                    mainHandler.postDelayed(this, PROGRESS_UPDATE_INTERVAL);
-                }
-            }
-        };
-
-        initializeComponents();
+        initializeAudioEngine();
     }
 
-    private void initializeComponents() {
-        // Initialize ExoPlayer
-        player = new ExoPlayer.Builder(context).build();
-        player.addListener(this);
-
-        // Initialize AudioManager
+    private void initializeAudioEngine() {
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
 
-        // Initialize data source factory
-        dataSourceFactory = new DefaultDataSourceFactory(context,
-            Util.getUserAgent(context, "CapacitorAudioEngine"));
+        AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                .setUsage(AUDIO_USAGE)
+                .setContentType(AUDIO_CONTENT_TYPE)
+                .build();
 
-        // Initialize media session
-        setupMediaSession();
+        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(audioAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener(this)
+                .build();
 
-        // Setup audio focus request for Android O and above
-      AudioAttributes audioAttributes = new AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA)
-        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-        .build();
-
-      audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-          .setAudioAttributes(audioAttributes)
-          .setAcceptsDelayedFocusGain(true)
-          .setOnAudioFocusChangeListener(this)
-          .build();
+        Log.d(TAG, "Audio engine initialized");
     }
 
-    private void setupMediaSession() {
-        mediaSession = new MediaSessionCompat(context, TAG);
-        mediaSession.setActive(true);
-
-        mediaSession.setCallback(new MediaSessionCompat.Callback() {
-            @Override
-            public void onPlay() {
-                play();
-            }
-
-            @Override
-            public void onPause() {
-                pause();
-            }
-
-            @Override
-            public void onSkipToNext() {
-                skipToNext();
-            }
-
-            @Override
-            public void onSkipToPrevious() {
-                skipToPrevious();
-            }
-
-            @Override
-            public void onSeekTo(long pos) {
-                seekTo((double) pos / 1000.0);
-            }
-        });
+    private String generateTrackId() {
+        return "track_" + (trackCounter++);
     }
 
-    public List<JSObject> preloadTracks(List<String> trackUrls) throws Exception {
-        return preloadTracks(trackUrls, true); // Default preloadNext to true
+    private String resolveTrackId(String identifier) {
+        if (identifier == null) {
+            return currentTrackId;
+        }
+        if (identifier.startsWith("track_")) {
+            return identifier;
+        }
+        return urlToTrackIdMap.get(identifier);
     }
 
-    public List<JSObject> preloadTracks(List<String> trackUrls, boolean preloadNext) throws Exception {
+    public boolean preloadTrack(String trackId, String url) {
+        Log.d(TAG, "Preloading track " + trackId + " with URL: " + url);
+
+        try {
+            MediaPlayer player = createMediaPlayer();
+            setDataSource(player, url);
+            player.prepareAsync();
+
+            audioPlayers.put(trackId, player);
+            urlToTrackIdMap.put(url, trackId);
+            trackIdToUrlMap.put(trackId, url);
+
+            Log.d(TAG, "Track preloaded: " + trackId);
+            return true;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to preload track: " + trackId, e);
+            cleanupTrack(trackId, url);
+            return false;
+        }
+    }
+
+    private void cleanupTrack(String trackId, String url) {
+        MediaPlayer player = audioPlayers.remove(trackId);
+        if (player != null) {
+            try {
+                player.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error releasing player", e);
+            }
+        }
+        urlToTrackIdMap.remove(url);
+        trackIdToUrlMap.remove(trackId);
+        preparedPlayers.remove(trackId);
+    }
+
+    private MediaPlayer createMediaPlayer() {
+        MediaPlayer player = new MediaPlayer();
+        player.setOnCompletionListener(this);
+        player.setOnPreparedListener(this);
+        player.setOnErrorListener(this);
+
+        player.setAudioAttributes(new AudioAttributes.Builder()
+                .setUsage(AUDIO_USAGE)
+                .setContentType(AUDIO_CONTENT_TYPE)
+                .build());
+
+        player.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK);
+        return player;
+    }
+
+    private void setDataSource(MediaPlayer player, String url) throws IOException {
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            player.setDataSource(url);
+        } else if (url.startsWith("file://")) {
+            player.setDataSource(url.substring(7));
+        } else if (url.startsWith("content://")) {
+            player.setDataSource(context, android.net.Uri.parse(url));
+        } else {
+            File file = new File(url);
+            if (file.exists()) {
+                player.setDataSource(url);
+            } else {
+                throw new IOException("File not found: " + url);
+            }
+        }
+    }
+
+    public void preloadTracks(List<String> trackUrls) throws Exception {
         if (trackUrls == null || trackUrls.isEmpty()) {
             throw new Exception("Track URLs list cannot be empty");
         }
 
-        // Convert URLs to AudioTrack objects and get track information
-        List<AudioTrack> tracks = getAudioTracks(trackUrls);
-        List<JSObject> trackResults = new ArrayList<>();
+        Log.d(TAG, "Preloading " + trackUrls.size() + " tracks");
 
-        // Ensure we're on the main thread for player operations
+        for (String url : trackUrls) {
+            if (urlToTrackIdMap.containsKey(url)) {
+                Log.d(TAG, "Track already preloaded: " + url);
+                continue;
+            }
+
+            String trackId = generateTrackId();
+            if (!preloadTrack(trackId, url)) {
+                throw new Exception("Failed to preload track: " + url);
+            }
+        }
+
+        Log.d(TAG, "All tracks preloaded (" + audioPlayers.size() + " total)");
+    }
+    // Playback Control Methods
+
+    public void play(String identifier) {
+        String trackId = resolveTrackId(identifier);
+        if (trackId == null) {
+            Log.e(TAG, "Track not found: " + identifier);
+            if (listener != null) {
+                listener.onPlaybackError(identifier != null ? identifier : "null", "Track not found");
+            }
+            return;
+        }
+
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            CountDownLatch latch = new CountDownLatch(1);
-            mainHandler.post(() -> {
-                try {
-                    List<JSObject> results = initPlaylistOnMainThreadWithResults(tracks, preloadNext);
-                    trackResults.addAll(results);
-                } catch (Exception e) {
+            mainHandler.post(() -> play(identifier));
+            return;
+        }
+
+        MediaPlayer player = audioPlayers.get(trackId);
+        if (player == null) {
+            Log.e(TAG, "Track not preloaded: " + trackId);
+            if (listener != null) {
+                listener.onPlaybackError(trackId, "Track not preloaded");
+            }
+            return;
+        }
+
+        // Stop current track if different
+        if (currentTrackId != null && !currentTrackId.equals(trackId)) {
+            stop(currentTrackId);
+        }
+
+        Boolean isPrepared = preparedPlayers.get(trackId);
+        if (isPrepared == null || !isPrepared) {
+            Log.w(TAG, "Player not prepared yet: " + trackId);
+            if (listener != null) {
+                listener.onPlaybackError(trackId, "Track not prepared yet");
+            }
+            return;
+        }
+
+        if (requestAudioFocus()) {
+            try {
+                if (!player.isPlaying()) {
+                    player.start();
+                    currentTrackId = trackId;
+                    startProgressTracking();
+
                     if (listener != null) {
-                        listener.onPlaybackError("Failed to preload tracks: " + e.getMessage());
+                        listener.onPlaybackStarted(trackId);
                     }
-                } finally {
-                    latch.countDown();
+                    Log.d(TAG, "Started playback: " + trackId);
                 }
-            });
-
-            try {
-                latch.await();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new Exception("Preload operation was interrupted");
-            }
-
-            return trackResults;
-        }
-
-        return initPlaylistOnMainThreadWithResults(tracks, preloadNext);
-    }
-
-  @NonNull
-  private static List<AudioTrack> getAudioTracks(List<String> trackUrls) {
-    List<AudioTrack> tracks = new ArrayList<>();
-    for (int i = 0; i < trackUrls.size(); i++) {
-        String url = trackUrls.get(i);
-        // Create AudioTrack with URL as both id and url, no additional metadata
-        AudioTrack track = new AudioTrack(
-            "track_" + i,  // Generate ID
-            url,          // URL
-            null,         // title
-            null,         // artist
-            null          // artworkUrl
-        );
-        tracks.add(track);
-    }
-    return tracks;
-  }
-
-  private void initPlaylistOnMainThread(List<AudioTrack> tracks) throws Exception {
-        this.playlist = new ArrayList<>(tracks);
-      this.currentIndex = 0;
-        this.status = PlaybackStatus.LOADING;
-
-        // Create concatenating media source
-        concatenatingMediaSource = new ConcatenatingMediaSource();
-
-        for (AudioTrack track : tracks) {
-            MediaItem mediaItem = MediaItem.fromUri(track.getUrl());
-            MediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(mediaItem);
-            concatenatingMediaSource.addMediaSource(mediaSource);
-        }
-
-        // Prepare player
-        player.setMediaSource(concatenatingMediaSource);
-        player.prepare();
-
-        this.status = PlaybackStatus.IDLE;
-
-        // Update media session metadata
-        updateMediaSessionMetadata();
-    }
-
-    private List<JSObject> initPlaylistOnMainThreadWithResults(List<AudioTrack> tracks, boolean preloadNext) throws Exception {
-        List<JSObject> trackResults = new ArrayList<>();
-        List<AudioTrack> validTracks = new ArrayList<>();
-        List<MediaSource> validMediaSources = new ArrayList<>();
-
-        this.currentIndex = 0;
-        this.status = PlaybackStatus.LOADING;
-
-        // Store preloadNext setting (Android ExoPlayer handles this automatically when using ConcatenatingMediaSource)
-        // but we can use this for future optimizations
-
-        // Process each track and collect information
-        for (AudioTrack track : tracks) {
-            JSObject trackInfo = new JSObject();
-            trackInfo.put("url", track.getUrl());
-
-            try {
-                // Validate URL and create MediaItem
-                MediaItem mediaItem = MediaItem.fromUri(track.getUrl());
-                MediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(mediaItem);
-
-                // Try to extract basic metadata
-                String mimeType = getMimeTypeFromUrl(track.getUrl());
-                if (mimeType != null) {
-                    trackInfo.put("mimeType", mimeType);
-                }
-
-                // Get duration using MediaMetadataRetriever for better accuracy
-                double duration = extractTrackDuration(track.getUrl());
-                if (duration > 0) {
-                    trackInfo.put("duration", duration);
-                } else {
-                    trackInfo.put("duration", 0);
-                }
-
-                // Get file size for local files
-                if (track.getUrl().startsWith("file://")) {
-                    try {
-                        File file = new File(track.getUrl().replace("file://", ""));
-                        if (file.exists()) {
-                            trackInfo.put("size", file.length());
-                        }
-                    } catch (Exception e) {
-                        Log.w(TAG, "Could not get file size for: " + track.getUrl());
-                    }
-                }
-
-                // Add to valid collections
-                validTracks.add(track);
-                validMediaSources.add(mediaSource);
-                trackInfo.put("loaded", true);
-
             } catch (Exception e) {
-                Log.w(TAG, "Failed to load track: " + track.getUrl(), e);
-                trackInfo.put("loaded", false);
-                trackInfo.put("duration", 0);
-            }
-
-            trackResults.add(trackInfo);
-        }
-
-        // Update playlist with valid tracks
-        this.playlist = validTracks;
-
-        // Create concatenating media source with valid media sources
-        if (!validMediaSources.isEmpty()) {
-            concatenatingMediaSource = new ConcatenatingMediaSource();
-            for (MediaSource mediaSource : validMediaSources) {
-                concatenatingMediaSource.addMediaSource(mediaSource);
-            }
-
-            // Prepare player
-            player.setMediaSource(concatenatingMediaSource);
-            player.prepare();
-
-            this.status = PlaybackStatus.IDLE;
-            updateMediaSessionMetadata();
-        } else {
-            this.status = PlaybackStatus.IDLE;
-        }
-
-        return trackResults;
-    }
-
-    private String getMimeTypeFromUrl(String url) {
-        try {
-            if (url.startsWith("http://") || url.startsWith("https://")) {
-                // For remote URLs, try to determine from extension or use URLConnection
-                String extension = getFileExtension(url);
-                return getMimeTypeFromExtension(extension);
-            } else if (url.startsWith("file://")) {
-                // For local files, use file extension
-                String extension = getFileExtension(url);
-                return getMimeTypeFromExtension(extension);
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Could not determine MIME type for: " + url);
-        }
-        return "audio/mp4"; // Default for Android
-    }
-
-    private String getFileExtension(String url) {
-        try {
-            int lastDotIndex = url.lastIndexOf('.');
-            int lastSlashIndex = url.lastIndexOf('/');
-            if (lastDotIndex > lastSlashIndex && lastDotIndex > 0) {
-                return url.substring(lastDotIndex + 1).toLowerCase();
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Could not extract file extension from: " + url);
-        }
-        return "";
-    }
-
-    private String getMimeTypeFromExtension(String extension) {
-        switch (extension.toLowerCase()) {
-            case "mp3":
-                return "audio/mpeg";
-            case "m4a":
-            case "mp4":
-                return "audio/mp4";
-            case "aac":
-                return "audio/aac";
-            case "wav":
-                return "audio/wav";
-            case "flac":
-                return "audio/flac";
-            case "ogg":
-                return "audio/ogg";
-            default:
-                return "audio/mp4"; // Default for Android
-        }
-    }
-
-    private double extractTrackDuration(String url) {
-        MediaMetadataRetriever retriever = null;
-        try {
-            retriever = new MediaMetadataRetriever();
-
-            if (url.startsWith("http://") || url.startsWith("https://")) {
-                // For remote URLs
-                retriever.setDataSource(url, new HashMap<>());
-            } else if (url.startsWith("file://")) {
-                // For file URIs, remove file:// prefix
-                String filePath = url.replace("file://", "");
-                retriever.setDataSource(filePath);
-            } else {
-                // Assume it's a local file path
-                retriever.setDataSource(url);
-            }
-
-            String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-            if (durationStr != null) {
-                long durationMs = Long.parseLong(durationStr);
-                return durationMs / 1000.0; // Convert to seconds
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Could not extract duration for: " + url, e);
-        } finally {
-            if (retriever != null) {
-                try {
-                    retriever.release();
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to release MediaMetadataRetriever", e);
+                Log.e(TAG, "Failed to start playback: " + trackId, e);
+                if (listener != null) {
+                    listener.onPlaybackError(trackId, e.getMessage());
                 }
             }
         }
-        return 0;
     }
 
-    public void play() {
-        // Ensure we're on the main thread
+    public void pause(String identifier) {
+        String trackId = resolveTrackId(identifier);
+        if (trackId == null) return;
+
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(this::play);
+            mainHandler.post(() -> pause(identifier));
             return;
         }
 
-        if (status == PlaybackStatus.IDLE || status == PlaybackStatus.PAUSED || status == PlaybackStatus.STOPPED) {
-            if (requestAudioFocus()) {
-                player.setPlayWhenReady(true);
-                status = PlaybackStatus.PLAYING;
-
-                AudioTrack currentTrack = getCurrentTrack();
-                if (currentTrack != null && listener != null) {
-                    listener.onPlaybackStarted(currentTrack, currentIndex);
+        MediaPlayer player = audioPlayers.get(trackId);
+        if (player != null && player.isPlaying()) {
+            try {
+                player.pause();
+                if (listener != null) {
+                    listener.onPlaybackPaused(trackId);
                 }
-
-                // Start progress tracking
-                startProgressTracking();
-
-                updatePlaybackState();
-                emitStatusChange();
+                Log.d(TAG, "Paused playback: " + trackId);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to pause: " + trackId, e);
             }
         }
     }
 
-    public void pause() {
-        // Ensure we're on the main thread
+    public void stop(String identifier) {
+        String trackId = resolveTrackId(identifier);
+        if (trackId == null) return;
+
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(this::pause);
+            mainHandler.post(() -> stop(identifier));
             return;
         }
 
-        // Store current position before pausing
-        AudioTrack currentTrack = getCurrentTrack();
-        if (currentTrack != null && player != null) {
-            long currentPosition = player.getCurrentPosition();
-            trackPositions.put(currentTrack.getUrl(), currentPosition);
-        }
-
-        player.setPlayWhenReady(false);
-        status = PlaybackStatus.PAUSED;
-
-        if (currentTrack != null && listener != null) {
-            listener.onPlaybackPaused(currentTrack, currentIndex);
-        }
-
-        // Stop progress tracking
-        stopProgressTracking();
-
-        updatePlaybackState();
-        emitStatusChange();
-    }
-
-    public void resume() {
-        play();
-    }
-
-    public void stop() {
-        // Ensure we're on the main thread
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(this::stop);
-            return;
-        }
-
-        // Clear stored position when stopping
-        AudioTrack currentTrack = getCurrentTrack();
-        if (currentTrack != null) {
-            trackPositions.remove(currentTrack.getUrl());
-        }
-
-        player.setPlayWhenReady(false);
-        player.seekTo(0);
-        status = PlaybackStatus.STOPPED;
-
-        // Stop progress tracking
-        stopProgressTracking();
-
-        abandonAudioFocus();
-        updatePlaybackState();
-        emitStatusChange();
-    }
-
-    public void seekTo(double seconds) {
-        // Ensure we're on the main thread
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(() -> seekTo(seconds));
-            return;
-        }
-
-        long milliseconds = (long) (seconds * 1000);
-        player.seekTo(milliseconds);
-    }
-
-    public void skipToNext() {
-        // Ensure we're on the main thread
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(this::skipToNext);
-            return;
-        }
-
-        if (currentIndex < playlist.size() - 1) {
-            currentIndex++;
-            player.seekTo(currentIndex, 0);
-
-            AudioTrack currentTrack = getCurrentTrack();
-            if (currentTrack != null && listener != null) {
-                listener.onTrackChanged(currentTrack, currentIndex);
-            }
-
-            updateMediaSessionMetadata();
-        }
-    }
-
-    public void skipToPrevious() {
-        // Ensure we're on the main thread
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(this::skipToPrevious);
-            return;
-        }
-
-        if (currentIndex > 0) {
-            currentIndex--;
-            player.seekTo(currentIndex, 0);
-
-            AudioTrack currentTrack = getCurrentTrack();
-            if (currentTrack != null && listener != null) {
-                listener.onTrackChanged(currentTrack, currentIndex);
-            }
-
-            updateMediaSessionMetadata();
-        }
-    }
-
-    public void skipToIndex(int index) {
-        // Ensure we're on the main thread
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(() -> skipToIndex(index));
-            return;
-        }
-
-        if (index >= 0 && index < playlist.size()) {
-            currentIndex = index;
-            player.seekTo(currentIndex, 0);
-
-            AudioTrack currentTrack = getCurrentTrack();
-            if (currentTrack != null && listener != null) {
-                listener.onTrackChanged(currentTrack, currentIndex);
-            }
-
-            updateMediaSessionMetadata();
-        }
-    }
-
-    public AudioTrack getCurrentTrack() {
-        if (currentIndex >= 0 && currentIndex < playlist.size()) {
-            return playlist.get(currentIndex);
-        }
-        return null;
-    }
-
-    public int getCurrentIndex() {
-        return currentIndex;
-    }
-
-    public double getCurrentPosition() {
-        return player.getCurrentPosition() / 1000.0;
-    }
-
-    public double getDuration() {
-        long duration = player.getDuration();
-        return duration != -1 ? duration / 1000.0 : 0.0;
-    }
-
-    public boolean isPlaying() {
-        return status == PlaybackStatus.PLAYING;
-    }
-
-    public PlaybackStatus getStatus() {
-        return status;
-    }
-
-    // Per-URL Playback Methods
-
-    public void playByUrl(String url) throws Exception {
-        int trackIndex = findTrackIndex(url);
-        if (trackIndex == -1) {
-            throw new Exception("Track with URL '" + url + "' not found in preloaded tracks");
-        }
-
-        // Clear any stored position for this track since we're starting fresh
-        trackPositions.remove(url);
-
-        // Switch to the track and play from beginning
-        currentIndex = trackIndex;
-        switchToTrack(trackIndex);
-        play();
-    }
-
-    public void pauseByUrl(String url) {
-        int trackIndex = findTrackIndex(url);
-        if (trackIndex == -1) {
-            Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
-            return;
-        }
-
-        // Only pause if this is the currently playing track
-        if (trackIndex == currentIndex) {
-            pause();
-        }
-    }
-
-    public void resumeByUrl(String url) {
-        int trackIndex = findTrackIndex(url);
-        if (trackIndex == -1) {
-            Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
-            return;
-        }
-
-        // Check if we're resuming the same track that's currently selected
-        if (trackIndex == currentIndex) {
-            // Same track - just resume without switching
-            play();
-        } else {
-            // Different track - switch to it and restore its position if available
-            currentIndex = trackIndex;
-            switchToTrackWithPosition(trackIndex);
-            play();
-        }
-    }
-
-    public void stopByUrl(String url) {
-        int trackIndex = findTrackIndex(url);
-        if (trackIndex == -1) {
-            Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
-            return;
-        }
-
-        // Clear stored position for this track
-        trackPositions.remove(url);
-
-        // Only stop if this is the currently playing track
-        if (trackIndex == currentIndex) {
-            stop();
-        }
-    }
-
-    public void seekByUrl(String url, double seconds) {
-        int trackIndex = findTrackIndex(url);
-        if (trackIndex == -1) {
-            Log.w(TAG, "Track with URL '" + url + "' not found in preloaded tracks");
-            return;
-        }
-
-        // Switch to the track and seek
-        currentIndex = trackIndex;
-        switchToTrack(trackIndex);
-        seekTo(seconds);
-    }
-
-    // Helper Methods
-
-    private int findTrackIndex(String url) {
-        if (playlist == null) {
-            return -1;
-        }
-
-        for (int i = 0; i < playlist.size(); i++) {
-            if (playlist.get(i).getUrl().equals(url)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private void switchToTrack(int index) {
-        // Ensure we're on the main thread
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(() -> switchToTrack(index));
-            return;
-        }
-
-        if (player != null && index >= 0 && index < playlist.size()) {
-            // Reset status to allow proper playback control after track switch
-            if (status == PlaybackStatus.PLAYING) {
-                status = PlaybackStatus.PAUSED;
-            }
-
-            player.seekTo(index, 0);
-
-            AudioTrack newTrack = playlist.get(index);
-            if (listener != null) {
-                listener.onTrackChanged(newTrack, index);
-            }
-        }
-    }
-
-    private void switchToTrackWithPosition(int index) {
-        // Ensure we're on the main thread
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(() -> switchToTrackWithPosition(index));
-            return;
-        }
-
-        if (player != null && index >= 0 && index < playlist.size()) {
-            // Reset status to allow proper playback control after track switch
-            if (status == PlaybackStatus.PLAYING) {
-                status = PlaybackStatus.PAUSED;
-            }
-
-            AudioTrack newTrack = playlist.get(index);
-
-            // Check if we have a stored position for this track
-            Long storedPosition = trackPositions.get(newTrack.getUrl());
-            if (storedPosition != null) {
-                // Seek to the stored position
-                player.seekTo(index, storedPosition);
-            } else {
-                // No stored position, start from beginning
-                player.seekTo(index, 0);
-            }
-
-            if (listener != null) {
-                listener.onTrackChanged(newTrack, index);
-            }
-        }
-    }
-
-    public void release() {
-        // Clear all stored positions
-        if (trackPositions != null) {
-            trackPositions.clear();
-        }
-
+        MediaPlayer player = audioPlayers.get(trackId);
         if (player != null) {
-            player.release();
-            player = null;
-        }
-
-        if (mediaSession != null) {
-            mediaSession.release();
-            mediaSession = null;
-        }
-
-        abandonAudioFocus();
-    }
-
-    // ExoPlayer.Listener implementation
-    @Override
-    public void onPlaybackStateChanged(int playbackState) {
-        switch (playbackState) {
-            case Player.STATE_ENDED:
-                onTrackCompleted();
-                break;
-            case Player.STATE_READY:
-                // Player is ready to play
-                break;
-            case Player.STATE_BUFFERING:
-                // Player is buffering
-                break;
-            case Player.STATE_IDLE:
-                // Player is idle
-                break;
-        }
-        updatePlaybackState();
-    }
-
-    @Override
-    public void onPlayerError(@NonNull com.google.android.exoplayer2.PlaybackException error) {
-        if (listener != null) {
-            listener.onPlaybackError("Playback error: " + error.getMessage());
-        }
-    }
-
-    private void onTrackCompleted() {
-        AudioTrack currentTrack = getCurrentTrack();
-        if (currentTrack != null && listener != null) {
-            listener.onTrackEnded(currentTrack, currentIndex);
-        }
-
-        // Auto-advance to next track
-        if (currentIndex < playlist.size() - 1) {
-            skipToNext();
-        } else {
-            status = PlaybackStatus.STOPPED;
-        }
-    }
-
-    // Audio focus handling
-    private boolean requestAudioFocus() {
-        int result;
-      result = audioManager.requestAudioFocus(audioFocusRequest);
-      return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
-    }
-
-    private void abandonAudioFocus() {
-      audioManager.abandonAudioFocusRequest(audioFocusRequest);
-    }
-
-    @Override
-    public void onAudioFocusChange(int focusChange) {
-        switch (focusChange) {
-            case AudioManager.AUDIOFOCUS_GAIN:
-                // Resume playback if it was paused due to focus loss
-                if (status == PlaybackStatus.PAUSED) {
-                    play();
+            try {
+                player.stop();
+                if (currentTrackId != null && currentTrackId.equals(trackId)) {
+                    currentTrackId = null;
+                    stopProgressTracking();
+                    abandonAudioFocus();
                 }
-                break;
-            case AudioManager.AUDIOFOCUS_LOSS:
-            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                // Pause playback
-                if (status == PlaybackStatus.PLAYING) {
-                    pause();
+
+                Log.d(TAG, "Stopped playback: " + trackId);
+
+                if (listener != null) {
+                    listener.onPlaybackStopped(trackId);
                 }
-                break;
-            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                // Lower volume or pause (we'll pause for simplicity)
-                if (status == PlaybackStatus.PLAYING) {
-                    pause();
-                }
-                break;
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to stop: " + trackId, e);
+            }
         }
     }
 
-    private void updateMediaSessionMetadata() {
-        AudioTrack currentTrack = getCurrentTrack();
-        if (currentTrack == null) return;
+    public void seekTo(String identifier, double seconds) {
+        String trackId = resolveTrackId(identifier);
+        if (trackId == null) return;
 
-        MediaMetadataCompat.Builder metadataBuilder = new MediaMetadataCompat.Builder()
-            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTrack.getTitle())
-            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentTrack.getArtist())
-            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, (long) (getDuration() * 1000));
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(() -> seekTo(identifier, seconds));
+            return;
+        }
 
-        mediaSession.setMetadata(metadataBuilder.build());
+        MediaPlayer player = audioPlayers.get(trackId);
+        if (player != null) {
+            try {
+                // Prevent excessive seeking from UI progress bar updates
+                long currentTime = System.currentTimeMillis();
+
+                // If playing, ignore tiny position changes (likely from UI sync, not user interaction)
+                if (player.isPlaying()) {
+                    double currentPos = player.getCurrentPosition() / 1000.0;
+                    double seekDiff = Math.abs(seconds - currentPos);
+
+                    // Ignore if this is just the UI syncing with current position
+                    if (seekDiff < SEEK_THRESHOLD_SECONDS) {
+                        return;
+                    }
+                }
+
+                // Throttle rapid seeks
+                if (currentTime - lastSeekTime < SEEK_THROTTLE_MS) {
+                    return;
+                }
+
+                player.seekTo((int) (seconds * 1000));
+                lastSeekTime = currentTime;
+                lastSeekPosition = seconds;
+
+                Log.d(TAG, "Seeked to " + seconds + "s: " + trackId);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to seek: " + trackId, e);
+            }
+        }
     }
 
-    private void updatePlaybackState() {
-        int state = switch (status) {
-          case PLAYING -> PlaybackStateCompat.STATE_PLAYING;
-          case PAUSED -> PlaybackStateCompat.STATE_PAUSED;
-          case STOPPED -> PlaybackStateCompat.STATE_STOPPED;
-          default -> PlaybackStateCompat.STATE_NONE;
-        };
+    public boolean isPlaying(String identifier) {
+        String trackId = resolveTrackId(identifier);
+        if (trackId == null) return false;
 
-      PlaybackStateCompat playbackState = new PlaybackStateCompat.Builder()
-            .setState(state, (long) (getCurrentPosition() * 1000), 1.0f)
-            .setActions(PlaybackStateCompat.ACTION_PLAY |
-                       PlaybackStateCompat.ACTION_PAUSE |
-                       PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
-                       PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
-                       PlaybackStateCompat.ACTION_SEEK_TO)
-            .build();
-
-        mediaSession.setPlaybackState(playbackState);
+        MediaPlayer player = audioPlayers.get(trackId);
+        return player != null && player.isPlaying();
     }
+
+    public double getCurrentPosition(String identifier) {
+        String trackId = resolveTrackId(identifier);
+        if (trackId == null) return 0.0;
+
+        MediaPlayer player = audioPlayers.get(trackId);
+        return player != null ? player.getCurrentPosition() / 1000.0 : 0.0;
+    }
+
+    public double getDuration(String identifier) {
+        String trackId = resolveTrackId(identifier);
+        if (trackId == null) return 0.0;
+
+        MediaPlayer player = audioPlayers.get(trackId);
+        if (player != null) {
+            int duration = player.getDuration();
+            return duration > 0 ? duration / 1000.0 : 0.0;
+        }
+        return 0.0;
+    }
+
+    public String getCurrentTrackId() {
+        return currentTrackId;
+    }
+
+    public String getCurrentTrackUrl() {
+        return currentTrackId != null ? trackIdToUrlMap.get(currentTrackId) : null;
+    }
+
+    // Progress tracking
 
     private void startProgressTracking() {
         if (!isTrackingProgress) {
@@ -878,27 +399,156 @@ public class PlaybackManager implements Player.Listener, AudioManager.OnAudioFoc
     }
 
     private void updateProgress() {
-        if (player != null && listener != null) {
-            AudioTrack currentTrack = getCurrentTrack();
-            if (currentTrack != null) {
+        if (currentTrackId != null && listener != null) {
+            MediaPlayer player = audioPlayers.get(currentTrackId);
+            if (player != null) {
                 long currentPosition = player.getCurrentPosition();
                 long duration = player.getDuration();
-                boolean isPlaying = (status == PlaybackStatus.PLAYING);
-
-                listener.onPlaybackProgress(currentTrack, currentIndex, currentPosition, duration, isPlaying);
+                listener.onPlaybackProgress(currentTrackId, currentPosition, duration);
             }
         }
     }
 
-    private void emitStatusChange() {
-        if (listener != null) {
-            AudioTrack currentTrack = getCurrentTrack();
-            long currentPosition = player != null ? player.getCurrentPosition() : 0;
-            long duration = player != null ? player.getDuration() : 0;
-            boolean isPlaying = (status == PlaybackStatus.PLAYING);
+    // MediaPlayer Listeners
 
-            listener.onPlaybackStatusChanged(currentTrack, currentIndex, status, currentPosition, duration, isPlaying);
+    @Override
+    public void onCompletion(MediaPlayer mp) {
+        String completedTrackId = findTrackIdByPlayer(mp);
+        if (completedTrackId != null) {
+            if (listener != null) {
+                listener.onPlaybackStopped(completedTrackId);
+            }
+
+            if (currentTrackId != null && currentTrackId.equals(completedTrackId)) {
+                currentTrackId = null;
+                stopProgressTracking();
+            }
+
+            Log.d(TAG, "Track completed: " + completedTrackId);
         }
     }
-}
 
+    @Override
+    public void onPrepared(MediaPlayer mp) {
+        String preparedTrackId = findTrackIdByPlayer(mp);
+        if (preparedTrackId != null) {
+            preparedPlayers.put(preparedTrackId, true);
+            Log.d(TAG, "Track prepared: " + preparedTrackId + " (Duration: " + mp.getDuration() + "ms)");
+        }
+    }
+
+    @Override
+    public boolean onError(MediaPlayer mp, int what, int extra) {
+        String errorTrackId = findTrackIdByPlayer(mp);
+        if (errorTrackId != null) {
+            String errorMessage = "MediaPlayer error: " + what + ", " + extra;
+            Log.e(TAG, "Error for track " + errorTrackId + ": " + errorMessage);
+
+            String trackUrl = trackIdToUrlMap.get(errorTrackId);
+
+            // Try to recreate once
+            try {
+                mp.reset();
+                mp.release();
+
+                if (trackUrl != null && preloadTrack(errorTrackId, trackUrl)) {
+                    Log.d(TAG, "Successfully recreated track: " + errorTrackId);
+                } else {
+                    cleanupTrack(errorTrackId, trackUrl);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to recreate track: " + errorTrackId, e);
+                cleanupTrack(errorTrackId, trackUrl);
+            }
+
+            if (listener != null) {
+                listener.onPlaybackError(errorTrackId, errorMessage);
+            }
+
+            if (currentTrackId != null && currentTrackId.equals(errorTrackId)) {
+                currentTrackId = null;
+                stopProgressTracking();
+            }
+        }
+        return true;
+    }
+
+    private String findTrackIdByPlayer(MediaPlayer player) {
+        for (Map.Entry<String, MediaPlayer> entry : audioPlayers.entrySet()) {
+            if (entry.getValue() == player) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
+    // Audio Focus
+
+    private boolean requestAudioFocus() {
+        int result = audioManager.requestAudioFocus(audioFocusRequest);
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+    }
+
+    private void abandonAudioFocus() {
+        audioManager.abandonAudioFocusRequest(audioFocusRequest);
+    }
+
+    @Override
+    public void onAudioFocusChange(int focusChange) {
+        switch (focusChange) {
+            case AudioManager.AUDIOFOCUS_GAIN:
+                if (currentTrackId != null) {
+                    MediaPlayer player = audioPlayers.get(currentTrackId);
+                    if (player != null && !player.isPlaying()) {
+                        player.start();
+                    }
+                }
+                break;
+            case AudioManager.AUDIOFOCUS_LOSS:
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                if (currentTrackId != null) {
+                    pause(currentTrackId);
+                }
+                break;
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                // Just duck the volume
+                if (currentTrackId != null) {
+                    MediaPlayer player = audioPlayers.get(currentTrackId);
+                    if (player != null && player.isPlaying()) {
+                        player.setVolume(0.3f, 0.3f);
+                    }
+                }
+                break;
+        }
+    }
+
+    // Cleanup
+
+    public void release() {
+        if (currentTrackId != null) {
+            stop(currentTrackId);
+        }
+
+        for (Map.Entry<String, MediaPlayer> entry : audioPlayers.entrySet()) {
+            try {
+                MediaPlayer player = entry.getValue();
+                if (player != null) {
+                    if (player.isPlaying()) {
+                        player.stop();
+                    }
+                    player.release();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error releasing player: " + entry.getKey(), e);
+            }
+        }
+
+        audioPlayers.clear();
+        preparedPlayers.clear();
+        urlToTrackIdMap.clear();
+        trackIdToUrlMap.clear();
+
+        abandonAudioFocus();
+        Log.d(TAG, "PlaybackManager released");
+    }
+}

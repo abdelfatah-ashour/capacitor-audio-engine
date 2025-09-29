@@ -7,7 +7,6 @@ enum RecordingError: LocalizedError {
     case noActiveRecording
     case recordingFailed(underlying: Error)
     case compressionFailed(underlying: Error)
-    case segmentMergeFailed(reason: String)
     case invalidConfiguration(parameter: String)
     case fileOperationFailed(operation: String, underlying: Error)
     case memoryPressure
@@ -26,8 +25,6 @@ enum RecordingError: LocalizedError {
             return "Recording failed: \(error.localizedDescription)"
         case .compressionFailed(let error):
             return "Audio compression failed: \(error.localizedDescription)"
-        case .segmentMergeFailed(let reason):
-            return "Failed to merge recording segments: \(reason)"
         case .invalidConfiguration(let parameter):
             return "Invalid recording configuration: \(parameter)"
         case .fileOperationFailed(let operation, let error):
@@ -53,8 +50,6 @@ enum RecordingError: LocalizedError {
             return "An error occurred during the recording process"
         case .compressionFailed:
             return "Failed to compress the recorded audio"
-        case .segmentMergeFailed:
-            return "Could not combine recording segments into final file"
         case .invalidConfiguration:
             return "The recording parameters are not valid"
         case .fileOperationFailed:
@@ -76,7 +71,7 @@ enum RecordingError: LocalizedError {
             return "Close other apps using the microphone and try again"
         case .noActiveRecording:
             return "Start a recording session before attempting to stop"
-        case .recordingFailed, .compressionFailed, .segmentMergeFailed, .fileOperationFailed:
+        case .recordingFailed, .compressionFailed, .fileOperationFailed:
             return "Try recording again. If the problem persists, restart the app"
         case .invalidConfiguration:
             return "Check the recording parameters and try again"
@@ -96,12 +91,11 @@ enum RecordingError: LocalizedError {
         case .noActiveRecording: return 1003
         case .recordingFailed: return 1004
         case .compressionFailed: return 1005
-        case .segmentMergeFailed: return 1006
-        case .invalidConfiguration: return 1007
-        case .fileOperationFailed: return 1008
-        case .memoryPressure: return 1009
-        case .processingTimeout: return 1010
-        case .invalidDuration: return 1011
+        case .invalidConfiguration: return 1006
+        case .fileOperationFailed: return 1007
+        case .memoryPressure: return 1008
+        case .processingTimeout: return 1009
+        case .invalidDuration: return 1010
         }
     }
 }
@@ -168,18 +162,6 @@ extension Error {
 
     /// Creates an NSError from RecordingError for Capacitor compatibility
     var asNSError: NSError {
-        if let recordingError = self as? RecordingError {
-            return NSError(
-                domain: AudioEngineConstants.ErrorDomains.recording,
-                code: recordingError.errorCode,
-                userInfo: [
-                    NSLocalizedDescriptionKey: recordingError.localizedDescription,
-                    NSLocalizedFailureReasonErrorKey: recordingError.failureReason ?? "",
-                    NSLocalizedRecoverySuggestionErrorKey: recordingError.recoverySuggestion ?? ""
-                ]
-            )
-        }
-
         if let playbackError = self as? PlaybackError {
             return NSError(
                 domain: AudioEngineConstants.ErrorDomains.playback,

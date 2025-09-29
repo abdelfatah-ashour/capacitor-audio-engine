@@ -1,7 +1,6 @@
 import Foundation
 import Capacitor
 @preconcurrency import AVFoundation
-@preconcurrency import UserNotifications
 
 /**
  * Please read the Capacitor iOS Plugin Development Guide
@@ -9,7 +8,7 @@ import Capacitor
  */
 
 @objc(CapacitorAudioEnginePlugin)
-public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingManagerDelegate, PlaybackManagerDelegate, WaveLevelEventCallback {
+public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackManagerDelegate, WaveLevelEventCallback, RecordingManagerDelegate {
     public let identifier = "CapacitorAudioEnginePlugin"
     public let jsName = "CapacitorAudioEngine"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -17,17 +16,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "checkPermissionMicrophone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "checkPermissionNotifications", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermissions", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "startRecording", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "pauseRecording", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "stopRecording", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "resumeRecording", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "resetRecording", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getDuration", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getStatus", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "trimAudio", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "isMicrophoneBusy", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getAvailableMicrophones", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "switchMicrophone", returnType: CAPPluginReturnPromise),
+
         CAPPluginMethod(name: "configureWaveform", returnType: CAPPluginReturnPromise),
 
         CAPPluginMethod(name: "destroyWaveform", returnType: CAPPluginReturnPromise),
@@ -46,19 +35,22 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         CAPPluginMethod(name: "skipToIndex", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPlaybackInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
+        // Recording methods
+        CAPPluginMethod(name: "startRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stopRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "pauseRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resumeRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resetRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getRecordingStatus", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "trimAudio", returnType: CAPPluginReturnPromise),
     ]
 
     // MARK: - Properties
 
-    private var recordingManager: RecordingManager!
     private var playbackManager: PlaybackManager!
     private var waveLevelEmitter: WaveLevelEmitter!
     private var permissionService: PermissionManagerService!
-    private var pendingStopRecordingCall: CAPPluginCall?
-    private var stopRecordingTimeoutTask: DispatchWorkItem?
-    private var currentRecordingSampleRate: Int = Int(AudioEngineConstants.defaultSampleRate)
-    private var currentRecordingChannels: Int = AudioEngineConstants.defaultChannels
-    private var currentRecordingBitrate: Int = AudioEngineConstants.defaultBitrate
+    private var recordingManager: RecordingManager!
 
     // MARK: - Thread Safety
 
@@ -68,14 +60,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         return try stateQueue.sync { try operation() }
     }
 
-    // MARK: - Playback Info Caching
-    private var cachedPlaybackInfo: [String: Any]?
-    private var lastPlaybackInfoUpdate: TimeInterval = 0
-    private let playbackInfoCacheInterval: TimeInterval = 0.5 // Cache for 500ms
-
-    private func invalidatePlaybackInfoCache() {
-        cachedPlaybackInfo = nil
-        lastPlaybackInfoUpdate = 0
+    // MARK: - URL to Track ID Mapping (delegated to PlaybackManager)
+    private func findTrackIdByUrl(_ url: String) -> String? {
+        return playbackManager.getTrackId(for: url)
     }
 
     // MARK: - Lifecycle
@@ -84,15 +71,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         super.load()
         permissionService = PermissionManagerService()
 
-        // Initialize recording manager with delegate
-        recordingManager = RecordingManager(delegate: self)
-
         // Initialize playback manager and set delegate
         playbackManager = PlaybackManager()
         playbackManager.delegate = self
 
         // Initialize wave level emitter with event callback
         waveLevelEmitter = WaveLevelEmitter(eventCallback: self)
+
+        // Initialize recording manager
+        recordingManager = RecordingManager(delegate: self)
     }
 
     // MARK: - Logging Utility
@@ -101,6 +88,51 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         #if DEBUG
         print("[AudioEngine] \(message)")
         #endif
+    }
+
+    // MARK: - Path Utilities
+
+    private func getRelativePathForDirectoryData(absolutePath: String) -> String {
+        // Get the Application Support directory (equivalent to Directory.Data)
+        guard let appSupportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return absolutePath
+        }
+
+        let appSupportPath = appSupportDir.path
+
+        #if DEBUG
+        print("[AudioEngine] getRelativePathForDirectoryData - input: '\(absolutePath)'")
+        print("[AudioEngine] getRelativePathForDirectoryData - appSupportPath: '\(appSupportPath)'")
+        print("[AudioEngine] getRelativePathForDirectoryData - hasPrefix check: \(absolutePath.hasPrefix(appSupportPath))")
+        print("[AudioEngine] getRelativePathForDirectoryData - input length: \(absolutePath.count)")
+        print("[AudioEngine] getRelativePathForDirectoryData - appSupportPath length: \(appSupportPath.count)")
+        #endif
+
+        // If the absolute path starts with the app support directory, return the relative part
+        if absolutePath.hasPrefix(appSupportPath) {
+            let relativePath = String(absolutePath.dropFirst(appSupportPath.count))
+            let result = relativePath.hasPrefix("/") ? String(relativePath.dropFirst()) : relativePath
+            #if DEBUG
+            print("[AudioEngine] getRelativePathForDirectoryData - case 1 (absolute): \(result)")
+            #endif
+            return result
+        }
+
+        // If the path starts with "/" but doesn't start with app support directory,
+        // it's a relative path that should be returned as-is (just remove leading slash)
+        if absolutePath.hasPrefix("/") {
+            let result = String(absolutePath.dropFirst())
+            #if DEBUG
+            print("[AudioEngine] getRelativePathForDirectoryData - case 2 (relative with slash): \(result)")
+            #endif
+            return result
+        }
+
+        // Otherwise, return the path as-is (it's already relative)
+        #if DEBUG
+        print("[AudioEngine] getRelativePathForDirectoryData - case 3 (already relative): \(absolutePath)")
+        #endif
+        return absolutePath
     }
 
     // MARK: - Network Utility Methods
@@ -172,194 +204,14 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         }
     }
 
-    // MARK: - Recording Methods (delegate to RecordingManager)
-
-    @objc func startRecording(_ call: CAPPluginCall) {
-        // Validate permissions before starting recording
-        do {
-            try permissionService.validateRecordingPermissions()
-        } catch {
-            call.reject("Permission Error", error.localizedDescription)
-            return
-        }
-
-        // Input validation
-        if let sampleRate = call.getInt("sampleRate"), sampleRate <= 0 {
-            call.reject("Invalid sample rate: must be positive")
-            return
-        }
-
-        if let channels = call.getInt("channels"), channels <= 0 || channels > 2 {
-            call.reject("Invalid channels: must be 1 or 2")
-            return
-        }
-
-        if let bitrate = call.getInt("bitrate"), bitrate <= 0 {
-            call.reject("Invalid bitrate: must be positive")
-            return
-        }
-
-        // Get recording settings
-        let sampleRate = call.getInt("sampleRate") ?? Int(AudioEngineConstants.defaultSampleRate)
-        let bitrate = call.getInt("bitrate") ?? AudioEngineConstants.defaultBitrate
-
-        let settings: [String: Any] = [
-            "sampleRate": sampleRate,
-            "channels": call.getInt("channels") ?? AudioEngineConstants.defaultChannels,
-            "bitrate": bitrate,
-            "maxDuration": call.getInt("maxDuration") as Any
-        ]
-
-        // Store current recording config for waveform defaults
-        currentRecordingSampleRate = sampleRate
-        currentRecordingChannels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-        currentRecordingBitrate = bitrate
-
-        recordingManager.startRecording(with: settings)
-
-        // Start wave level monitoring for real-time audio levels
-        waveLevelEmitter.startMonitoring()
-
-        call.resolve()
-    }
-
-    @objc func pauseRecording(_ call: CAPPluginCall) {
-        recordingManager.pauseRecording()
-
-        // Pause wave level monitoring
-        waveLevelEmitter.pauseMonitoring()
-
-        call.resolve()
-    }
-
-    @objc func resumeRecording(_ call: CAPPluginCall) {
-        recordingManager.resumeRecording()
-
-        // Resume wave level monitoring
-        waveLevelEmitter.resumeMonitoring()
-
-        call.resolve()
-    }
-
-    @objc func resetRecording(_ call: CAPPluginCall) {
-        // Ensure there is an active recording session to reset
-        let status = recordingManager.getStatus()
-        if status == "idle" {
-            call.reject("No active recording session to reset")
-            return
-        }
-
-        // Cancel any pending stop recording timeout
-        if let timeoutTask = stopRecordingTimeoutTask {
-            timeoutTask.cancel()
-            stopRecordingTimeoutTask = nil
-            log("Stop recording timeout cancelled - recording reset")
-        }
-
-        // Clear pending stop recording call
-        pendingStopRecordingCall = nil
-
-        // Reset recording manager state (discards segments, duration, keeps config, pauses)
-        recordingManager.resetRecording()
-
-        // Discard wave data by stopping monitoring so UI can clear on waveLevelDestroy
-        waveLevelEmitter.stopMonitoring()
-
-        call.resolve()
-    }
-
-    @objc func stopRecording(_ call: CAPPluginCall) {
-        // Get optional trimming parameters
-        let startTime = call.getDouble("start")
-        let endTime = call.getDouble("end")
-
-        // Store the call and trimming parameters to resolve it when recording finishes
-        pendingStopRecordingCall = call
-        recordingManager.setTrimmingParameters(start: startTime, end: endTime)
-
-        // Set up a timeout to ensure the call is resolved even if trimming takes too long
-        let timeoutTask = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-
-            if let pendingCall = self.pendingStopRecordingCall {
-                self.log("Stop recording timeout reached - resolving call with error")
-                pendingCall.reject("Recording stop operation timed out after 60 seconds")
-                self.pendingStopRecordingCall = nil
-            }
-        }
-
-        // Schedule timeout after 60 seconds
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 60.0, execute: timeoutTask)
-
-        // Start the recording stop process
-        recordingManager.stopRecording()
-
-        // Store the timeout task so we can cancel it if recording finishes normally
-        self.stopRecordingTimeoutTask = timeoutTask
-    }
-
-    @objc func getDuration(_ call: CAPPluginCall) {
-        let duration = recordingManager.getDuration()
-        call.resolve(["duration": duration])
-    }
-
-    @objc func getStatus(_ call: CAPPluginCall) {
-        let status = recordingManager.getStatus()
-        call.resolve(["status": status])
-    }
-
-    @objc func trimAudio(_ call: CAPPluginCall) {
-        guard let uri = call.getString("uri"),
-              let start = call.getDouble("start"),
-              let end = call.getDouble("end") else {
-            call.reject("URI, start, and end are required")
-            return
-        }
-
-        Task {
-            do {
-                let trimmedURL = try await recordingManager.trimAudio(uri: uri, start: start, end: end)
-                var audioInfo = try await extractAudioInfo(from: trimmedURL.absoluteString)
-
-                // Update path fields to use the trimmed file's actual paths
-                audioInfo["path"] = trimmedURL.path
-                audioInfo["uri"] = trimmedURL.absoluteString
-                audioInfo["webPath"] = "capacitor://localhost/_capacitor_file_" + trimmedURL.path
-
-
-                call.resolve(audioInfo)
-            } catch {
-                call.reject("Failed to trim audio: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    @objc func isMicrophoneBusy(_ call: CAPPluginCall) {
-        let result = recordingManager.isMicrophoneBusy()
-        call.resolve([
-            "busy": result.isBusy,
-            "reason": result.reason
-        ])
-    }
-
-    @objc func getAvailableMicrophones(_ call: CAPPluginCall) {
-        let microphones = recordingManager.getAvailableMicrophones()
-        call.resolve(["microphones": microphones])
-    }
-
-    @objc func switchMicrophone(_ call: CAPPluginCall) {
-        guard let id = call.getInt("id") else {
-            call.reject("Microphone ID is required")
-            return
-        }
-        recordingManager.switchMicrophone(to: id)
-        call.resolve()
-    }
+    // MARK: - Recording APIs removed (streaming is the supported path on iOS)
 
     @objc func configureWaveform(_ call: CAPPluginCall) {
         // Accept 'EmissionInterval' in ms from the call, fallback to 1000ms if not provided
         let intervalMs = call.getInt("EmissionInterval") ?? 1000
         waveLevelEmitter.setEmissionInterval(intervalMs)
+        // Keep recording wave interval in sync
+        recordingManager.setWaveLevelEmissionInterval(intervalMs)
 
         log("Wave level emitter configured - interval: \(intervalMs)ms")
 
@@ -380,9 +232,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             log("Wave level monitoring started via configuration")
         }
     }
-
-
-
 
     @objc func destroyWaveform(_ call: CAPPluginCall) {
         // Stop monitoring if active
@@ -591,75 +440,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         return "audio.m4a"
     }
 
-    // MARK: - RecordingManagerDelegate Implementation
-
-    func recordingDidUpdateDuration(_ duration: Int) {
-        notifyListeners("durationChange", data: ["duration": duration])
-    }
-
-    func recordingDidEncounterError(_ error: Error) {
-        notifyListeners("error", data: ["message": error.localizedDescription])
-
-        // Cancel the timeout task since recording finished with error
-        if let timeoutTask = stopRecordingTimeoutTask {
-            timeoutTask.cancel()
-            stopRecordingTimeoutTask = nil
-            log("Stop recording timeout cancelled - recording finished with error")
-        }
-
-        // Reject the pending stop recording call if there's an error
-        if let call = pendingStopRecordingCall {
-            call.reject("Recording error: \(error.localizedDescription)")
-            pendingStopRecordingCall = nil
-        }
-    }
-
-    func recordingDidFinish(_ info: [String: Any]) {
-        // This will be called when recording finishes
-        // The info contains the recording response
-        log("Recording finished with info: \(info)")
-
-        // Cancel the timeout task since recording finished successfully
-        if let timeoutTask = stopRecordingTimeoutTask {
-            timeoutTask.cancel()
-            stopRecordingTimeoutTask = nil
-            log("Stop recording timeout cancelled - recording completed successfully")
-        }
-
-        // Stop wave level monitoring
-        waveLevelEmitter.stopMonitoring()
-        log("Wave level monitoring stopped")
-
-        // Reconfigure audio session for optimal playback after recording
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            // Ensure session is active for potential immediate playback
-            try audioSession.setActive(true)
-            log("Audio session reconfigured for playback after recording")
-        } catch {
-            log("Warning: Failed to reconfigure audio session after recording: \(error.localizedDescription)")
-        }
-
-        // Resolve the pending stop recording call with the recording data
-        if let call = pendingStopRecordingCall {
-            call.resolve(info)
-            pendingStopRecordingCall = nil
-        }
-    }
-
-    func recordingDidChangeState(_ state: String, data: [String: Any]) {
-        // Log the state change for debugging
-        log("recordingDidChangeState called - state: \(state), data: \(data)")
-
-        // Emit state change event to match Android behavior
-        notifyListeners("recordingStateChange", data: [
-            "state": state,
-            "data": data
-        ])
-
-        log("recordingStateChange event emitted to JavaScript")
-    }
+    // MARK: - Recording delegate removed
 
     // MARK: - Playback Methods
 
@@ -683,12 +464,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
             }
         }
 
-        let preloadNext = call.getBool("preloadNext") ?? true
-        print("CapacitorAudioEnginePlugin: preloadNext = \(preloadNext)")
-
         do {
             print("CapacitorAudioEnginePlugin: Calling playbackManager.preloadTracks")
-            let trackResults = try playbackManager.preloadTracks(trackUrls: tracksArray, preloadNext: preloadNext)
+            let trackResults = try playbackManager.preloadTracks(trackUrls: tracksArray)
             print("CapacitorAudioEnginePlugin: preloadTracks completed successfully")
 
             // Return the track results in the same format as Android
@@ -703,27 +481,23 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     }
 
     @objc func playAudio(_ call: CAPPluginCall) {
-        do {
-            if let url = call.getString("url") {
-                // Play specific preloaded track by URL
-                try playbackManager.playByUrl(url)
-            } else {
-                // Play current track
-                try playbackManager.play()
-            }
-            call.resolve()
-        } catch {
-            call.reject("Failed to play audio: \(error.localizedDescription)")
+        if let url = call.getString("url") {
+            // Play specific preloaded track by URL
+            playbackManager.play(identifier: url)
+        } else {
+            // Play current track
+            playbackManager.play(identifier: nil)
         }
+        call.resolve()
     }
 
     @objc func pauseAudio(_ call: CAPPluginCall) {
         if let url = call.getString("url") {
             // Pause specific preloaded track by URL
-            playbackManager.pauseByUrl(url)
+            playbackManager.pause(identifier: url)
         } else {
             // Pause current track
-            playbackManager.pause()
+            playbackManager.pause(identifier: nil)
         }
         call.resolve()
     }
@@ -731,10 +505,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     @objc func resumeAudio(_ call: CAPPluginCall) {
         if let url = call.getString("url") {
             // Resume specific preloaded track by URL
-            playbackManager.resumeByUrl(url)
+            playbackManager.play(identifier: url) // Resume is handled by play
         } else {
             // Resume current track
-            playbackManager.resume()
+            playbackManager.play(identifier: nil)
         }
         call.resolve()
     }
@@ -742,10 +516,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
     @objc func stopAudio(_ call: CAPPluginCall) {
         if let url = call.getString("url") {
             // Stop specific preloaded track by URL
-            playbackManager.stopByUrl(url)
+            playbackManager.stop(identifier: url)
         } else {
             // Stop current track
-            playbackManager.stop()
+            playbackManager.stop(identifier: nil)
         }
         call.resolve()
     }
@@ -758,68 +532,51 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
 
         if let url = call.getString("url") {
             // Seek in specific preloaded track by URL
-            playbackManager.seekByUrl(url, to: seconds)
+            playbackManager.seek(identifier: url, to: seconds)
         } else {
             // Seek in current track
-            playbackManager.seek(to: seconds)
+            playbackManager.seek(identifier: nil, to: seconds)
         }
         call.resolve()
     }
 
     @objc func skipToNext(_ call: CAPPluginCall) {
-        playbackManager.skipToNext()
+        // Playlist functionality removed - simplified to single track playback
         call.resolve()
     }
 
     @objc func skipToPrevious(_ call: CAPPluginCall) {
-        playbackManager.skipToPrevious()
+        // Playlist functionality removed - simplified to single track playback
         call.resolve()
     }
 
     @objc func skipToIndex(_ call: CAPPluginCall) {
-        guard let index = call.getInt("index") else {
-            call.reject("Missing index parameter")
-            return
-        }
-
-        playbackManager.skipToIndex(index)
+        // Playlist functionality removed - simplified to single track playback
         call.resolve()
     }
 
     @objc func getPlaybackInfo(_ call: CAPPluginCall) {
-        let now = CACurrentMediaTime()
-
-        // Return cached result if within cache interval
-        if let cached = cachedPlaybackInfo,
-           now - lastPlaybackInfoUpdate < playbackInfoCacheInterval {
-            call.resolve(cached)
-            return
-        }
-
-        // Generate fresh playback info
         var result: [String: Any] = [:]
 
-        if let currentTrack = playbackManager.getCurrentTrack() {
+        if let currentTrackId = playbackManager.getCurrentTrackId() {
+            // Get the URL for the current track
+            let currentUrl = playbackManager.getCurrentTrackUrl() ?? ""
+
             result["currentTrack"] = [
-                "id": currentTrack.id,
-                "url": currentTrack.url,
-                "title": currentTrack.title ?? "",
-                "artist": currentTrack.artist ?? "",
-                "artworkUrl": currentTrack.artworkUrl ?? ""
+                "id": currentTrackId,
+                "url": currentUrl
             ]
+            result["currentIndex"] = 0 // Single track playback
+            result["currentPosition"] = playbackManager.getCurrentPosition(identifier: currentTrackId)
+            result["duration"] = playbackManager.getDuration(identifier: currentTrackId)
+            result["isPlaying"] = playbackManager.isPlaying(identifier: currentTrackId)
         } else {
             result["currentTrack"] = NSNull()
+            result["currentIndex"] = -1
+            result["currentPosition"] = 0.0
+            result["duration"] = 0.0
+            result["isPlaying"] = false
         }
-
-        result["currentIndex"] = playbackManager.getCurrentIndex()
-        result["currentPosition"] = playbackManager.getCurrentPosition()
-        result["duration"] = playbackManager.getDuration()
-        result["isPlaying"] = playbackManager.isPlaying()
-        result["status"] = statusToString(playbackManager.getStatus())
-
-        // Cache the result
-        cachedPlaybackInfo = result
-        lastPlaybackInfoUpdate = now
 
         call.resolve(result)
     }
@@ -844,136 +601,292 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, RecordingM
         }
     }
 
-    private func statusToString(_ status: PlaybackStatus) -> String {
-        switch status {
-        case .idle: return "idle"
-        case .loading: return "loading"
-        case .playing: return "playing"
-        case .paused: return "paused"
-        case .stopped: return "stopped"
-        }
-    }
 
-    // MARK: - PlaybackManagerDelegate Implementation
+    // MARK: - PlaybackManagerDelegate Implementation (Simplified)
 
-    func playbackManager(_ manager: PlaybackManager, trackDidChange track: AudioTrack, at index: Int) {
-        invalidatePlaybackInfoCache()
-
+    func playbackManager(_ manager: PlaybackManager, playbackStarted trackId: String) {
+        let currentUrl = manager.getUrl(for: trackId) ?? ""
         let data: [String: Any] = [
-            "track": [
-                "id": track.id,
-                "url": track.url,
-                "title": track.title ?? "",
-                "artist": track.artist ?? "",
-                "artworkUrl": track.artworkUrl ?? ""
-            ],
-            "index": index
-        ]
-        notifyListeners("trackChanged", data: data)
-    }
-
-    func playbackManager(_ manager: PlaybackManager, trackDidEnd track: AudioTrack, at index: Int) {
-        invalidatePlaybackInfoCache()
-
-        let data: [String: Any] = [
-            "track": [
-                "id": track.id,
-                "url": track.url,
-                "title": track.title ?? "",
-                "artist": track.artist ?? "",
-                "artworkUrl": track.artworkUrl ?? ""
-            ],
-            "index": index
-        ]
-        notifyListeners("trackEnded", data: data)
-    }
-
-    func playbackManager(_ manager: PlaybackManager, playbackDidStart track: AudioTrack, at index: Int) {
-        invalidatePlaybackInfoCache()
-
-        let data: [String: Any] = [
-            "track": [
-                "id": track.id,
-                "url": track.url,
-                "title": track.title ?? "",
-                "artist": track.artist ?? "",
-                "artworkUrl": track.artworkUrl ?? ""
-            ],
-            "index": index
+            "trackId": trackId,
+            "url": currentUrl
         ]
         notifyListeners("playbackStarted", data: data)
     }
 
-    func playbackManager(_ manager: PlaybackManager, playbackDidPause track: AudioTrack, at index: Int) {
-        invalidatePlaybackInfoCache()
-
+    func playbackManager(_ manager: PlaybackManager, playbackPaused trackId: String) {
+        let currentUrl = manager.getUrl(for: trackId) ?? ""
         let data: [String: Any] = [
-            "track": [
-                "id": track.id,
-                "url": track.url,
-                "title": track.title ?? "",
-                "artist": track.artist ?? "",
-                "artworkUrl": track.artworkUrl ?? ""
-            ],
-            "index": index,
-            "position": manager.getCurrentPosition()
+            "trackId": trackId,
+            "url": currentUrl,
+            "position": manager.getCurrentPosition(identifier: trackId)
         ]
         notifyListeners("playbackPaused", data: data)
     }
 
-    func playbackManager(_ manager: PlaybackManager, playbackDidFail error: Error) {
-        notifyListeners("playbackError", data: ["message": error.localizedDescription])
+    func playbackManager(_ manager: PlaybackManager, playbackStopped trackId: String) {
+        let currentUrl = manager.getUrl(for: trackId) ?? ""
+        let data: [String: Any] = [
+            "trackId": trackId,
+            "url": currentUrl
+        ]
+        notifyListeners("playbackStopped", data: data)
     }
 
-    func playbackManager(_ manager: PlaybackManager, playbackProgress track: AudioTrack, at index: Int, currentPosition: Double, duration: Double, isPlaying: Bool) {
-        // Only send progress events, don't invalidate cache as these are frequent updates
-        // Cache invalidation is handled by state change events
+    func playbackManager(_ manager: PlaybackManager, playbackError trackId: String, error: Error) {
         let data: [String: Any] = [
-            "track": [
-                "id": track.id,
-                "url": track.url,
-                "title": track.title ?? "",
-                "artist": track.artist ?? "",
-                "artworkUrl": track.artworkUrl ?? ""
-            ],
-            "index": index,
+            "trackId": trackId,
+            "message": error.localizedDescription
+        ]
+        notifyListeners("playbackError", data: data)
+    }
+
+    func playbackManager(_ manager: PlaybackManager, playbackProgress trackId: String, currentPosition: Double, duration: Double) {
+        let currentUrl = manager.getUrl(for: trackId) ?? ""
+        let data: [String: Any] = [
+            "trackId": trackId,
+            "url": currentUrl,
             "currentPosition": currentPosition,
             "duration": duration,
-            "isPlaying": isPlaying
+            "isPlaying": manager.isPlaying(identifier: trackId)
         ]
         notifyListeners("playbackProgress", data: data)
-    }
-
-    func playbackManager(_ manager: PlaybackManager, statusChanged track: AudioTrack?, at index: Int, status: PlaybackStatus, currentPosition: Double, duration: Double, isPlaying: Bool) {
-        invalidatePlaybackInfoCache()
-
-        var data: [String: Any] = [
-            "index": index,
-            "status": statusToString(status),
-            "currentPosition": currentPosition,
-            "duration": duration,
-            "isPlaying": isPlaying
-        ]
-
-        if let track = track {
-            data["currentTrack"] = [
-                "id": track.id,
-                "url": track.url,
-                "title": track.title ?? "",
-                "artist": track.artist ?? "",
-                "artworkUrl": track.artworkUrl ?? ""
-            ]
-        } else {
-            data["currentTrack"] = NSNull()
-        }
-
-        notifyListeners("playbackStatusChanged", data: data)
     }
 
     // MARK: - WaveformEventCallback Implementation
 
     func notifyListeners(_ eventName: String, data: [String: Any]) {
         super.notifyListeners(eventName, data: data)
+    }
+
+    // MARK: - Recording Methods
+
+    @objc func startRecording(_ call: CAPPluginCall) {
+        do {
+            try permissionService.validateRecordingPermissions()
+        } catch {
+            call.reject("Permission Error", error.localizedDescription)
+            return
+        }
+        guard let path = call.getString("path"), !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            call.reject("Path is required for startRecording")
+            return
+        }
+        // If no path provided, RecordingManager will use Directory.Data equivalent
+        // (app's Application Support directory)
+        recordingManager.configureRecording(encoding: nil, bitrate: nil, path: path)
+        recordingManager.startRecording()
+        // Start shared wave monitoring when recording starts
+        waveLevelEmitter.startMonitoring()
+
+        call.resolve()
+    }
+
+    @objc func stopRecording(_ call: CAPPluginCall) {
+        recordingManager.stopRecording()
+        // Stop shared wave monitoring when recording stops
+        waveLevelEmitter.stopMonitoring()
+
+        // Get the recording status to retrieve the file path
+        let status = recordingManager.getStatus()
+
+        guard let filePath = status.path else {
+            call.reject("No recording file path available")
+            return
+        }
+
+        // Extract audio file info
+        Task {
+            do {
+                let audioInfo = try await extractAudioInfo(from: filePath)
+                call.resolve(audioInfo)
+            } catch {
+                call.reject("Failed to get audio info: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @objc func pauseRecording(_ call: CAPPluginCall) {
+        recordingManager.pauseRecording()
+        // Pause shared wave monitoring
+        waveLevelEmitter.pauseMonitoring()
+        call.resolve()
+    }
+
+    @objc func resumeRecording(_ call: CAPPluginCall) {
+        recordingManager.resumeRecording()
+        // Resume shared wave monitoring
+        waveLevelEmitter.resumeMonitoring()
+        call.resolve()
+    }
+
+    @objc func resetRecording(_ call: CAPPluginCall) {
+        recordingManager.resetRecording()
+        // Pause shared wave monitoring; let WaveLevelEmitter clear via pause
+        waveLevelEmitter.pauseMonitoring()
+        call.resolve()
+    }
+
+    @objc func getRecordingStatus(_ call: CAPPluginCall) {
+        let status = recordingManager.getStatus()
+        var result: [String: Any] = [
+            "status": status.status,
+            "duration": status.duration
+        ]
+        if let path = status.path {
+            result["path"] = path
+        }
+        call.resolve(result)
+    }
+
+    @objc func trimAudio(_ call: CAPPluginCall) {
+        guard let uriString = call.getString("uri") else {
+            call.reject("Missing required parameter: uri")
+            return
+        }
+
+        guard let startTime = call.getDouble("startTime") else {
+            call.reject("Missing required parameter: startTime")
+            return
+        }
+
+        guard let endTime = call.getDouble("endTime") else {
+            call.reject("Missing required parameter: endTime")
+            return
+        }
+
+        // Validate time range
+        if startTime < 0 || endTime <= startTime {
+            call.reject("Invalid time range: startTime must be >= 0 and endTime must be > startTime")
+            return
+        }
+
+        // Convert URI to URL
+        let sourceURL: URL
+        if uriString.hasPrefix("file://") {
+            sourceURL = URL(string: uriString)!
+        } else if uriString.hasPrefix("/") {
+            sourceURL = URL(fileURLWithPath: uriString)
+        } else {
+            // Relative path - use app's documents directory
+            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            sourceURL = documentsPath.appendingPathComponent(uriString)
+        }
+
+        // Check if file exists
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            call.reject("Source file does not exist: \(sourceURL.path)")
+            return
+        }
+
+        // Create output path in the same directory as the source file
+        let sourceDirectory = sourceURL.deletingLastPathComponent()
+        let originalFileName = sourceURL.lastPathComponent
+        // Create temporary name first to avoid conflicts during processing
+        let tempOutputFileName = "temp_trimming_\(Int(Date().timeIntervalSince1970 * 1000)).\(sourceURL.pathExtension)"
+        let outputURL = sourceDirectory.appendingPathComponent(tempOutputFileName)
+
+        // Create asset from source file
+        let asset = AVAsset(url: sourceURL)
+
+        // Validate that the trim range is within asset duration
+        let assetDuration = CMTimeGetSeconds(asset.duration)
+        if endTime > assetDuration {
+            call.reject("End time (\(endTime)s) exceeds audio duration (\(assetDuration)s)")
+            return
+        }
+
+        // Create export session
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            call.reject("Failed to create export session")
+            return
+        }
+
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .m4a
+
+        // Set time range for trimming
+        let startCMTime = CMTime(seconds: startTime, preferredTimescale: 600)
+        let endCMTime = CMTime(seconds: endTime, preferredTimescale: 600)
+        let timeRange = CMTimeRange(start: startCMTime, end: endCMTime)
+        exportSession.timeRange = timeRange
+
+        // Perform export
+        exportSession.exportAsynchronously {
+            DispatchQueue.main.async {
+                switch exportSession.status {
+                case .completed:
+                    // Extract audio file info for the trimmed file
+                    Task {
+                        do {
+                            // Delete the original file first
+                            do {
+                                try FileManager.default.removeItem(at: sourceURL)
+                                self.log("Deleted original file: \(sourceURL.path)")
+                            } catch {
+                                self.log("Warning: Could not delete original file: \(error.localizedDescription)")
+                                // Don't fail the operation if deletion fails
+                            }
+
+                            // Rename the temporary trimmed file to the original filename
+                            let finalURL = sourceDirectory.appendingPathComponent(originalFileName)
+                            do {
+                                try FileManager.default.moveItem(at: outputURL, to: finalURL)
+                                self.log("Renamed trimmed file to original name: \(finalURL.path)")
+                            } catch {
+                                self.log("Warning: Could not rename trimmed file: \(error.localizedDescription)")
+                                // Use the temp file path if rename fails
+                            }
+
+                            let audioInfo = try await self.extractAudioInfo(from: finalURL.path)
+                            call.resolve(audioInfo)
+                        } catch {
+                            call.reject("Export completed but failed to get audio info: \(error.localizedDescription)")
+                        }
+                    }
+
+                case .failed:
+                    if let error = exportSession.error {
+                        call.reject("Export failed: \(error.localizedDescription)")
+                    } else {
+                        call.reject("Export failed with unknown error")
+                    }
+
+                case .cancelled:
+                    call.reject("Export was cancelled")
+
+                default:
+                    call.reject("Export failed with status: \(exportSession.status.rawValue)")
+                }
+            }
+        }
+    }
+
+
+    // MARK: - RecordingManagerDelegate
+    func recordingDidChangeStatus(_ status: String) {
+        notifyListeners("recordingStatusChanged", data: ["status": status])
+    }
+
+    func recordingDidEncounterError(_ error: Error) {
+        notifyListeners("error", data: ["message": error.localizedDescription])
+    }
+
+
+    func recordingDidUpdateDuration(_ duration: Double) {
+        notifyListeners("durationChange", data: ["duration": duration])
+    }
+
+    func recordingDidEmitWaveLevel(_ level: Double, timestamp: TimeInterval) {
+        notifyListeners("waveLevel", data: ["level": level, "timestamp": Int(timestamp * 1000)])
+    }
+
+    func recordingDidFinalize(_ path: String) {
+        notifyListeners("recordingFinalized", data: [
+            "status": "finalized",
+            "path": path,
+            "uri": path,
+            "webPath": "capacitor://localhost/_capacitor_file_" + path
+        ])
     }
 
 }

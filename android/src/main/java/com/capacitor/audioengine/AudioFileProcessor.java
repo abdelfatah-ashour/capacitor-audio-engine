@@ -1,21 +1,14 @@
 package com.capacitor.audioengine;
 
-import android.content.Context;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaMuxer;
-import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
-
 import com.getcapacitor.JSObject;
-
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Handles audio file processing operations including trimming and merging
@@ -200,38 +193,106 @@ public class AudioFileProcessor {
             MediaFormat audioFormat = extractor.getTrackFormat(audioTrack);
             extractor.selectTrack(audioTrack);
 
+            // Determine duration (us) for clamping end time
+            long sourceDurationUs = -1L;
+            if (audioFormat.containsKey(MediaFormat.KEY_DURATION)) {
+                try {
+                    sourceDurationUs = audioFormat.getLong(MediaFormat.KEY_DURATION);
+                } catch (Exception ignored) { }
+            }
+            if (sourceDurationUs <= 0) {
+                // Fallback via retriever helper (seconds to us)
+                double durSec = getAudioDuration(sourceFile.getAbsolutePath());
+                if (durSec > 0) sourceDurationUs = (long) (durSec * 1_000_000L);
+            }
+
+            long startTimeUs = Math.max(0L, (long) (startTime * 1_000_000L));
+            long requestedEndUs = (long) (endTime * 1_000_000L);
+            long effectiveEndUs = requestedEndUs;
+            if (sourceDurationUs > 0) {
+                // Clamp end time to track duration
+                effectiveEndUs = Math.min(requestedEndUs, sourceDurationUs);
+            }
+            if (effectiveEndUs <= startTimeUs) {
+                muxer.start();
+                muxer.stop();
+                Log.w(TAG, "Trim range is empty or invalid. startUs=" + startTimeUs + ", endUs=" + effectiveEndUs);
+                return;
+            }
+
             // Create muxer track
             int muxerTrack = muxer.addTrack(audioFormat);
             muxer.start();
 
-            // Seek to start time
-            extractor.seekTo((long)(startTime * 1000000), MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
+            // Seek near start, then advance until we reach the desired window
+            extractor.seekTo(startTimeUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
 
-            // Extract and write data with smaller buffer for better memory management
-            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(64 * 1024); // 64KB
+            // Choose buffer size from format if available
+            int bufferSize = 64 * 1024; // default 64KB
+            if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                try {
+                    bufferSize = Math.max(bufferSize, audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
+                } catch (Exception ignored) { }
+            }
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(bufferSize);
             android.media.MediaCodec.BufferInfo bufferInfo = new android.media.MediaCodec.BufferInfo();
 
-            long endTimeUs = (long)(endTime * 1000000);
             long samplesProcessed = 0;
+            long firstPtsUs = -1L;
+            long lastPtsUs = -1L;
 
+            // Skip any samples before the start window
+            while (true) {
+                int peekSize = extractor.readSampleData(buffer, 0);
+                if (peekSize < 0) {
+                    break; // no data
+                }
+                long t = extractor.getSampleTime();
+                if (t >= startTimeUs) {
+                    // We'll write this sample; do not advance yet so it gets processed by the main loop
+                    // Reset buffer position for re-read in main loop
+                    // But MediaExtractor doesn't support rewinding; so we keep current buffer and write now
+                    bufferInfo.offset = 0;
+                    bufferInfo.size = peekSize;
+                    firstPtsUs = t;
+                    long pts = 0; // rebase to start at 0
+                    bufferInfo.presentationTimeUs = pts;
+                    bufferInfo.flags = convertExtractorFlags(extractor.getSampleFlags());
+                    muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
+                    lastPtsUs = pts;
+                    extractor.advance();
+                    samplesProcessed++;
+                    break;
+                } else {
+                    extractor.advance();
+                }
+            }
+
+            // Main copy loop within [start, effectiveEnd]
             while (true) {
                 int sampleSize = extractor.readSampleData(buffer, 0);
                 if (sampleSize < 0) break;
 
                 long sampleTime = extractor.getSampleTime();
-                if (sampleTime > endTimeUs) break;
+                if (sampleTime > effectiveEndUs) break;
 
                 bufferInfo.offset = 0;
                 bufferInfo.size = sampleSize;
-                bufferInfo.presentationTimeUs = sampleTime;
+                if (firstPtsUs < 0) firstPtsUs = sampleTime;
+                long pts = sampleTime - firstPtsUs; // rebase PTS to 0
+                if (lastPtsUs >= 0 && pts <= lastPtsUs) {
+                    pts = lastPtsUs + 1;
+                }
+                bufferInfo.presentationTimeUs = pts;
                 bufferInfo.flags = convertExtractorFlags(extractor.getSampleFlags());
 
                 muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
                 extractor.advance();
+                lastPtsUs = pts;
                 samplesProcessed++;
             }
 
-            Log.d(TAG, "Audio trimmed successfully from " + startTime + "s to " + endTime + "s, processed " + samplesProcessed + " samples");
+            Log.d(TAG, "Audio trimmed successfully from " + startTime + "s to " + (effectiveEndUs / 1_000_000.0) + "s, processed " + samplesProcessed + " samples");
 
         } catch (Exception e) {
             // Clean up output file if trimming failed
@@ -243,117 +304,6 @@ public class AudioFileProcessor {
             }
             throw new IOException("Failed to trim audio file: " + e.getMessage(), e);
         }
-    }
-
-    /**
-     * Concatenate multiple AAC/M4A files into a single M4A by container copy.
-     * Assumes all input files share compatible audio formats (AAC in MP4/M4A).
-     */
-    public static void concatenateAudioFiles(List<File> inputFiles, File outputFile) throws IOException {
-        if (inputFiles == null || inputFiles.isEmpty()) {
-            throw new IOException("No input files provided for concatenation");
-        }
-
-        // Filter only existing, non-empty files
-        List<File> validInputs = new ArrayList<>();
-        for (File f : inputFiles) {
-            if (f != null && f.exists() && f.length() > 0) {
-                validInputs.add(f);
-            }
-        }
-
-        if (validInputs.isEmpty()) {
-            throw new IOException("All input segment files are missing or empty");
-        }
-
-        // Prepare muxer with the audio format of the first file
-        try (ResourceManager.SafeMediaExtractor firstExtractorWrap = new ResourceManager.SafeMediaExtractor();
-             ResourceManager.SafeMediaMuxer muxerWrap = new ResourceManager.SafeMediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)) {
-
-            MediaExtractor firstExtractor = firstExtractorWrap.getExtractor();
-            MediaMuxer muxer = muxerWrap.getMuxer();
-
-            firstExtractor.setDataSource(validInputs.get(0).getAbsolutePath());
-            int audioTrack = findAudioTrack(firstExtractor);
-            if (audioTrack == -1) {
-                throw new IOException("No audio track in first input: " + validInputs.get(0).getName());
-            }
-            MediaFormat audioFormat = firstExtractor.getTrackFormat(audioTrack);
-            int muxerTrack = muxer.addTrack(audioFormat);
-            muxer.start();
-
-            long presentationTimeOffsetUs = 0;
-            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(128 * 1024); // 128KB
-            android.media.MediaCodec.BufferInfo bufferInfo = new android.media.MediaCodec.BufferInfo();
-
-            for (File input : validInputs) {
-                try (ResourceManager.SafeMediaExtractor extractorWrap = new ResourceManager.SafeMediaExtractor()) {
-                    MediaExtractor extractor = extractorWrap.getExtractor();
-                    extractor.setDataSource(input.getAbsolutePath());
-
-                    int track = findAudioTrack(extractor);
-                    if (track == -1) {
-                        Log.w(TAG, "Skipping file with no audio track: " + input.getName());
-                        continue;
-                    }
-
-                    extractor.selectTrack(track);
-
-                    while (true) {
-                        int sampleSize = extractor.readSampleData(buffer, 0);
-                        if (sampleSize < 0) break;
-
-                        long sampleTimeUs = extractor.getSampleTime();
-                        bufferInfo.offset = 0;
-                        bufferInfo.size = sampleSize;
-                        bufferInfo.presentationTimeUs = presentationTimeOffsetUs + Math.max(0, sampleTimeUs);
-                        bufferInfo.flags = convertExtractorFlags(extractor.getSampleFlags());
-
-                        muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
-                        extractor.advance();
-                    }
-
-                    // Update offset by the duration of this input (best-effort)
-                    double partDuration = getAudioDuration(input.getAbsolutePath());
-                    if (partDuration > 0) {
-                        presentationTimeOffsetUs += (long)(partDuration * 1_000_000L);
-                    } else {
-                        // Fallback: small safety gap (20ms) to keep monotonic pts
-                        presentationTimeOffsetUs += 20_000;
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "Error while concatenating segment: " + input.getName(), e);
-                }
-            }
-
-            Log.d(TAG, "Concatenation completed into: " + outputFile.getName());
-        } catch (Exception e) {
-            // Clean up on failure
-            if (outputFile.exists() && outputFile.length() == 0) {
-                // Best effort delete incomplete
-                //noinspection ResultOfMethodCallIgnored
-                outputFile.delete();
-            }
-            throw new IOException("Failed to concatenate audio files: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Append partFile to baseFile and write to outFile (container copy).
-     * If baseFile doesn't exist or is empty, this behaves like copying partFile to outFile.
-     */
-    public static void appendAudioFiles(File baseFile, File partFile, File outFile) throws IOException {
-        List<File> inputs = new ArrayList<>();
-        if (baseFile != null && baseFile.exists() && baseFile.length() > 0) {
-            inputs.add(baseFile);
-        }
-        if (partFile != null && partFile.exists() && partFile.length() > 0) {
-            inputs.add(partFile);
-        }
-        if (inputs.isEmpty()) {
-            throw new IOException("No valid input files to append");
-        }
-        concatenateAudioFiles(inputs, outFile);
     }
 
     /**
@@ -382,18 +332,10 @@ public class AudioFileProcessor {
     }
 
     /**
-     * Get audio file information with secure FileProvider URIs
-     */
-    public static JSObject getAudioFileInfo(String filePath) {
-        return getAudioFileInfo(filePath, null);
-    }
-
-    /**
      * Get audio file information with legacy file:// URIs
      * @param filePath The file path
-     * @param context The context (ignored, kept for compatibility)
      */
-    public static JSObject getAudioFileInfo(String filePath, Context context) {
+    public static JSObject getAudioFileInfo(String filePath) {
         File file = new File(filePath);
         JSObject info = new JSObject();
 
@@ -425,7 +367,6 @@ public class AudioFileProcessor {
                 try (MediaMetadataRetriever retriever = new MediaMetadataRetriever()) {
                     retriever.setDataSource(filePath);
 
-                    String mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
                     String bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
 
                     // Always use audio/m4a for consistent MIME type across platforms

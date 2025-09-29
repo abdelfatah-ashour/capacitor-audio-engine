@@ -2,17 +2,6 @@ import Foundation
 import AVFoundation
 import UserNotifications
 
-/**
- * Standalone Permission Manager Service for iOS that handles audio recording permissions
- * with detailed status information and granular control.
- *
- * Provides comprehensive permission status mapping for iOS:
- * - GRANTED: Permission is granted permanently
- * - DENIED: Permission was denied permanently
- * - NOT_DETERMINED: Permission has never been requested
- * - LIMITED: Permission granted only for current session (iOS 14+)
- * - RESTRICTED: Permission restricted by device policy/parental controls
- */
 @objc public class PermissionManagerService: NSObject {
 
     // MARK: - Types

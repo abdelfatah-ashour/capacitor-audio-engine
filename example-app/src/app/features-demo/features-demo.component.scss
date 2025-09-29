@@ -412,3 +412,83 @@ ion-grid ion-button {
   color: var(--ion-color-medium);
   font-style: italic;
 }
+
+// Recording Wave Level Styles
+.recording-wave-level-display {
+  .wave-level-info {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 12px;
+
+    p {
+      margin: 0;
+      font-size: 0.9rem;
+    }
+  }
+
+  .wave-level-bar-container {
+    width: 100%;
+    height: 20px;
+    background-color: var(--ion-color-light);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 16px;
+
+    .wave-level-bar {
+      height: 100%;
+      transition: width 0.1s ease-out;
+      border-radius: 10px;
+    }
+  }
+
+  .wave-level-history {
+    .wave-level-bars {
+      display: flex;
+      align-items: end;
+      gap: 2px;
+      height: 60px;
+      padding: 8px;
+      background-color: var(--ion-color-light);
+      border-radius: 8px;
+      overflow-x: auto;
+
+      .wave-level-mini-bar {
+        min-width: 3px;
+        border-radius: 1px;
+        transition: height 0.1s ease-out;
+        flex-shrink: 0;
+      }
+    }
+  }
+}
+
+// Button label styling
+.button-label {
+  display: block;
+  text-align: center;
+  font-size: 0.75rem;
+  margin-top: 4px;
+  color: var(--ion-color-medium);
+}
+
+// Progress section styling
+.progress-section {
+  margin: 16px 0;
+}
+
+// Seek buttons styling
+.seek-buttons {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--ion-color-light);
+  border-radius: 8px;
+
+  ion-label {
+    display: block;
+    margin-bottom: 8px;
+  }
+
+  ion-button {
+    font-size: 0.85rem;
+  }
+}
