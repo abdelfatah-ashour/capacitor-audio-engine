@@ -254,8 +254,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
 
         Task {
             do {
-                let audioInfo = try await extractAudioInfo(from: uri)
-                call.resolve(audioInfo)
+                // Check if it's a remote URL or local file
+                if uri.hasPrefix("http://") || uri.hasPrefix("https://") {
+                    // For remote URLs, use the old extractAudioInfo method
+                    let audioInfo = try await extractAudioInfo(from: uri)
+                    call.resolve(audioInfo)
+                } else {
+                    // For local files, use the new shared method
+                    let audioInfo = try await createAudioFileInfo(filePath: uri)
+                    call.resolve(audioInfo)
+                }
             } catch {
                 call.reject("Failed to get audio info: \(error.localizedDescription)")
             }
@@ -438,6 +446,134 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
             return filename.isEmpty ? "audio.m4a" : filename
         }
         return "audio.m4a"
+    }
+
+    /**
+     * Create AudioFileInfo response with proper path formatting to match Android
+     * - path: absolute file path
+     * - uri: file:// URI format
+     * - webPath: capacitor://localhost/_capacitor_file_ format
+     */
+    private func createAudioFileInfo(filePath: String) async throws -> [String: Any] {
+        let fileURL: URL
+        if filePath.hasPrefix("file://") {
+            guard let url = URL(string: filePath) else {
+                throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
+            }
+            fileURL = url
+        } else {
+            fileURL = URL(fileURLWithPath: filePath)
+        }
+
+        // Check if file exists
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "File does not exist"])
+        }
+
+        // Get file attributes
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let fileSize = attributes[.size] as? Int64 ?? 0
+        let createdAt: TimeInterval
+        if let creationDate = attributes[.creationDate] as? Date {
+            createdAt = creationDate.timeIntervalSince1970
+        } else {
+            createdAt = Date().timeIntervalSince1970
+        }
+
+        let filename = fileURL.lastPathComponent
+        let absolutePath = fileURL.path
+
+        // Determine MIME type based on file extension
+        let pathExtension = fileURL.pathExtension.lowercased()
+        let mimeType: String
+        switch pathExtension {
+        case "m4a":
+            mimeType = AudioEngineConstants.mimeTypeM4A
+        case "mp3":
+            mimeType = "audio/mpeg"
+        case "wav":
+            mimeType = "audio/wav"
+        case "aac":
+            mimeType = "audio/aac"
+        default:
+            mimeType = AudioEngineConstants.mimeTypeM4A
+        }
+
+        // Load audio asset
+        let asset = AVAsset(url: fileURL)
+        let duration: CMTime
+        let tracks: [AVAssetTrack]
+
+        if #available(iOS 15.0, *) {
+            duration = try await asset.load(.duration)
+            tracks = try await asset.load(.tracks)
+        } else {
+            duration = asset.duration
+            tracks = asset.tracks
+        }
+
+        // Find the audio track
+        var audioTrack: AVAssetTrack?
+        if #available(iOS 15.0, *) {
+            for track in tracks {
+                let mediaType = track.mediaType
+                if mediaType == AVMediaType.audio {
+                    audioTrack = track
+                    break
+                }
+            }
+        } else {
+            audioTrack = tracks.first { track in
+                return track.mediaType == AVMediaType.audio
+            }
+        }
+
+        guard let audioTrack = audioTrack else {
+            throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "No audio track found"])
+        }
+
+        // Load audio track properties
+        var formatDescriptions: [CMFormatDescription]
+        if #available(iOS 15.0, *) {
+            formatDescriptions = try await audioTrack.load(.formatDescriptions)
+        } else {
+            guard let descriptions = audioTrack.formatDescriptions as? [CMFormatDescription] else {
+                throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get format descriptions"])
+            }
+            formatDescriptions = descriptions
+        }
+
+        var sampleRate: Double = AudioEngineConstants.defaultSampleRate
+        var channels: Int = AudioEngineConstants.defaultChannels
+        let bitrate: Int = AudioEngineConstants.defaultBitrate
+
+        if let formatDescription = formatDescriptions.first {
+            let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
+            if let basicDescription = audioStreamBasicDescription?.pointee {
+                sampleRate = basicDescription.mSampleRate
+                channels = Int(basicDescription.mChannelsPerFrame)
+            }
+        }
+
+        let durationInSeconds = CMTimeGetSeconds(duration)
+
+        // Format paths to match Android:
+        // - path: absolute path
+        // - uri: file:// format
+        // - webPath: capacitor://localhost/_capacitor_file_ format
+        return [
+            "path": absolutePath,
+            "filename": filename,
+            "size": fileSize,
+            "createdAt": Int64(createdAt * AudioEngineConstants.timestampMultiplier),
+            "uri": "file://" + absolutePath,
+            "webPath": "capacitor://localhost/_capacitor_file_" + absolutePath,
+            "duration": round(durationInSeconds * AudioEngineConstants.durationRoundingFactor) / AudioEngineConstants.durationRoundingFactor,
+            "mimeType": mimeType,
+            "bitrate": bitrate,
+            "channels": channels,
+            "sampleRate": sampleRate
+        ]
     }
 
     // MARK: - Recording delegate removed
@@ -694,10 +830,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
             return
         }
 
-        // Extract audio file info
+        // Extract audio file info using shared method
         Task {
             do {
-                let audioInfo = try await extractAudioInfo(from: filePath)
+                let audioInfo = try await createAudioFileInfo(filePath: filePath)
                 call.resolve(audioInfo)
             } catch {
                 call.reject("Failed to get audio info: \(error.localizedDescription)")
@@ -837,7 +973,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
                                 // Use the temp file path if rename fails
                             }
 
-                            let audioInfo = try await self.extractAudioInfo(from: finalURL.path)
+                            let audioInfo = try await self.createAudioFileInfo(filePath: finalURL.path)
                             call.resolve(audioInfo)
                         } catch {
                             call.reject("Export completed but failed to get audio info: \(error.localizedDescription)")

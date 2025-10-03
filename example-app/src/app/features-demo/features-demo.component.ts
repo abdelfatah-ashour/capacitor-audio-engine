@@ -1542,29 +1542,20 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   private async registerRecordedFile(): Promise<void> {
     try {
-      const fileUri = this.recordingFilePath();
-      if (!fileUri) {
-        console.warn('No recording file URI available for registration');
+      // Use the audio file info returned from stopRecording
+      const audioFileInfo = this.lastRecordedAudioFile();
+      if (!audioFileInfo || !audioFileInfo.uri) {
+        console.warn('No recording file info available for registration');
         return;
       }
 
-      // Use the file path stored when recording started
-      const info = await CapacitorAudioEngine.getAudioInfo({ uri: fileUri });
-
       const file = await Filesystem.readFile({
-        path: fileUri,
+        path: audioFileInfo.uri,
       });
 
-      console.log('🚀 ~ registerRecordedFile ~ file:', file.data);
-
-      console.log('🚀 ~ registerRecordedFile ~ fileUri:', fileUri);
-      console.log('🚀 ~ registerRecordedFile ~ info.uri:', info.uri);
-      console.log('🚀 ~ registerRecordedFile ~ info:', info);
-
-      console.log('🚀 ~ FeaturesDemoComponent ~ registerRecordedFile ~ info:', info);
       try {
         const results = await CapacitorAudioEngine.preloadTracks({
-          tracks: [info.uri],
+          tracks: [audioFileInfo.uri],
         });
         if (!results.tracks || results.tracks.length === 0) {
           return;
@@ -1575,7 +1566,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       }
 
       const recordedFile: AudioFileInfoWithMetadata = {
-        ...info,
+        ...audioFileInfo,
         isSegmentRolled: false,
       };
 
@@ -1584,7 +1575,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       this.recordedPlaylistInitialized.set(false);
 
       // Mark this file as having info fetched
-      this.filesWithInfo.update(files => new Set([...Array.from(files), info.uri]));
+      this.filesWithInfo.update(files => new Set([...Array.from(files), audioFileInfo.uri]));
     } catch (e) {
       console.error('Failed to register recorded file', e);
     }
