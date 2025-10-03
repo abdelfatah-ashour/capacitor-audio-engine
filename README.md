@@ -4,6 +4,79 @@ A powerful Capacitor plugin for audio recording and playback on mobile devices. 
 
 > 💡 **Note:** This plugin is designed for native mobile platforms (Android and iOS). Web platform is not supported.
 
+## 📋 Overview of Methods and Types
+
+### Methods
+
+| Method Name                                                     | Description                                             |
+| --------------------------------------------------------------- | ------------------------------------------------------- |
+| [`checkPermissions`](#checkpermissions)                         | Check all audio-related permissions.                    |
+| [`checkPermissionMicrophone`](#checkpermissionmicrophone)       | Check microphone permission.                            |
+| [`checkPermissionNotifications`](#checkpermissionnotifications) | Check notification permission.                          |
+| [`requestPermissions`](#requestpermissionsoptions)              | Request permissions with optional configuration.        |
+| [`openSettings`](#opensettings)                                 | Open device settings for manual permission management.  |
+| [`startRecording`](#startrecordingoptions)                      | Start recording with specified output path.             |
+| [`stopRecording`](#stoprecording)                               | Stop recording and get file information.                |
+| [`pauseRecording`](#pauserecording)                             | Pause the current recording.                            |
+| [`resumeRecording`](#resumerecording)                           | Resume a paused recording.                              |
+| [`resetRecording`](#resetrecording)                             | Reset the current recording session without finalizing. |
+| [`getRecordingStatus`](#getrecordingstatus)                     | Get current recording status.                           |
+| [`preloadTracks`](#preloadtracksoptions)                        | Preload audio tracks for optimized playback.            |
+| [`playAudio`](#playaudiooptions)                                | Play current track or specific track by URL.            |
+| [`pauseAudio`](#pauseaudiooptions)                              | Pause current track or specific track.                  |
+| [`resumeAudio`](#resumeaudiooptions)                            | Resume paused playback.                                 |
+| [`stopAudio`](#stopaudiooptions)                                | Stop playback and reset to beginning.                   |
+| [`seekAudio`](#seekaudiooptions)                                | Seek to specific position in track.                     |
+| [`skipToNext`](#skiptonext)                                     | Skip to next track in playlist.                         |
+| [`skipToPrevious`](#skiptoprevious)                             | Skip to previous track in playlist.                     |
+| [`skipToIndex`](#skiptoindexoptions)                            | Jump to specific track by index.                        |
+| [`getPlaybackInfo`](#getplaybackinfo)                           | Get current playback information.                       |
+| [`configureWaveform`](#configurewaveformoptions)                | Configure real-time audio level monitoring.             |
+| [`destroyWaveform`](#destroywaveform)                           | Clean up waveform resources.                            |
+| [`trimAudio`](#trimaudiooptions)                                | Trim audio file to specific time range.                 |
+| [`getAudioInfo`](#getaudioinfooptions)                          | Get detailed audio file information.                    |
+| [`addListener`](#addlistenereventname-callback)                 | Listen for recording and playback events.               |
+| [`removeAllListeners`](#removealllisteners)                     | Remove all event listeners.                             |
+
+### Interfaces, Enums, and Types
+
+| Name                                                            | Description                                     |
+| --------------------------------------------------------------- | ----------------------------------------------- |
+| [`AudioFileInfo`](#audiofileinfo)                               | Complete information about an audio file.       |
+| [`PermissionStatusResults`](#permissionstatusresults)           | Simplified permission status.                   |
+| [`PermissionStatus`](#permissionstatus)                         | Enum for detailed permission statuses.          |
+| [`AudioPermissionType`](#audiopermissiontype)                   | Enum for audio permission types.                |
+| [`RecordingStatusInfo`](#recordingstatusinfo)                   | Current recording state.                        |
+| [`RecordingStatus`](#recordingstatus)                           | Type for recording statuses.                    |
+| [`PlaybackInfo`](#playbackinfo)                                 | Current playback state.                         |
+| [`PlaybackStatus`](#playbackstatus)                             | Type for playback statuses.                     |
+| [`WaveLevelConfiguration`](#wavelevelconfiguration)             | Waveform monitoring configuration.              |
+| [`WaveLevelEmissionInterval`](#wavelevelemissioninterval)       | Enum for waveform emission intervals.           |
+| [`PermissionRequestOptions`](#permissionrequestoptions)         | Options for requesting permissions.             |
+| [`PreloadTracksOptions`](#preloadtracksoptions)                 | Options for preloading audio tracks.            |
+| [`PreloadTracksResult`](#preloadtracksresult)                   | Result of preloading tracks.                    |
+| [`PreloadedTrackInfo`](#preloadedtrackinfo)                     | Information about preloaded tracks.             |
+| [`PlayAudioOptions`](#playaudiooptions)                         | Options for playing audio.                      |
+| [`PauseAudioOptions`](#pauseaudiooptions)                       | Options for pausing audio.                      |
+| [`ResumeAudioOptions`](#resumeaudiooptions)                     | Options for resuming audio.                     |
+| [`StopAudioOptions`](#stopaudiooptions)                         | Options for stopping audio.                     |
+| [`SeekOptions`](#seekoptions)                                   | Options for seeking audio.                      |
+| [`SkipToIndexOptions`](#skiptoindexoptions)                     | Options for skipping to a specific track index. |
+| [`WaveLevelConfigurationResult`](#wavelevelconfigurationresult) | Result of waveform configuration.               |
+| [`TrimAudioOptions`](#trimaudiooptions)                         | Options for trimming audio.                     |
+| [`DurationChangeData`](#durationchangedata)                     | Event data for duration changes.                |
+| [`WaveLevelData`](#waveleveldata)                               | Event data for waveform levels.                 |
+| [`ErrorEventData`](#erroreventdata)                             | Event data for errors.                          |
+| [`PermissionStatusChangedData`](#permissionstatuschangeddata)   | Event data for permission status changes.       |
+| [`RecordingStatusChangedData`](#recordingstatuschangeddata)     | Event data for recording status changes.        |
+| [`PlaybackStartedData`](#playbackstarteddata)                   | Event data for playback started.                |
+| [`PlaybackPausedData`](#playbackpauseddata)                     | Event data for playback paused.                 |
+| [`PlaybackStoppedData`](#playbackstoppeddata)                   | Event data for playback stopped.                |
+| [`PlaybackErrorData`](#playbackerrordata)                       | Event data for playback errors.                 |
+| [`PlaybackProgressData`](#playbackprogressdata)                 | Event data for playback progress.               |
+
+---
+
 ## 🚀 Installation
 
 ### Prerequisites
