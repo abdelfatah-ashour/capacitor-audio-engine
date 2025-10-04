@@ -61,6 +61,14 @@ class RecordingManager {
             String outputPath = options.path;
             lastOptions = options;
 
+            // Reset duration for fresh recordings (not for resume after reset)
+            // We can detect this by checking if we're not currently recording/paused
+            if (!isPaused) {
+                synchronized (this) {
+                    currentDuration = 0.0;
+                }
+            }
+
             // Prepare output path
             if (outputPath != null && !outputPath.isEmpty()) {
                 currentOutputPath = getNormalizedPath(outputPath);
@@ -243,9 +251,11 @@ class RecordingManager {
             // Dispose current recorder instance
             cleanupMediaRecorder();
 
-            // Reset monitoring counters to 0
+            // Stop monitoring and reset duration to 0
             stopDurationMonitoring();
-            synchronized (this) { currentDuration = 0.0; }
+            synchronized (this) {
+                currentDuration = 0.0;
+            }
 
             // Create a fresh recorder configured for the same path, but remain paused until resume
             prepareMediaRecorderForCurrentPath();
@@ -344,9 +354,8 @@ class RecordingManager {
 
         isDurationMonitoring = true;
         isDurationPaused = false;
-        synchronized (this) {
-            currentDuration = 0.0;
-        }
+        // For fresh recordings, currentDuration should already be 0.0
+        // For resumed recordings after reset, we preserve the existing currentDuration
 
         durationTimer = new Timer();
         durationTimer.schedule(new TimerTask() {
@@ -366,9 +375,7 @@ class RecordingManager {
                 }
             }
         }, 1000, 1000); // Start after 1 second, repeat every 1 second
-    }
-
-    private void stopDurationMonitoring() {
+    }    private void stopDurationMonitoring() {
         if (durationTimer != null) {
             durationTimer.cancel();
             durationTimer = null;
@@ -384,7 +391,15 @@ class RecordingManager {
     }
 
     private void resumeDurationMonitoring() {
-        isDurationPaused = false;
+        if (!isDurationMonitoring) {
+            // If monitoring was completely stopped (e.g., after reset), restart it
+            // but preserve the current duration
+            Log.d(TAG, "Restarting duration monitoring after reset, preserving duration: " + currentDuration);
+            startDurationMonitoring(); // Will preserve existing duration
+        } else {
+            // Just resume paused monitoring
+            isDurationPaused = false;
+        }
         Log.d(TAG, "Duration monitoring resumed");
     }
 
