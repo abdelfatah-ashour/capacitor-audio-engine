@@ -20,7 +20,6 @@ class RecordingManager {
         void onStatusChanged(String status);
         void onError(String message);
         void onDurationChanged(double duration);
-        void onWaveLevel(double level, long timestamp);
     }
 
     private static final String TAG = "RecordingManager";
@@ -37,18 +36,10 @@ class RecordingManager {
     private volatile boolean isDurationMonitoring = false;
     private volatile boolean isDurationPaused = false;
 
-    // Wave level monitoring
-    private Timer waveLevelTimer;
-    private volatile boolean isWaveLevelMonitoring = false;
-    private volatile boolean isWaveLevelPaused = false;
+    // Wave level monitoring removed - handled by WaveLevelEmitter
     private boolean isRecording = false;
     private boolean isPaused = false;
     private String currentOutputPath;
-
-    // Recording configuration
-    private final int sampleRate = AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
-    private final int channels = AudioEngineConfig.Recording.DEFAULT_CHANNELS;
-    private final int bitrate = AudioEngineConfig.Recording.DEFAULT_BITRATE;
 
     private StartOptions lastOptions;
 
@@ -117,10 +108,9 @@ class RecordingManager {
             isRecording = true;
             isPaused = false;
 
-            // Start duration and wave level monitoring only after successful start()
+            // Start duration monitoring only after successful start()
             try {
                 startDurationMonitoring();
-                startWaveLevelMonitoring();
 
                 if (callback != null) {
                     callback.onStatusChanged("recording");
@@ -129,7 +119,6 @@ class RecordingManager {
                 Log.e(TAG, "Failed to start monitoring after recording start", monitoringError);
                 // Ensure any partially started timers are stopped
                 try { stopDurationMonitoring(); } catch (Exception ignored) {}
-                try { stopWaveLevelMonitoring(); } catch (Exception ignored) {}
                 // Cleanup recorder and reset state
                 cleanupMediaRecorder();
                 isRecording = false;
@@ -168,9 +157,8 @@ class RecordingManager {
 
         cleanupMediaRecorder();
 
-        // Stop duration and wave level monitoring
+        // Stop duration monitoring
         stopDurationMonitoring();
-        stopWaveLevelMonitoring();
 
         isRecording = false;
         isPaused = false;
@@ -190,9 +178,8 @@ class RecordingManager {
             }
             isPaused = true;
 
-            // Pause duration and wave level monitoring
+            // Pause duration monitoring
             pauseDurationMonitoring();
-            pauseWaveLevelMonitoring();
 
             if (callback != null) callback.onStatusChanged("paused");
         } catch (Exception e) {
@@ -236,9 +223,8 @@ class RecordingManager {
 
             isPaused = false;
 
-            // Resume duration and wave level monitoring
+            // Resume duration monitoring
             resumeDurationMonitoring();
-            resumeWaveLevelMonitoring();
 
             if (callback != null) callback.onStatusChanged("recording");
         } catch (Exception e) {
@@ -259,7 +245,6 @@ class RecordingManager {
 
             // Reset monitoring counters to 0
             stopDurationMonitoring();
-            stopWaveLevelMonitoring();
             synchronized (this) { currentDuration = 0.0; }
 
             // Create a fresh recorder configured for the same path, but remain paused until resume
@@ -323,8 +308,12 @@ class RecordingManager {
         try {
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            int bitrate = AudioEngineConfig.Recording.DEFAULT_BITRATE;
             recorder.setAudioEncodingBitRate(bitrate);
+            // Recording configuration
+            int sampleRate = AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
             recorder.setAudioSamplingRate(sampleRate);
+            int channels = AudioEngineConfig.Recording.DEFAULT_CHANNELS;
             recorder.setAudioChannels(channels);
             recorder.setOutputFile(outputPath);
         } catch (Exception e) {
@@ -334,18 +323,8 @@ class RecordingManager {
 
         private void setBestAudioSource(MediaRecorder recorder) {
             try {
-                int source;
-
-                if (android.os.Build.VERSION.SDK_INT >= 23) {
-                    // VOICE_RECOGNITION often gives clean, balanced audio for recorded meetings
-                    source = MediaRecorder.AudioSource.VOICE_RECOGNITION;
-                } else {
-                    source = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
-                }
-
-                recorder.setAudioSource(source);
+                recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION);
             } catch (Exception e) {
-                // Fallback hierarchy
                 try {
                     recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION);
                 } catch (Exception inner1) {
@@ -357,16 +336,6 @@ class RecordingManager {
                 }
             }
         }
-
-    FormatInfo getFormatInfo() {
-        String path = currentOutputPath;
-        if (path == null) {
-            // Fallback to a default path if currentOutputPath is null
-            String dataDir = context.getFilesDir().getAbsolutePath();
-            path = dataDir + "/recording_" + System.currentTimeMillis() + ".m4a";
-        }
-        return new FormatInfo(sampleRate, channels, "aac", "audio/mp4", bitrate, path);
-    }
 
     // Duration monitoring methods
     private void startDurationMonitoring() {
@@ -419,81 +388,11 @@ class RecordingManager {
         Log.d(TAG, "Duration monitoring resumed");
     }
 
-    // Wave level monitoring methods
-    private void startWaveLevelMonitoring() {
-        stopWaveLevelMonitoring();
-        Log.d(TAG, "Starting wave level monitoring for recording");
-
-        isWaveLevelMonitoring = true;
-        isWaveLevelPaused = false;
-
-        waveLevelTimer = new Timer();
-        int waveLevelEmissionIntervalMs = 200;
-        waveLevelTimer.schedule(new TimerTask() {
-            @Override
-            public void run() {
-                if (!isWaveLevelPaused && isWaveLevelMonitoring && mediaRecorder != null) {
-                    try {
-                        double normalizedLevel = calculateWaveLevel();
-
-                        mainHandler.post(() -> {
-                            if (callback != null) {
-                                callback.onWaveLevel(normalizedLevel, System.currentTimeMillis());
-                            }
-                        });
-                    } catch (Exception e) {
-                        Log.w(TAG, "Error calculating wave level", e);
-                    }
-                }
-            }
-        }, waveLevelEmissionIntervalMs, waveLevelEmissionIntervalMs);
-    }
-
-    private void stopWaveLevelMonitoring() {
-        if (waveLevelTimer != null) {
-            waveLevelTimer.cancel();
-            waveLevelTimer = null;
-        }
-        isWaveLevelMonitoring = false;
-        isWaveLevelPaused = false;
-        Log.d(TAG, "Wave level monitoring stopped");
-    }
-
-    private void pauseWaveLevelMonitoring() {
-        isWaveLevelPaused = true;
-        Log.d(TAG, "Wave level monitoring paused");
-    }
-
-    private void resumeWaveLevelMonitoring() {
-        isWaveLevelPaused = false;
-        Log.d(TAG, "Wave level monitoring resumed");
-    }
-
-    /**
-     * Calculate wave level using MediaRecorder.getMaxAmplitude()
-     * Normalized between 0.0 and 1.0 where 1.0 maps to 32767
-     */
-    private double calculateWaveLevel() {
-        if (mediaRecorder == null || !isRecording) {
-            return 0.0;
-        }
-
-        try {
-            int amp = 0;
-            try { amp = mediaRecorder.getMaxAmplitude(); } catch (Exception ignored) {}
-            if (amp <= 0) return 0.0;
-            return Math.min(1.0, amp / 32767.0);
-        } catch (Exception e) {
-            Log.w(TAG, "Error calculating wave level", e);
-            return 0.0;
-        }
-    }
+    // Wave level monitoring removed - handled by WaveLevelEmitter
 
     static class StartOptions {
         String path;
     }
-
-    record FormatInfo(int sampleRate, int channels, String encoding, String mimeType, int bitrate, String path) {}
 
     StatusInfo getStatus() {
         synchronized (this) {

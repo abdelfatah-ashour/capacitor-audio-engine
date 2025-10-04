@@ -5,6 +5,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.RequiresPermission;
 import androidx.core.app.ActivityCompat;
 import java.io.File;
@@ -96,7 +97,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 data.put("duration", duration);
                 notifyListeners("durationChange", data);
             }
-            @Override public void onWaveLevel(double level, long timestamp) {
+
+            public void onWaveLevel(double level, long timestamp) {
                 JSObject data = new JSObject();
                 data.put("level", level);
                 data.put("timestamp", timestamp);
@@ -330,6 +332,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         }
     }
 
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     @PluginMethod
     public void configureWaveform(PluginCall call) {
         try {
@@ -509,20 +512,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         JSObject metadata = new JSObject();
 
         // Determine MIME type from URL extension for remote files
-        String mimeType = "audio/mpeg"; // default
-        if (url.endsWith(".aac")) {
-            mimeType = "audio/aac";
-        } else if (url.endsWith(".m4a")) {
-            mimeType = "audio/m4a";
-        } else if (url.endsWith(".mp3")) {
-            mimeType = "audio/mpeg";
-        } else if (url.endsWith(".wav")) {
-            mimeType = "audio/wav";
-        } else if (url.endsWith(".ogg")) {
-            mimeType = "audio/ogg";
-        } else if (url.endsWith(".flac")) {
-            mimeType = "audio/flac";
-        }
+        String mimeType = getMimeType(url);
 
         // Check if it's a local file
         if (url.startsWith("file://") || (!url.startsWith("http://") && !url.startsWith("https://"))) {
@@ -557,6 +547,25 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         }
 
         return metadata;
+    }
+
+    @NonNull
+    private static String getMimeType(String url) {
+        String mimeType = "audio/mpeg"; // default
+        if (url.endsWith(".aac")) {
+            mimeType = "audio/aac";
+        } else if (url.endsWith(".m4a")) {
+            mimeType = "audio/m4a";
+        } else if (url.endsWith(".mp3")) {
+            mimeType = "audio/mpeg";
+        } else if (url.endsWith(".wav")) {
+            mimeType = "audio/wav";
+        } else if (url.endsWith(".ogg")) {
+            mimeType = "audio/ogg";
+        } else if (url.endsWith(".flac")) {
+            mimeType = "audio/flac";
+        }
+        return mimeType;
     }
 
     @PluginMethod
@@ -786,52 +795,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         }
     }
 
-    private String statusToString(PlaybackStatus status) {
-      return switch (status) {
-        case LOADING -> "loading";
-        case PLAYING -> "playing";
-        case PAUSED -> "paused";
-        case STOPPED -> "idle";
-        default -> "idle";
-      };
-    }
-
     // Helper method to find track ID by URL
     private String findTrackIdByUrl(String url) {
         return urlToTrackIdMap.get(url);
-    }
-
-    // Helper method to convert absolute path to relative path for Directory.Data compatibility
-    private String getRelativePathForDirectoryData(String absolutePath) {
-        if (absolutePath == null || absolutePath.isEmpty()) {
-            return absolutePath;
-        }
-
-        // Get the app's files directory (equivalent to Directory.Data)
-        String dataDir = getContext().getFilesDir().getAbsolutePath();
-
-        Log.d(TAG, "getRelativePathForDirectoryData - input: " + absolutePath);
-        Log.d(TAG, "getRelativePathForDirectoryData - dataDir: " + dataDir);
-
-        // If the absolute path starts with the data directory, return the relative part
-        if (absolutePath.startsWith(dataDir)) {
-            String relativePath = absolutePath.substring(dataDir.length());
-            String result = relativePath.startsWith("/") ? relativePath.substring(1) : relativePath;
-            Log.d(TAG, "getRelativePathForDirectoryData - case 1 (absolute): " + result);
-            return result;
-        }
-
-        // If the path starts with "/" but doesn't start with data directory,
-        // it's a relative path that should be returned as-is (just remove leading slash)
-        if (absolutePath.startsWith("/")) {
-            String result = absolutePath.substring(1);
-            Log.d(TAG, "getRelativePathForDirectoryData - case 2 (relative with slash): " + result);
-            return result;
-        }
-
-        // Otherwise, return the path as-is (it's already relative)
-        Log.d(TAG, "getRelativePathForDirectoryData - case 3 (already relative): " + absolutePath);
-        return absolutePath;
     }
 
     // PlaybackManagerListener implementation (Simplified)
@@ -958,6 +924,16 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             // Start recording with validated permissions
             try {
                 recordingManager.startRecording(opts);
+
+                // Start wave level monitoring if configured
+                if (waveLevelEmitter != null && !waveLevelEmitter.isMonitoring()) {
+                    try {
+                        waveLevelEmitter.startMonitoring();
+                        Log.d(TAG, "Wave level monitoring started with recording");
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to start wave level monitoring", e);
+                    }
+                }
             } catch (SecurityException e) {
                 Log.e(TAG, "Security exception when starting recording", e);
                 call.reject(AudioEngineError.PERMISSION_DENIED.getCode(), "Microphone permission denied");
@@ -976,6 +952,16 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     public void stopRecording(PluginCall call) {
         try {
             recordingManager.stopRecording();
+
+            // Stop wave level monitoring
+            if (waveLevelEmitter != null && waveLevelEmitter.isMonitoring()) {
+                try {
+                    waveLevelEmitter.stopMonitoring();
+                    Log.d(TAG, "Wave level monitoring stopped with recording");
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to stop wave level monitoring", e);
+                }
+            }
 
             // Get the recording status to retrieve the file path
             RecordingManager.StatusInfo status = recordingManager.getStatus();
@@ -999,6 +985,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     public void pauseRecording(PluginCall call) {
         try {
             recordingManager.pauseRecording();
+
+            // Pause wave level monitoring
+            if (waveLevelEmitter != null && waveLevelEmitter.isMonitoring()) {
+                try {
+                    waveLevelEmitter.pauseMonitoring();
+                    Log.d(TAG, "Wave level monitoring paused with recording");
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to pause wave level monitoring", e);
+                }
+            }
+
             call.resolve();
         } catch (Exception e) {
             call.reject("RECORDING_PAUSE_ERROR", e.getMessage());
@@ -1010,6 +1007,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     public void resumeRecording(PluginCall call) {
         try {
             recordingManager.resumeRecording();
+
+            // Resume wave level monitoring
+            if (waveLevelEmitter != null) {
+                try {
+                    waveLevelEmitter.resumeMonitoring();
+                    Log.d(TAG, "Wave level monitoring resumed with recording");
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to resume wave level monitoring", e);
+                }
+            }
+
             call.resolve();
         } catch (Exception e) {
             call.reject("RECORDING_RESUME_ERROR", e.getMessage());
