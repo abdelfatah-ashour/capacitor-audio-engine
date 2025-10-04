@@ -282,12 +282,11 @@ class PlaybackManager: NSObject {
                     print("[PlaybackManager] Track already preloaded: \(url) -> \(existingTrackId)")
                     var trackInfo: [String: Any] = ["url": url, "loaded": true]
 
-                    // Get basic metadata
-                    if let player = audioPlayers[existingTrackId] {
-                        if let duration = player.currentItem?.duration, !duration.isIndefinite {
-                            trackInfo["duration"] = CMTimeGetSeconds(duration)
-                        }
-                    }
+                    // Get metadata
+                    let metadata = extractTrackMetadata(url: url, trackId: existingTrackId)
+                    trackInfo["mimeType"] = metadata.mimeType
+                    trackInfo["duration"] = metadata.duration
+                    trackInfo["size"] = metadata.size
 
                     trackResults.append(trackInfo)
                     continue
@@ -302,14 +301,17 @@ class PlaybackManager: NSObject {
                     trackInfo["loaded"] = true
                     print("[PlaybackManager] Successfully preloaded track \(trackId)")
 
-                    // Try to get basic metadata
-                    if let player = audioPlayers[trackId] {
-                        if let duration = player.currentItem?.duration, !duration.isIndefinite {
-                            trackInfo["duration"] = CMTimeGetSeconds(duration)
-                        }
-                    }
+                    // Get metadata
+                    let metadata = extractTrackMetadata(url: url, trackId: trackId)
+                    trackInfo["mimeType"] = metadata.mimeType
+                    trackInfo["duration"] = metadata.duration
+                    trackInfo["size"] = metadata.size
                 } else {
                     trackInfo["loaded"] = false
+                    // Provide default values for failed tracks
+                    trackInfo["mimeType"] = "audio/mpeg"
+                    trackInfo["duration"] = 0.0
+                    trackInfo["size"] = 0
                     print("[PlaybackManager] Failed to preload track \(trackId)")
                 }
 
@@ -319,6 +321,54 @@ class PlaybackManager: NSObject {
             print("[PlaybackManager] Successfully preloaded \(trackResults.filter { $0["loaded"] as? Bool == true }.count) tracks (total loaded: \(audioPlayers.count))")
             return trackResults
         }
+    }
+
+    private func extractTrackMetadata(url: String, trackId: String) -> (mimeType: String, duration: Double, size: Int64) {
+        var mimeType = "audio/mpeg"
+        var duration = 0.0
+        var size: Int64 = 0
+
+        // Determine MIME type from URL extension
+        if let urlObject = URL(string: url) {
+            let pathExtension = urlObject.pathExtension.lowercased()
+            switch pathExtension {
+            case "m4a":
+                mimeType = "audio/m4a"
+            case "mp3":
+                mimeType = "audio/mpeg"
+            case "wav":
+                mimeType = "audio/wav"
+            case "aac":
+                mimeType = "audio/aac"
+            default:
+                mimeType = "audio/mpeg"
+            }
+        }
+
+        // Get duration from player if available
+        if let player = audioPlayers[trackId],
+           let playerDuration = player.currentItem?.duration,
+           !playerDuration.isIndefinite && playerDuration.seconds > 0 {
+            duration = CMTimeGetSeconds(playerDuration)
+        }
+
+        // Get file size for local files
+        if url.hasPrefix("file://") || (!url.hasPrefix("http://") && !url.hasPrefix("https://")) {
+            let filePath = url.hasPrefix("file://") ? String(url.dropFirst(7)) : url
+            let fileURL = URL(fileURLWithPath: filePath)
+
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                do {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+                    size = attributes[.size] as? Int64 ?? 0
+                } catch {
+                    print("[PlaybackManager] Failed to get file size for \(url): \(error)")
+                }
+            }
+        }
+        // For remote URLs, we can't get size without downloading
+
+        return (mimeType, duration, size)
     }
 
     // MARK: - Playback Control Methods

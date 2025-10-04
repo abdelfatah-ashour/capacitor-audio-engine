@@ -398,15 +398,15 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     // ==================== PLAYBACK METHODS ====================
     @PluginMethod
     public void preloadTracks(PluginCall call) {
+        JSArray tracksArray = call.getArray("tracks");
+        if (tracksArray == null) {
+            call.reject("Invalid tracks array - expected array of URLs");
+            return;
+        }
+
+        List<String> trackUrls = new ArrayList<>();
+
         try {
-            JSArray tracksArray = call.getArray("tracks");
-            if (tracksArray == null) {
-                call.reject("Invalid tracks array - expected array of URLs");
-                return;
-            }
-
-            List<String> trackUrls = new ArrayList<>();
-
             for (int i = 0; i < tracksArray.length(); i++) {
                 String url = tracksArray.getString(i);
                 if (url == null || url.trim().isEmpty()) {
@@ -415,43 +415,148 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 }
                 trackUrls.add(url);
             }
-
-            // Clear previous mappings
-            urlToTrackIdMap.clear();
-
-            // Preload tracks using simplified interface
-            playbackManager.preloadTracks(trackUrls);
-
-            // Create track results for response and populate URL mapping
-            List<JSObject> trackResults = new ArrayList<>();
-            for (int i = 0; i < trackUrls.size(); i++) {
-                String trackId = "track_" + i;
-                String url = trackUrls.get(i);
-
-                // Store URL to trackId mapping
-                urlToTrackIdMap.put(url, trackId);
-
-                JSObject trackInfo = new JSObject();
-                trackInfo.put("trackId", trackId);
-                trackInfo.put("url", url);
-                trackInfo.put("loaded", true);
-                trackResults.add(trackInfo);
-            }
-
-            // Convert List<JSObject> to JSArray to ensure proper JSON serialization
-            JSArray resultTracksArray = new JSArray();
-            for (JSObject trackResult : trackResults) {
-                resultTracksArray.put(trackResult);
-            }
-
-            JSObject result = new JSObject();
-            result.put("tracks", resultTracksArray);
-            call.resolve(result);
-
         } catch (Exception e) {
-            Log.e(TAG, "Failed to preload tracks", e);
-            call.reject("Failed to preload tracks: " + e.getMessage());
+            call.reject("Error parsing track URLs: " + e.getMessage());
+            return;
         }
+
+        // Clear previous mappings
+        urlToTrackIdMap.clear();
+
+        // Run preloading and waiting on a background thread to avoid blocking main thread
+        new Thread(() -> {
+            try {
+                // Preload tracks using simplified interface
+                playbackManager.preloadTracks(trackUrls);
+
+                // Wait for tracks to be prepared (no timeout - waits until all tracks are ready)
+                // This runs on background thread so it doesn't block MediaPlayer callbacks
+                Map<String, Map<String, Object>> tracksMetadata = playbackManager.waitForTracksMetadata(trackUrls);
+
+                // Create track results for response and populate URL mapping
+                List<JSObject> trackResults = new ArrayList<>();
+                for (int i = 0; i < trackUrls.size(); i++) {
+                    String trackId = "track_" + i;
+                    String url = trackUrls.get(i);
+
+                    // Store URL to trackId mapping
+                    urlToTrackIdMap.put(url, trackId);
+
+                    JSObject trackInfo = new JSObject();
+                    trackInfo.put("url", url);
+                    trackInfo.put("loaded", true);
+
+                    // Get metadata from prepared tracks
+                    Map<String, Object> metadata = tracksMetadata.get(url);
+                    if (metadata != null && (Boolean) metadata.getOrDefault("prepared", false)) {
+                        // Track is prepared, get real duration from MediaPlayer
+                        int durationMs = (Integer) metadata.getOrDefault("duration", 0);
+                        double durationSeconds = durationMs / 1000.0;
+                        trackInfo.put("duration", durationSeconds);
+                        Log.d(TAG, "Using prepared track duration: " + durationSeconds + "s for " + url);
+                    } else {
+                        // Track not prepared yet or failed, try to extract from file/URL
+                        Log.w(TAG, "Track not prepared, attempting fallback metadata extraction for: " + url);
+                        try {
+                            JSObject extractedMetadata = extractTrackMetadata(url);
+                            Double duration = extractedMetadata.has("duration") ? extractedMetadata.getDouble("duration") : 0.0;
+                            trackInfo.put("duration", duration);
+                        } catch (Exception e) {
+                            Log.w(TAG, "Failed to extract metadata for track: " + url, e);
+                            trackInfo.put("duration", 0.0);
+                        }
+                    }
+
+                    // Extract mimeType and size
+                    try {
+                        JSObject extractedMetadata = extractTrackMetadata(url);
+                        String mimeType = extractedMetadata.has("mimeType") ? extractedMetadata.getString("mimeType") : "audio/mpeg";
+                        Long size = extractedMetadata.has("size") ? extractedMetadata.getLong("size") : 0L;
+
+                        trackInfo.put("mimeType", mimeType);
+                        trackInfo.put("size", size);
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to extract metadata for track: " + url, e);
+                        trackInfo.put("mimeType", "audio/mpeg");
+                        trackInfo.put("size", 0L);
+                    }
+
+                    trackResults.add(trackInfo);
+                }
+
+                // Convert List<JSObject> to JSArray to ensure proper JSON serialization
+                JSArray resultTracksArray = new JSArray();
+                for (JSObject trackResult : trackResults) {
+                    resultTracksArray.put(trackResult);
+                }
+
+                JSObject result = new JSObject();
+                result.put("tracks", resultTracksArray);
+                call.resolve(result);
+
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to preload tracks", e);
+                call.reject("Failed to preload tracks: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    /**
+     * Extract metadata for a track URL (local file or remote URL)
+     * Returns mimeType, duration, and size
+     */
+    private JSObject extractTrackMetadata(String url) throws Exception {
+        JSObject metadata = new JSObject();
+
+        // Determine MIME type from URL extension for remote files
+        String mimeType = "audio/mpeg"; // default
+        if (url.endsWith(".aac")) {
+            mimeType = "audio/aac";
+        } else if (url.endsWith(".m4a")) {
+            mimeType = "audio/m4a";
+        } else if (url.endsWith(".mp3")) {
+            mimeType = "audio/mpeg";
+        } else if (url.endsWith(".wav")) {
+            mimeType = "audio/wav";
+        } else if (url.endsWith(".ogg")) {
+            mimeType = "audio/ogg";
+        } else if (url.endsWith(".flac")) {
+            mimeType = "audio/flac";
+        }
+
+        // Check if it's a local file
+        if (url.startsWith("file://") || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+            String filePath = url.startsWith("file://") ? url.substring(7) : url;
+            File file = new File(filePath);
+
+            if (file.exists()) {
+                // Get file size
+                metadata.put("size", file.length());
+
+                // Use AudioFileProcessor to get detailed audio info
+                JSObject fileInfo = AudioFileProcessor.getAudioFileInfo(filePath);
+                String fileMimeType = fileInfo.has("mimeType") ? fileInfo.getString("mimeType") : mimeType;
+                Double duration = fileInfo.has("duration") ? fileInfo.getDouble("duration") : 0.0;
+
+                metadata.put("mimeType", fileMimeType);
+                metadata.put("duration", duration);
+            } else {
+                // File doesn't exist - provide defaults
+                metadata.put("size", 0L);
+                metadata.put("mimeType", mimeType);
+                metadata.put("duration", 0.0);
+            }
+        } else {
+            // Remote URL - we can't get file size without downloading
+            metadata.put("size", 0L);
+            metadata.put("mimeType", mimeType);
+            metadata.put("duration", 0.0);
+
+            // Note: For remote URLs, duration will be available after the MediaPlayer is prepared
+            // The calling code should use waitForTracksMetadata() to get accurate duration
+        }
+
+        return metadata;
     }
 
     @PluginMethod

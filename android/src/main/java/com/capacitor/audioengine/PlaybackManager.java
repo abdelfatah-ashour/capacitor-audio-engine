@@ -190,6 +190,78 @@ public class PlaybackManager implements MediaPlayer.OnCompletionListener, MediaP
 
         Log.d(TAG, "All tracks preloaded (" + audioPlayers.size() + " total)");
     }
+
+    /**
+     * Wait for all tracks to be prepared and return their metadata
+     * @param trackUrls List of track URLs
+     * @return Map of URL to metadata (duration in milliseconds)
+     */
+    public Map<String, Map<String, Object>> waitForTracksMetadata(List<String> trackUrls) {
+        Map<String, Map<String, Object>> metadataMap = new HashMap<>();
+        long overallStartTime = System.currentTimeMillis();
+
+        Log.d(TAG, "Waiting for " + trackUrls.size() + " tracks to be prepared (no timeout)");
+
+        for (String url : trackUrls) {
+            String trackId = urlToTrackIdMap.get(url);
+            if (trackId == null) {
+                Log.w(TAG, "Track not found in mapping: " + url);
+                continue;
+            }
+
+            // Wait indefinitely for track to be prepared
+            long trackStartTime = System.currentTimeMillis();
+            waitForTrackPrepared(trackId);
+
+            Map<String, Object> metadata = new HashMap<>();
+            MediaPlayer player = audioPlayers.get(trackId);
+            if (player != null) {
+                try {
+                    int duration = player.getDuration();
+                    metadata.put("duration", duration > 0 ? duration : 0);
+                    metadata.put("prepared", true);
+                    long waitTime = System.currentTimeMillis() - trackStartTime;
+                    Log.d(TAG, "Track prepared after " + waitTime + "ms: " + url + " (duration: " + duration + "ms)");
+                } catch (Exception e) {
+                    Log.e(TAG, "Error getting duration for track: " + url, e);
+                    metadata.put("duration", 0);
+                    metadata.put("prepared", false);
+                }
+            } else {
+                Log.w(TAG, "Player not found for track: " + url);
+                metadata.put("duration", 0);
+                metadata.put("prepared", false);
+            }
+
+            metadataMap.put(url, metadata);
+        }
+
+        long totalWaitTime = System.currentTimeMillis() - overallStartTime;
+        Log.d(TAG, "All tracks processed in " + totalWaitTime + "ms");
+
+        return metadataMap;
+    }
+
+    /**
+     * Wait for a specific track to be prepared (no timeout)
+     * @param trackId Track ID to wait for
+     */
+    private void waitForTrackPrepared(String trackId) {
+        while (true) {
+            Boolean prepared = preparedPlayers.get(trackId);
+            if (prepared != null && prepared) {
+                return;
+            }
+
+            try {
+                Thread.sleep(50); // Check every 50ms
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Log.w(TAG, "Interrupted while waiting for track: " + trackId);
+                return;
+            }
+        }
+    }
     // Playback Control Methods
 
     public void play(String identifier) {

@@ -205,6 +205,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @platform web Not supported
    */
   async preloadTracks(options: PreloadTracksOptions): Promise<PreloadTracksResult> {
+    void options; // Parameter for API compatibility
     console.warn(
       'preloadTracks is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
@@ -213,6 +214,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     const tracks = options.tracks.map((url) => ({
       url,
       loaded: false,
+      duration: 0,
+      size: 0,
+      mimeType: 'unknown',
     }));
 
     return { tracks };
@@ -357,6 +361,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   async startRecording(_options: { path: string }): Promise<void> {
+    void _options; // Parameter for API compatibility
     console.warn('startRecording is not supported on web platform.');
     throw new Error('startRecording is not supported on web platform');
   }
@@ -382,6 +387,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   }
 
   async trimAudio(_options: TrimAudioOptions): Promise<AudioFileInfo> {
+    void _options; // Parameter for API compatibility
     console.warn(
       'trimAudio is not fully supported on web platform. Consider using Web Audio API for client-side audio processing.',
     );

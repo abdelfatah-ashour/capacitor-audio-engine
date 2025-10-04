@@ -196,9 +196,9 @@ export interface PreloadTracksOptions {
 export interface PreloadedTrackInfo {
   url: string;
   loaded: boolean;
-  mimeType?: string;
-  duration?: number;
-  size?: number;
+  mimeType: string;
+  duration: number;
+  size: number;
 }
 
 export interface PreloadTracksResult {
