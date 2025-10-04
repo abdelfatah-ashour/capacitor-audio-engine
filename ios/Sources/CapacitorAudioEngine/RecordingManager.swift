@@ -349,10 +349,16 @@ final class RecordingManager {
 
     private func configureAudioSessionForRecording() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+
+        try session.setCategory(.playAndRecord,
+                                mode: .voiceChat,
+                                options: [.defaultToSpeaker, .allowBluetooth])
+
         try session.setPreferredSampleRate(currentSampleRate)
-        try session.setActive(true)
+        try session.setPreferredInput(nil)
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
     }
+
 
     // MARK: - Duration Monitoring
 

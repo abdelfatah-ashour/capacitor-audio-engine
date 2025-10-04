@@ -4,9 +4,9 @@ import Foundation
 internal struct AudioEngineConstants {
     // MARK: - Audio Configuration
     // Defaults tuned for 44.1kHz mono AAC at 128 kbps per repo guidelines
-    static let defaultSampleRate: Double = 48000.0
-    static let defaultChannels = 1
-    static let defaultBitrate = 128000
+    static let defaultSampleRate: Double = 44100.0
+    static let defaultChannels: Int = 1
+    static let defaultBitrate: Int = 64000
     static let defaultFileExtension = ".m4a"
     static let mimeTypeM4A = "audio/m4a"
     static let bufferSize: AVAudioFrameCount = 512 // tiny buffer to smooth transitions
