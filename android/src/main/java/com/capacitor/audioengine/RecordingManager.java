@@ -332,24 +332,31 @@ class RecordingManager {
         }
     }
 
-    private void setBestAudioSource(MediaRecorder recorder) {
-        try {
-            // Prefer UNPROCESSED for full-band music when available (API 24+), else MIC
-            int source;
+        private void setBestAudioSource(MediaRecorder recorder) {
             try {
-                source = MediaRecorder.AudioSource.UNPROCESSED; // may throw on some API levels/devices
-            } catch (Throwable t) {
-                source = MediaRecorder.AudioSource.MIC;
-            }
-            recorder.setAudioSource(source);
-        } catch (Exception e) {
-            try {
-                recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-            } catch (Exception inner) {
-                Log.w(TAG, "Failed to set audio source", inner);
+                int source;
+
+                if (android.os.Build.VERSION.SDK_INT >= 23) {
+                    // VOICE_RECOGNITION often gives clean, balanced audio for recorded meetings
+                    source = MediaRecorder.AudioSource.VOICE_RECOGNITION;
+                } else {
+                    source = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+                }
+
+                recorder.setAudioSource(source);
+            } catch (Exception e) {
+                // Fallback hierarchy
+                try {
+                    recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION);
+                } catch (Exception inner1) {
+                    try {
+                        recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+                    } catch (Exception inner2) {
+                        Log.w(TAG, "Failed to set audio source", inner2);
+                    }
+                }
             }
         }
-    }
 
     FormatInfo getFormatInfo() {
         String path = currentOutputPath;
