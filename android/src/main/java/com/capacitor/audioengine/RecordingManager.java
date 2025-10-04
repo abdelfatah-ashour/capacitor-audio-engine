@@ -174,7 +174,7 @@ class RecordingManager {
 
         isRecording = false;
         isPaused = false;
-        if (callback != null) callback.onStatusChanged("stopped");
+        if (callback != null) callback.onStatusChanged("idle");
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
@@ -492,7 +492,7 @@ class RecordingManager {
         synchronized (this) {
             String statusString;
             if (!isRecording) {
-                statusString = "stopped";
+                statusString = "idle";
             } else if (isPaused) {
                 statusString = "paused";
             } else {

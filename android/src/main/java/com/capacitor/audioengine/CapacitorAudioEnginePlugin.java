@@ -791,7 +791,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         case LOADING -> "loading";
         case PLAYING -> "playing";
         case PAUSED -> "paused";
-        case STOPPED -> "stopped";
+        case STOPPED -> "idle";
         default -> "idle";
       };
     }
