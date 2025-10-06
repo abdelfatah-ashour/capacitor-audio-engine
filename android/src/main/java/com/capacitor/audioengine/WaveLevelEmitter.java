@@ -29,15 +29,15 @@ public class WaveLevelEmitter {
     private static final String TAG = "WaveLevelEmitter";
 
     // Configuration constants
-    private static final int DEFAULT_EMISSION_INTERVAL_MS = 200; // Default 200ms for responsive UI feedback
+    private static final int DEFAULT_EMISSION_INTERVAL_MS = 1000; // Default 1000ms as per SRS
     private static final int MIN_EMISSION_INTERVAL_MS = 50; // Minimum 50ms as per SRS
-    private static final int MAX_EMISSION_INTERVAL_MS = 1000; // Maximum 1000ms as per SRS
+    private static final int MAX_EMISSION_INTERVAL_MS = 500; // Maximum 500ms as per SRS
     private static final int DEFAULT_SAMPLE_RATE = AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
     private static final int BUFFER_SIZE_FACTOR = 2;
 
-    private static final float SILENCE_THRESHOLD = 0.01f; // Threshold for silence detection (1% of max level)
+    private static final float SILENCE_THRESHOLD = 0.001f; // Match iOS silence threshold
 
     // Recording components
     private AudioRecord audioRecord;
@@ -268,20 +268,23 @@ public class WaveLevelEmitter {
 
         lastEmissionTime = currentTime;
 
-        // Calculate peak amplitude (similar to MediaRecorder.getMaxAmplitude() but from raw data)
-        int maxAmplitude = 0;
+        // Calculate RMS in normalized float domain [-1.0, 1.0] to match iOS
+        double sumSquares = 0.0;
         for (int i = 0; i < samplesRead; i++) {
-            int amplitude = Math.abs(buffer[i]);
-            if (amplitude > maxAmplitude) {
-                maxAmplitude = amplitude;
-            }
+            // 32768.0f to ensure 32767 maps within [-1,1)
+            float sample = buffer[i] / 32768.0f;
+            sumSquares += sample * sample;
         }
+        float rms = (float) Math.sqrt(sumSquares / Math.max(1, samplesRead));
 
-        // Normalize to 0.0-1.0 range (consistent with RecordingManager approach)
-        // Using the same logic as MediaRecorder.getMaxAmplitude() normalization
-        float normalized = Math.min(1.0f, (float) maxAmplitude / 32767.0f);
+        // Convert RMS to dB and normalize to 0..1 (minDb -> 0, 0 dB -> 1)
+        final float minDb = -60.0f;
+        final float maxDb = 0.0f;
+        float rmsDb = 20.0f * (float) Math.log10(rms + 1e-8f); // avoid log(0)
+        float normalized = (rmsDb - minDb) / (maxDb - minDb);
+        normalized = Math.max(0.0f, Math.min(1.0f, normalized));
 
-        // Apply silence threshold
+        // Apply silence threshold after normalization
         if (normalized < SILENCE_THRESHOLD) {
             normalized = 0.0f;
         }
