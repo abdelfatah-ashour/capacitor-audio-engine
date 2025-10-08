@@ -42,6 +42,20 @@ if ! git diff --staged --quiet; then
     fi
 
     echo "Version bumped to $NEW_VERSION and committed successfully with proper 'chore: ' prefix!"
+
+    # Create Git tag for the version
+    TAG_NAME="v$NEW_VERSION"
+    echo "Creating tag $TAG_NAME..."
+
+    if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+        echo "Warning: Tag $TAG_NAME already exists. Skipping tag creation."
+    else
+        git tag -a "$TAG_NAME" -m "chore: release version $NEW_VERSION"
+        echo "Tag $TAG_NAME created successfully!"
+        echo ""
+        echo "To push the commit and tag to remote, run:"
+        echo "  git push && git push origin $TAG_NAME"
+    fi
 else
     echo "No changes to commit. Version might already be at $NEW_VERSION"
     exit 1
