@@ -2,7 +2,11 @@ package com.capacitor.audioengine;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.media.MediaRecorder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -15,7 +19,7 @@ import java.io.File;
 import java.util.Timer;
 import java.util.TimerTask;
 
-class RecordingManager {
+class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     interface RecordingCallback {
         void onStatusChanged(String status);
         void onError(String message);
@@ -29,6 +33,11 @@ class RecordingManager {
     private final Handler mainHandler;
 
     private MediaRecorder mediaRecorder;
+
+    // Audio focus management
+    private AudioManager audioManager;
+    private AudioFocusRequest audioFocusRequest;
+    private boolean hasAudioFocus = false;
 
     // Duration monitoring
     private Timer durationTimer;
@@ -47,6 +56,22 @@ class RecordingManager {
         this.context = context;
         this.callback = callback;
         this.mainHandler = new Handler(Looper.getMainLooper());
+
+        // Initialize audio manager
+        audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+
+        // Create audio focus request for recording
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(
+                    new android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setOnAudioFocusChangeListener(this)
+                .build();
+        }
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
@@ -58,6 +83,23 @@ class RecordingManager {
                 if (callback != null) callback.onError("RECORD_AUDIO permission not granted");
                 return;
             }
+
+            // Request audio focus for recording
+            if (!requestAudioFocus()) {
+                Log.w(TAG, "Failed to gain audio focus, but continuing with recording");
+                // Continue anyway - don't fail recording just because of audio focus
+            }
+
+            // Start foreground service for background recording
+            try {
+                Intent serviceIntent = new Intent(context, AudioRecordingService.class);
+                ContextCompat.startForegroundService(context, serviceIntent);
+                Log.d(TAG, "Foreground service started for recording");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to start foreground service", e);
+                // Continue with recording even if service fails to start
+            }
+
             String outputPath = options.path;
             lastOptions = options;
 
@@ -167,6 +209,18 @@ class RecordingManager {
 
         // Stop duration monitoring
         stopDurationMonitoring();
+
+        // Stop foreground service
+        try {
+            Intent serviceIntent = new Intent(context, AudioRecordingService.class);
+            context.stopService(serviceIntent);
+            Log.d(TAG, "Foreground service stopped");
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to stop foreground service", e);
+        }
+
+        // Abandon audio focus
+        abandonAudioFocus();
 
         isRecording = false;
         isPaused = false;
@@ -404,6 +458,95 @@ class RecordingManager {
     }
 
     // Wave level monitoring removed - handled by WaveLevelEmitter
+
+    // Audio focus management
+    private boolean requestAudioFocus() {
+        if (audioManager == null) return false;
+
+        try {
+            int result;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (audioFocusRequest != null) {
+                    result = audioManager.requestAudioFocus(audioFocusRequest);
+                } else {
+                    return false;
+                }
+            } else {
+                // For older devices
+                result = audioManager.requestAudioFocus(
+                    this,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN
+                );
+            }
+            hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+            if (hasAudioFocus) {
+                Log.d(TAG, "Audio focus granted for recording");
+            } else {
+                Log.w(TAG, "Audio focus denied for recording");
+            }
+            return hasAudioFocus;
+        } catch (Exception e) {
+            Log.e(TAG, "Error requesting audio focus", e);
+            return false;
+        }
+    }
+
+    private void abandonAudioFocus() {
+        if (audioManager == null || !hasAudioFocus) return;
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (audioFocusRequest != null) {
+                    audioManager.abandonAudioFocusRequest(audioFocusRequest);
+                }
+            } else {
+                audioManager.abandonAudioFocus(this);
+            }
+            hasAudioFocus = false;
+            Log.d(TAG, "Audio focus abandoned");
+        } catch (Exception e) {
+            Log.e(TAG, "Error abandoning audio focus", e);
+        }
+    }
+
+    @Override
+    public void onAudioFocusChange(int focusChange) {
+        Log.d(TAG, "Audio focus changed: " + focusChange);
+
+        switch (focusChange) {
+            case AudioManager.AUDIOFOCUS_GAIN:
+                // Audio focus gained - we can continue recording
+                Log.d(TAG, "Audio focus gained - recording can continue");
+                // Don't auto-resume if user explicitly paused
+                // Just log that we have focus again
+                break;
+
+            case AudioManager.AUDIOFOCUS_LOSS:
+                // Permanent loss of audio focus - another app took over
+                Log.w(TAG, "Audio focus lost permanently - another app is using audio");
+                // For recording, we should continue in background with foreground service
+                // Don't automatically pause - let the recording continue
+                break;
+
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                // Temporary loss of audio focus - e.g., phone call
+                Log.w(TAG, "Audio focus lost temporarily - transient interruption");
+                // For recording, we want to keep recording in background
+                // Don't pause - the foreground service will keep it alive
+                break;
+
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                // Another app needs audio but we can "duck" (lower volume)
+                // For recording, this doesn't affect us - continue recording
+                Log.d(TAG, "Audio focus loss can duck - continuing recording");
+                break;
+
+            default:
+                Log.w(TAG, "Unknown audio focus change: " + focusChange);
+                break;
+        }
+    }
 
     static class StartOptions {
         String path;
