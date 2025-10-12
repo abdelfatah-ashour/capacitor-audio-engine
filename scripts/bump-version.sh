@@ -11,11 +11,9 @@ NEW_VERSION=$1
 # Update package.json version
 npm version $NEW_VERSION --no-git-tag-version
 
-# Update iOS version in podspec
-sed -i '' "s/s.version = '.*'/s.version = '$NEW_VERSION'/" CapacitorNativeAudio.podspec
-
-# Update Android version in build.gradle
-sed -i '' "s/version = '.*'/version = '$NEW_VERSION'/" android/build.gradle
+# Note: iOS podspec reads version from package.json automatically
+# Note: Android library version is managed via package.json for Capacitor plugins
+# No separate version files need to be updated
 
 # Stage all modified files
 echo "Staging modified files..."

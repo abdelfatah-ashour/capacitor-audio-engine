@@ -38,6 +38,7 @@ git push && git push --tags
 ```
 
 The workflow will:
+
 1. ✅ Checkout the code
 2. 📦 Install dependencies
 3. 🔨 Build the package
@@ -47,7 +48,7 @@ The workflow will:
 
 - **On**: Push of tags starting with `v` (e.g., `v1.0.0`, `v0.0.2`)
 - **Runs on**: Ubuntu latest
-- **Node version**: 24
+- **Node version**: 20 (LTS)
 
 ### Features
 
@@ -55,4 +56,3 @@ The workflow will:
 - **Ignore Scripts**: Uses `--ignore-scripts` flag for security (build runs explicitly before publish)
 - **CI Install**: Uses `npm ci` for faster, reliable installs in CI environments
 - **Explicit Build**: Runs `npm run build` before publishing to ensure package is properly built
-
