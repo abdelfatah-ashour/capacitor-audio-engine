@@ -165,7 +165,10 @@ final class RecordingManager {
                 }
                 engine.stop()
             }
-            finishWriter()
+            // Only finish writer if one exists (prevents "file not found" error after resetRecording)
+            if assetWriter != nil {
+                finishWriter()
+            }
             audioEngine = nil
             converter = nil
             aacFormat = nil
@@ -196,6 +199,47 @@ final class RecordingManager {
     func resumeRecording() {
         performStateOperation {
             guard isRecording && isPaused else { return }
+
+            // Check if we need to reinitialize after a reset (no writer + tap removed)
+            if assetWriter == nil && !inputNodeTapInstalled {
+                // Reinitialize recording session after reset
+                do {
+                    guard let engine = audioEngine else {
+                        throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Audio engine not initialized"])
+                    }
+
+                    let input = engine.inputNode
+                    let inputFormat = input.outputFormat(forBus: 0)
+
+                    // Setup new asset writer for the new file
+                    try setupAssetWriter(inputFormat: inputFormat)
+
+                    // Reinstall tap
+                    if !inputNodeTapInstalled {
+                        input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, time in
+                            guard let self = self else { return }
+                            let shouldSkip: Bool = self.performStateOperation { self.isPaused || !self.isRecording }
+                            if shouldSkip { return }
+
+                            if let writer = self.assetWriter, writer.status == .writing, !self.writerStarted {
+                                self.writerStarted = true
+                                let startTime = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
+                                writer.startSession(atSourceTime: startTime)
+                            }
+                            self.appendToWriter(buffer: buffer, at: time)
+                            self.encodeAndEmit(buffer: buffer)
+                        }
+                        inputNodeTapInstalled = true
+                    }
+
+                    // Restart engine
+                    try engine.start()
+                } catch {
+                    delegate?.recordingDidEncounterError(error)
+                    return
+                }
+            }
+
             isPaused = false
 
             // Resume duration and wave level monitoring
@@ -330,7 +374,7 @@ final class RecordingManager {
 
         var sourceConsumed = false
         var error: NSError?
-        let status = converter.convert(to: compressedBuffer, error: &error, withInputFrom: { _, outStatus in
+        _ = converter.convert(to: compressedBuffer, error: &error, withInputFrom: { _, outStatus in
             if sourceConsumed {
                 outStatus.pointee = .noDataNow
                 return nil
