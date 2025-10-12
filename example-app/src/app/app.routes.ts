@@ -11,4 +11,9 @@ export const routes: Routes = [
     loadComponent: () =>
       import('./features-demo/features-demo.component').then(m => m.FeaturesDemoComponent),
   },
+  {
+    path: 'playback',
+    loadComponent: () =>
+      import('./features/playback/playback.component').then(m => m.PlaybackComponent),
+  },
 ];

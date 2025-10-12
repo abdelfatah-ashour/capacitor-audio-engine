@@ -7,6 +7,7 @@ import {
   OnInit,
   OnDestroy,
 } from '@angular/core';
+import { Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { TitleCasePipe, DecimalPipe, JsonPipe, DatePipe, UpperCasePipe } from '@angular/common';
 import {
@@ -69,16 +70,12 @@ import { CapacitorAudioEngine } from 'capacitor-audio-engine';
 import type {
   AudioFileInfo,
   PlaybackInfo,
-  PlaybackStartedData,
-  PlaybackPausedData,
-  PlaybackStoppedData,
   PlaybackErrorData,
-  PlaybackProgressData,
   PreloadedTrackInfo,
   WaveLevelData,
 } from 'capacitor-audio-engine';
 import { IntelligentWaveformComponent } from '../components/intelligent-waveform.component';
-import { Directory, Filesystem } from '@capacitor/filesystem';
+import { Filesystem } from '@capacitor/filesystem';
 interface AudioFileInfoWithMetadata extends AudioFileInfo {
   isSegmentRolled?: boolean;
   segmentCount?: number;
@@ -173,6 +170,7 @@ const CalibrationDuration = {
 export class FeaturesDemoComponent implements OnInit, OnDestroy {
   private readonly toastController = inject(ToastController);
   private readonly alertController = inject(AlertController);
+  private readonly router = inject(Router);
 
   constructor() {
     addIcons({
@@ -735,7 +733,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         await this.preloadTrack(url);
       }
 
-      await CapacitorAudioEngine.playAudio({ url });
+      await CapacitorAudioEngine.playTrack({ url });
       await this.updateTrackPlaybackInfo(url);
 
       const track = this.demoPlaylist.find(t => t.url === url);
@@ -748,7 +746,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async pauseTrack(url: string): Promise<void> {
     try {
-      await CapacitorAudioEngine.pauseAudio({ url });
+      await CapacitorAudioEngine.pauseTrack({ url });
       await this.updateTrackPlaybackInfo(url);
     } catch (error) {
       console.error('Failed to pause track:', error);
@@ -758,7 +756,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async resumeTrack(url: string): Promise<void> {
     try {
-      await CapacitorAudioEngine.resumeAudio({ url });
+      await CapacitorAudioEngine.resumeTrack({ url });
       await this.updateTrackPlaybackInfo(url);
     } catch (error) {
       console.error('Failed to resume track:', error);
@@ -768,7 +766,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async stopTrack(url: string): Promise<void> {
     try {
-      await CapacitorAudioEngine.stopAudio({ url });
+      await CapacitorAudioEngine.stopTrack({ url });
       await this.updateTrackPlaybackInfo(url);
 
       // Clear playback state for this track
@@ -785,7 +783,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async seekTrack(url: string, seconds: number): Promise<void> {
     try {
-      await CapacitorAudioEngine.seekAudio({ seconds, url });
+      await CapacitorAudioEngine.seekTrack({ seconds, url });
       await this.updateTrackPlaybackInfo(url);
     } catch (error) {
       console.error('Failed to seek track:', error);
@@ -830,26 +828,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   }
 
   private setupPlaybackEventListeners(): void {
-    CapacitorAudioEngine.addListener('playbackStarted', async (event: PlaybackStartedData) => {
-      if (event.url) {
-        await this.updateTrackPlaybackInfo(event.url);
-        const track = this.demoPlaylist.find(t => t.url === event.url);
-        await this.showToast(`Now playing: ${track?.title || 'Track'}`, 'success');
-      }
-    });
-
-    CapacitorAudioEngine.addListener('playbackPaused', async (event: PlaybackPausedData) => {
-      if (event.url) {
-        await this.updateTrackPlaybackInfo(event.url);
-      }
-    });
-
-    CapacitorAudioEngine.addListener('playbackStopped', async (event: PlaybackStoppedData) => {
-      if (event.url) {
-        await this.updateTrackPlaybackInfo(event.url);
-      }
-    });
-
     CapacitorAudioEngine.addListener('playbackError', async (event: PlaybackErrorData) => {
       console.error('Playback error:', event.message);
       await this.showToast(`Playback error: ${event.message}`, 'danger');
@@ -961,7 +939,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       }
 
       console.log('🚀 ~ playRecordedAudio ~ calling playAudio with URL:', file?.uri || '');
-      await CapacitorAudioEngine.playAudio({ url: file?.uri || '' });
+      await CapacitorAudioEngine.playTrack({ url: file?.uri || '' });
       await this.updateRecordedPlaybackInfo();
     } catch (error) {
       console.error('Failed to play recorded audio:', error);
@@ -971,7 +949,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async pauseRecordedAudio(url: string): Promise<void> {
     try {
-      await CapacitorAudioEngine.pauseAudio({ url });
+      await CapacitorAudioEngine.pauseTrack({ url });
       await this.updateRecordedPlaybackInfo();
     } catch (error) {
       console.error('Failed to pause recorded audio:', error);
@@ -981,7 +959,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async stopRecordedAudio(url: string): Promise<void> {
     try {
-      await CapacitorAudioEngine.stopAudio({ url });
+      await CapacitorAudioEngine.stopTrack({ url });
       await this.updateRecordedPlaybackInfo();
     } catch (error) {
       console.error('Failed to stop recorded audio:', error);
@@ -991,7 +969,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
   async seekRecordedAudio(seconds: number): Promise<void> {
     try {
-      await CapacitorAudioEngine.seekAudio({ seconds });
+      await CapacitorAudioEngine.seekTrack({ seconds });
       await this.updateRecordedPlaybackInfo();
     } catch (error) {
       console.error('Failed to seek recorded audio:', error);
@@ -1091,23 +1069,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     await alert.present();
   }
 
-  // Utility methods
-  private durationChangeListener = null;
-
-  private async startDurationTimer(): Promise<void> {
-    // Primary method: Use event listener for real-time duration updates
-    // This is set up in setupRecordingEventListeners() when recording starts
-
-    // Fallback timer with longer interval since we have real-time events
-    try {
-      await CapacitorAudioEngine.addListener('durationChange', event => {
-        this.recordingDuration.set(event.duration);
-      });
-    } catch (error) {
-      console.error('Failed to get duration:', error);
-    }
-  }
-
   protected formatTime(seconds: number): string {
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = Math.floor(seconds % 60);
@@ -1123,7 +1084,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   }
 
   // Tab navigation
-  selectTab(
+  async selectTab(
     tab:
       | 'recording'
       | 'playback'
@@ -1131,7 +1092,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       | 'audio-info'
       | 'waveform'
       | 'intelligent-waveform'
-  ): void {
+  ): Promise<void> {
     if (
       tab &&
       [
@@ -1143,22 +1104,14 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         'intelligent-waveform',
       ].includes(tab)
     ) {
-      this.activeTab.set(tab);
+      // Navigate to dedicated playback page
       if (tab === 'playback') {
-        // Refresh playback info for all preloaded tracks
-        this.refreshAllTrackStates();
+        console.log('🎵 Navigating to dedicated playback page...');
+        await this.router.navigate(['/playback']);
+        return;
       }
-    }
-  }
 
-  // Helper method to refresh all track states
-  private async refreshAllTrackStates(): Promise<void> {
-    for (const url of Array.from(this.preloadedTracks())) {
-      try {
-        await this.updateTrackPlaybackInfo(url);
-      } catch (error) {
-        console.error('Failed to refresh track state:', error);
-      }
+      this.activeTab.set(tab);
     }
   }
 

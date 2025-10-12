@@ -1,6 +1,6 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 
-export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
+export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused';
 
 // Permission Status Enums
 export enum PermissionStatus {
@@ -38,12 +38,7 @@ export type AudioRecordingEventName =
   | 'waveLevelError'
   | 'permissionStatusChanged'
   | 'recordingStatusChanged';
-export type AudioPlaybackEventName =
-  | 'playbackStarted'
-  | 'playbackPaused'
-  | 'playbackStopped'
-  | 'playbackError'
-  | 'playbackProgress';
+export type AudioPlaybackEventName = 'playbackStatusChanged' | 'playbackError' | 'playbackProgress';
 export type AudioEventName = AudioRecordingEventName | AudioPlaybackEventName;
 
 export interface AudioRecordingEvent<T = any> {
@@ -67,10 +62,14 @@ export type AudioRecordingEventMap = {
   recordingStatusChanged: RecordingStatusChangedData;
 };
 
+export interface PlaybackStatusChangedData {
+  status: PlaybackStatus;
+  url: string;
+  position: number;
+}
+
 export type AudioPlaybackEventMap = {
-  playbackStarted: PlaybackStartedData;
-  playbackPaused: PlaybackPausedData;
-  playbackStopped: PlaybackStoppedData;
+  playbackStatusChanged: PlaybackStatusChangedData;
   playbackError: PlaybackErrorData;
   playbackProgress: PlaybackProgressData;
 };
@@ -124,6 +123,11 @@ export interface PlaybackPausedData {
 }
 
 export interface PlaybackStoppedData {
+  trackId: string;
+  url: string;
+}
+
+export interface PlaybackCompletedData {
   trackId: string;
   url: string;
 }
@@ -216,32 +220,32 @@ export interface PlaybackInfo {
   isPlaying: boolean;
 }
 
-export interface SeekOptions {
+export interface SeekTrackOptions {
   seconds: number;
   url?: string;
 }
 
-export interface PlayAudioOptions {
+export interface PlayTrackOptions {
   url?: string;
 }
 
-export interface PauseAudioOptions {
+export interface PauseTrackOptions {
   url?: string;
 }
 
-export interface ResumeAudioOptions {
+export interface ResumeTrackOptions {
   url?: string;
 }
 
-export interface StopAudioOptions {
+export interface StopTrackOptions {
   url?: string;
 }
 
-export interface SkipToIndexOptions {
+export interface SkipToIndexTrackOptions {
   index: number;
 }
 
-export interface TrimAudioOptions {
+export interface TrimTrackOptions {
   /** URI or file path of the audio file to trim */
   uri: string;
   /** Start time in seconds */
@@ -483,35 +487,35 @@ export interface CapacitorAudioEnginePlugin {
    * @param options - Optional playback options with URL to play specific preloaded track
    * @returns Promise that resolves when playback starts
    */
-  playAudio(options?: PlayAudioOptions): Promise<void>;
+  playTrack(options?: PlayTrackOptions): Promise<void>;
 
   /**
    * Pause audio playback for current track or specific preloaded track by URL
    * @param options - Optional pause options with URL to pause specific preloaded track
    * @returns Promise that resolves when playback is paused
    */
-  pauseAudio(options?: PauseAudioOptions): Promise<void>;
+  pauseTrack(options?: PauseTrackOptions): Promise<void>;
 
   /**
    * Resume audio playback from paused state for current track or specific preloaded track by URL
    * @param options - Optional resume options with URL to resume specific preloaded track
    * @returns Promise that resolves when playback resumes
    */
-  resumeAudio(options?: ResumeAudioOptions): Promise<void>;
+  resumeTrack(options?: ResumeTrackOptions): Promise<void>;
 
   /**
    * Stop audio playback and reset to beginning for current track or specific preloaded track by URL
    * @param options - Optional stop options with URL to stop specific preloaded track
    * @returns Promise that resolves when playback stops
    */
-  stopAudio(options?: StopAudioOptions): Promise<void>;
+  stopTrack(options?: StopTrackOptions): Promise<void>;
 
   /**
    * Seek to specific position in current track or specific preloaded track by URL
    * @param options - Seek options with time in seconds and optional URL for specific preloaded track
    * @returns Promise that resolves when seek completes
    */
-  seekAudio(options: SeekOptions): Promise<void>;
+  seekTrack(options: SeekTrackOptions): Promise<void>;
 
   /**
    * Skip to next track in playlist (simplified - no-op for single track playback)
@@ -530,13 +534,52 @@ export interface CapacitorAudioEnginePlugin {
    * @param options - Options with target track index
    * @returns Promise that resolves when skip completes
    */
-  skipToIndex(options: SkipToIndexOptions): Promise<void>;
+  skipToIndex(options: SkipToIndexTrackOptions): Promise<void>;
 
   /**
    * Get current playback information
    * @returns Promise that resolves with current playback state
    */
   getPlaybackInfo(): Promise<PlaybackInfo>;
+
+  /**
+   * Destroy and reinitialize the playback manager
+   *
+   * **Use Case:** Call this method when switching away from the playback tab to completely
+   * clean up playback resources. This will:
+   * - Stop any active playback
+   * - Release all MediaPlayer instances
+   * - Clear all preloaded tracks
+   * - Abandon audio focus
+   * - Reinitialize a fresh PlaybackManager instance
+   *
+   * **Important:** After calling this method, you will need to:
+   * 1. Re-add event listeners for playback events
+   * 2. Re-preload tracks if needed
+   *
+   * @returns Promise that resolves when playback manager is destroyed and reinitialized
+   * @platform web No-op (browser handles cleanup automatically)
+   * @platform android Releases and recreates PlaybackManager
+   * @platform ios Releases and recreates AVPlayer instances
+   *
+   * @example
+   * ```typescript
+   * // When leaving playback tab
+   * async selectTab(tab: string) {
+   *   if (previousTab === 'playback' && tab !== 'playback') {
+   *     // Clean up playback resources
+   *     await CapacitorAudioEngine.destroyPlayback();
+   *   }
+   *
+   *   if (tab === 'playback') {
+   *     // Re-setup listeners and preload tracks
+   *     await this.setupPlaybackListeners();
+   *     await this.preloadTracks();
+   *   }
+   * }
+   * ```
+   */
+  destroyPlayback(): Promise<void>;
 
   /**
    * Navigate to the app's permission settings screen.
@@ -601,5 +644,5 @@ export interface CapacitorAudioEnginePlugin {
    * console.log('Duration:', result.duration);
    * ```
    */
-  trimAudio(options: TrimAudioOptions): Promise<AudioFileInfo>;
+  trimAudio(options: TrimTrackOptions): Promise<AudioFileInfo>;
 }

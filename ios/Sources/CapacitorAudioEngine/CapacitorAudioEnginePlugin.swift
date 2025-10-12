@@ -8,7 +8,7 @@ import Capacitor
  */
 
 @objc(CapacitorAudioEnginePlugin)
-public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackManagerDelegate, WaveLevelEventCallback, RecordingManagerDelegate {
+public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelEventCallback, RecordingManagerDelegate, PlaybackManagerDelegate {
     public let identifier = "CapacitorAudioEnginePlugin"
     public let jsName = "CapacitorAudioEngine"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -25,15 +25,16 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
         CAPPluginMethod(name: "getAudioInfo", returnType: CAPPluginReturnPromise),
         // Playback methods
         CAPPluginMethod(name: "preloadTracks", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "playAudio", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "pauseAudio", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "resumeAudio", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "stopAudio", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "seekAudio", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "playTrack", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "pauseTrack", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resumeTrack", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stopTrack", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "seekTrack", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "skipToNext", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "skipToPrevious", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "skipToIndex", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPlaybackInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "destroyPlayback", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
         // Recording methods
         CAPPluginMethod(name: "startRecording", returnType: CAPPluginReturnPromise),
@@ -47,10 +48,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
 
     // MARK: - Properties
 
-    private var playbackManager: PlaybackManager!
     private var waveLevelEmitter: WaveLevelEmitter!
     private var permissionService: PermissionManagerService!
     private var recordingManager: RecordingManager!
+    private var playbackManager: PlaybackManager!
 
     // MARK: - Thread Safety
 
@@ -60,26 +61,20 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
         return try stateQueue.sync { try operation() }
     }
 
-    // MARK: - URL to Track ID Mapping (delegated to PlaybackManager)
-    private func findTrackIdByUrl(_ url: String) -> String? {
-        return playbackManager.getTrackId(for: url)
-    }
-
     // MARK: - Lifecycle
 
     public override func load() {
         super.load()
         permissionService = PermissionManagerService()
 
-        // Initialize playback manager and set delegate
-        playbackManager = PlaybackManager()
-        playbackManager.delegate = self
-
         // Initialize wave level emitter with event callback
         waveLevelEmitter = WaveLevelEmitter(eventCallback: self)
 
         // Initialize recording manager
         recordingManager = RecordingManager(delegate: self)
+
+        // Initialize playback manager
+        playbackManager = PlaybackManager(delegate: self)
     }
 
     // MARK: - Logging Utility
@@ -581,140 +576,127 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
     // MARK: - Playback Methods
 
     @objc func preloadTracks(_ call: CAPPluginCall) {
-        guard let tracksArray = call.getArray("tracks") as? [String] else {
-            call.reject("Invalid tracks array - expected array of URLs")
+        guard let tracksArray = call.getArray("tracks", String.self) else {
+            call.reject("INVALID_PARAMETERS", "Missing required parameter: tracks")
             return
         }
 
-        print("CapacitorAudioEnginePlugin: preloadTracks called with \(tracksArray.count) tracks")
-        for (index, url) in tracksArray.enumerated() {
-            print("CapacitorAudioEnginePlugin: Track \(index): \(url)")
+        if tracksArray.isEmpty {
+            call.reject("INVALID_PARAMETERS", "No valid tracks provided")
+            return
         }
 
-        // Validate track URLs
-        for (index, url) in tracksArray.enumerated() {
-            if url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                print("CapacitorAudioEnginePlugin: Empty URL at index \(index)")
-                call.reject("Invalid track URL at index \(index)")
-                return
+        var results: [[String: Any]] = []
+        let group = DispatchGroup()
+
+        for url in tracksArray {
+            group.enter()
+            playbackManager.preloadTrack(url: url) { result in
+                switch result {
+                case .success(let trackData):
+                    let trackResult: [String: Any] = [
+                        "url": trackData.url,
+                        "loaded": true,
+                        "mimeType": trackData.mimeType,
+                        "duration": trackData.duration,
+                        "size": trackData.size
+                    ]
+                    results.append(trackResult)
+
+                case .failure(let error):
+                    let trackResult: [String: Any] = [
+                        "url": url,
+                        "loaded": false,
+                        "error": error.localizedDescription
+                    ]
+                    results.append(trackResult)
+                }
+                group.leave()
             }
         }
 
-        do {
-            print("CapacitorAudioEnginePlugin: Calling playbackManager.preloadTracks")
-            let trackResults = try playbackManager.preloadTracks(trackUrls: tracksArray)
-            print("CapacitorAudioEnginePlugin: preloadTracks completed successfully")
-
-            // Return the track results in the same format as Android
-            call.resolve([
-                "tracks": trackResults
-            ])
-        } catch {
-            print("CapacitorAudioEnginePlugin: preloadTracks failed with error: \(error)")
-            print("CapacitorAudioEnginePlugin: Error details: \(error.localizedDescription)")
-            call.reject("Failed to preload tracks: \(error.localizedDescription)")
+        group.notify(queue: .main) {
+            call.resolve(["tracks": results])
         }
     }
 
-    @objc func playAudio(_ call: CAPPluginCall) {
-        if let url = call.getString("url") {
-            // Play specific preloaded track by URL
-            playbackManager.play(identifier: url)
-        } else {
-            // Play current track
-            playbackManager.play(identifier: nil)
-        }
+    @objc func playTrack(_ call: CAPPluginCall) {
+        let url = call.getString("url")
+        playbackManager.playTrack(url: url)
         call.resolve()
     }
 
-    @objc func pauseAudio(_ call: CAPPluginCall) {
-        if let url = call.getString("url") {
-            // Pause specific preloaded track by URL
-            playbackManager.pause(identifier: url)
-        } else {
-            // Pause current track
-            playbackManager.pause(identifier: nil)
-        }
+    @objc func pauseTrack(_ call: CAPPluginCall) {
+        let url = call.getString("url")
+        playbackManager.pauseTrack(url: url)
         call.resolve()
     }
 
-    @objc func resumeAudio(_ call: CAPPluginCall) {
-        if let url = call.getString("url") {
-            // Resume specific preloaded track by URL
-            playbackManager.play(identifier: url) // Resume is handled by play
-        } else {
-            // Resume current track
-            playbackManager.play(identifier: nil)
-        }
+    @objc func resumeTrack(_ call: CAPPluginCall) {
+        let url = call.getString("url")
+        playbackManager.resumeTrack(url: url)
         call.resolve()
     }
 
-    @objc func stopAudio(_ call: CAPPluginCall) {
-        if let url = call.getString("url") {
-            // Stop specific preloaded track by URL
-            playbackManager.stop(identifier: url)
-        } else {
-            // Stop current track
-            playbackManager.stop(identifier: nil)
-        }
+    @objc func stopTrack(_ call: CAPPluginCall) {
+        let url = call.getString("url")
+        playbackManager.stopTrack(url: url)
         call.resolve()
     }
 
-    @objc func seekAudio(_ call: CAPPluginCall) {
-        guard let seconds = call.getDouble("seconds") else {
-            call.reject("Missing seconds parameter")
+    @objc func seekTrack(_ call: CAPPluginCall) {
+        guard let seconds = call.getInt("seconds") else {
+            call.reject("INVALID_PARAMETERS", "Missing required parameter: seconds")
             return
         }
 
-        if let url = call.getString("url") {
-            // Seek in specific preloaded track by URL
-            playbackManager.seek(identifier: url, to: seconds)
-        } else {
-            // Seek in current track
-            playbackManager.seek(identifier: nil, to: seconds)
-        }
+        let url = call.getString("url")
+        playbackManager.seekTrack(seconds: seconds, url: url)
         call.resolve()
     }
 
     @objc func skipToNext(_ call: CAPPluginCall) {
-        // Playlist functionality removed - simplified to single track playback
+        // Simplified - no-op for single track playback
         call.resolve()
     }
 
     @objc func skipToPrevious(_ call: CAPPluginCall) {
-        // Playlist functionality removed - simplified to single track playback
+        // Simplified - no-op for single track playback
         call.resolve()
     }
 
     @objc func skipToIndex(_ call: CAPPluginCall) {
-        // Playlist functionality removed - simplified to single track playback
+        // Simplified - no-op for single track playback
         call.resolve()
     }
 
     @objc func getPlaybackInfo(_ call: CAPPluginCall) {
-        var result: [String: Any] = [:]
+        let info = playbackManager.getPlaybackInfo()
 
-        if let currentTrackId = playbackManager.getCurrentTrackId() {
-            // Get the URL for the current track
-            let currentUrl = playbackManager.getCurrentTrackUrl() ?? ""
+        var result: [String: Any] = [
+            "currentIndex": info.currentIndex,
+            "currentPosition": info.currentPosition,
+            "duration": info.duration,
+            "isPlaying": info.isPlaying
+        ]
 
+        if let trackId = info.trackId, let url = info.url {
             result["currentTrack"] = [
-                "id": currentTrackId,
-                "url": currentUrl
+                "id": trackId,
+                "url": url
             ]
-            result["currentIndex"] = 0 // Single track playback
-            result["currentPosition"] = playbackManager.getCurrentPosition(identifier: currentTrackId)
-            result["duration"] = playbackManager.getDuration(identifier: currentTrackId)
-            result["isPlaying"] = playbackManager.isPlaying(identifier: currentTrackId)
         } else {
             result["currentTrack"] = NSNull()
-            result["currentIndex"] = -1
-            result["currentPosition"] = 0.0
-            result["duration"] = 0.0
-            result["isPlaying"] = false
         }
 
         call.resolve(result)
+    }
+
+    @objc func destroyPlayback(_ call: CAPPluginCall) {
+        playbackManager.destroy()
+        // Reinitialize with same delegate
+        playbackManager = PlaybackManager(delegate: self)
+        call.resolve()
     }
 
     @objc func openSettings(_ call: CAPPluginCall) {
@@ -735,57 +717,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
                 call.reject("Invalid settings URL")
             }
         }
-    }
-
-
-    // MARK: - PlaybackManagerDelegate Implementation (Simplified)
-
-    func playbackManager(_ manager: PlaybackManager, playbackStarted trackId: String) {
-        let currentUrl = manager.getUrl(for: trackId) ?? ""
-        let data: [String: Any] = [
-            "trackId": trackId,
-            "url": currentUrl
-        ]
-        notifyListeners("playbackStarted", data: data)
-    }
-
-    func playbackManager(_ manager: PlaybackManager, playbackPaused trackId: String) {
-        let currentUrl = manager.getUrl(for: trackId) ?? ""
-        let data: [String: Any] = [
-            "trackId": trackId,
-            "url": currentUrl,
-            "position": manager.getCurrentPosition(identifier: trackId)
-        ]
-        notifyListeners("playbackPaused", data: data)
-    }
-
-    func playbackManager(_ manager: PlaybackManager, playbackStopped trackId: String) {
-        let currentUrl = manager.getUrl(for: trackId) ?? ""
-        let data: [String: Any] = [
-            "trackId": trackId,
-            "url": currentUrl
-        ]
-        notifyListeners("playbackStopped", data: data)
-    }
-
-    func playbackManager(_ manager: PlaybackManager, playbackError trackId: String, error: Error) {
-        let data: [String: Any] = [
-            "trackId": trackId,
-            "message": error.localizedDescription
-        ]
-        notifyListeners("playbackError", data: data)
-    }
-
-    func playbackManager(_ manager: PlaybackManager, playbackProgress trackId: String, currentPosition: Double, duration: Double) {
-        let currentUrl = manager.getUrl(for: trackId) ?? ""
-        let data: [String: Any] = [
-            "trackId": trackId,
-            "url": currentUrl,
-            "currentPosition": currentPosition,
-            "duration": duration,
-            "isPlaying": manager.isPlaying(identifier: trackId)
-        ]
-        notifyListeners("playbackProgress", data: data)
     }
 
     // MARK: - WaveformEventCallback Implementation
@@ -947,9 +878,19 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
         exportSession.timeRange = timeRange
 
         // Perform export
-        exportSession.exportAsynchronously {
+        exportSession.exportAsynchronously { [weak exportSession] in
+            guard let exportSession = exportSession else {
+                DispatchQueue.main.async {
+                    call.reject("Export session was deallocated")
+                }
+                return
+            }
+
+            let status = exportSession.status
+            let error = exportSession.error
+
             DispatchQueue.main.async {
-                switch exportSession.status {
+                switch status {
                 case .completed:
                     // Extract audio file info for the trimmed file
                     Task {
@@ -981,7 +922,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
                     }
 
                 case .failed:
-                    if let error = exportSession.error {
+                    if let error = error {
                         call.reject("Export failed: \(error.localizedDescription)")
                     } else {
                         call.reject("Export failed with unknown error")
@@ -991,7 +932,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
                     call.reject("Export was cancelled")
 
                 default:
-                    call.reject("Export failed with status: \(exportSession.status.rawValue)")
+                    call.reject("Export failed with status: \(status.rawValue)")
                 }
             }
         }
@@ -1022,6 +963,40 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, PlaybackMa
             "path": path,
             "uri": path,
             "webPath": "capacitor://localhost/_capacitor_file_" + path
+        ])
+    }
+
+    // MARK: - PlaybackManagerDelegate
+
+    func playbackDidChangeStatus(_ status: String, url: String, position: Int) {
+        notifyListeners("playbackStatusChanged", data: [
+            "status": status,
+            "url": url,
+            "position": position
+        ])
+    }
+
+    func playbackDidEncounterError(_ trackId: String, message: String) {
+        notifyListeners("playbackError", data: [
+            "trackId": trackId,
+            "message": message
+        ])
+    }
+
+    func playbackDidUpdateProgress(_ trackId: String, url: String, currentPosition: Int, duration: Int, isPlaying: Bool) {
+        notifyListeners("playbackProgress", data: [
+            "trackId": trackId,
+            "url": url,
+            "currentPosition": currentPosition,
+            "duration": duration,
+            "isPlaying": isPlaying
+        ])
+    }
+
+    func playbackDidComplete(_ trackId: String, url: String) {
+        notifyListeners("playbackCompleted", data: [
+            "trackId": trackId,
+            "url": url
         ])
     }
 

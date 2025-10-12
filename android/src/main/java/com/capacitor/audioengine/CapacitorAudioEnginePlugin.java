@@ -36,7 +36,7 @@ import com.getcapacitor.annotation.PermissionCallback;
         )
     }
 )
-public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.EventCallback, PlaybackManager.PlaybackManagerListener {
+public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.EventCallback {
     private static final String TAG = "CapacitorAudioEngine";
 
     // Core managers
@@ -44,15 +44,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     private EventManager eventManager;
 
     private FileDirectoryManager fileManager;
-    private PlaybackManager playbackManager;
 
     private WaveLevelEmitter waveLevelEmitter;
 
     private RecordingManager recordingManager;
+    private PlaybackManager playbackManager;
     private Handler mainHandler;
-
-    // Track URL to ID mapping for simplified interface
-    private final Map<String, String> urlToTrackIdMap = new HashMap<>();
 
     @Override
     public void load() {
@@ -105,8 +102,42 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 notifyListeners("waveLevel", data);
             }
         });
+
         // Initialize playback manager
-        playbackManager = new PlaybackManager(getContext(), this);
+        playbackManager = new PlaybackManager(getContext(), new PlaybackManager.PlaybackCallback() {
+            @Override public void onStatusChanged(String status, String url, int position) {
+                JSObject data = new JSObject();
+                data.put("status", status);
+                data.put("url", url);
+                data.put("position", position);
+                notifyListeners("playbackStatusChanged", data);
+            }
+
+            @Override public void onError(String trackId, String message) {
+                JSObject data = new JSObject();
+                data.put("trackId", trackId);
+                data.put("message", message);
+                notifyListeners("playbackError", data);
+            }
+
+            @Override public void onProgress(String trackId, String url, int currentPosition, int duration, boolean isPlaying) {
+                JSObject data = new JSObject();
+                data.put("trackId", trackId);
+                data.put("url", url);
+                data.put("currentPosition", currentPosition);
+                data.put("duration", duration);
+                data.put("isPlaying", isPlaying);
+                notifyListeners("playbackProgress", data);
+            }
+
+            @Override public void onTrackCompleted(String trackId, String url) {
+                JSObject data = new JSObject();
+                data.put("trackId", trackId);
+                data.put("url", url);
+                notifyListeners("playbackCompleted", data);
+            }
+        });
+
         Log.d(TAG, "CapacitorAudioEngine plugin loaded");
     }
 
@@ -401,369 +432,231 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     // ==================== PLAYBACK METHODS ====================
     @PluginMethod
     public void preloadTracks(PluginCall call) {
-        JSArray tracksArray = call.getArray("tracks");
-        if (tracksArray == null) {
-            call.reject("Invalid tracks array - expected array of URLs");
-            return;
-        }
-
-        List<String> trackUrls = new ArrayList<>();
-
         try {
+            JSArray tracksArray = call.getArray("tracks");
+            if (tracksArray == null) {
+                call.reject("INVALID_PARAMETERS", "Missing required parameter: tracks");
+                return;
+            }
+
+            List<String> tracks = new ArrayList<>();
             for (int i = 0; i < tracksArray.length(); i++) {
                 String url = tracksArray.getString(i);
-                if (url == null || url.trim().isEmpty()) {
-                    call.reject("Invalid track URL at index " + i);
-                    return;
+                if (url != null && !url.isEmpty()) {
+                    tracks.add(url);
                 }
-                trackUrls.add(url);
             }
-        } catch (Exception e) {
-            call.reject("Error parsing track URLs: " + e.getMessage());
-            return;
-        }
 
-        // Clear previous mappings
-        urlToTrackIdMap.clear();
+            if (tracks.isEmpty()) {
+                call.reject("INVALID_PARAMETERS", "No valid tracks provided");
+                return;
+            }
 
-        // Run preloading and waiting on a background thread to avoid blocking main thread
-        new Thread(() -> {
-            try {
-                // Preload tracks using simplified interface
-                playbackManager.preloadTracks(trackUrls);
+            // Preload all tracks
+            JSArray results = new JSArray();
+            int[] completedCount = {0};
+            int totalTracks = tracks.size();
 
-                // Wait for tracks to be prepared (no timeout - waits until all tracks are ready)
-                // This runs on background thread so it doesn't block MediaPlayer callbacks
-                Map<String, Map<String, Object>> tracksMetadata = playbackManager.waitForTracksMetadata(trackUrls);
+            for (String url : tracks) {
+                playbackManager.preloadTrack(url, new PlaybackManager.PreloadCallback() {
+                    @Override
+                    public void onSuccess(String trackUrl, String mimeType, int duration, long size) {
+                        JSObject trackResult = new JSObject();
+                        trackResult.put("url", trackUrl);
+                        trackResult.put("loaded", true);
+                        trackResult.put("mimeType", mimeType);
+                        trackResult.put("duration", duration);
+                        trackResult.put("size", size);
+                        results.put(trackResult);
 
-                // Create track results for response and populate URL mapping
-                List<JSObject> trackResults = new ArrayList<>();
-                for (int i = 0; i < trackUrls.size(); i++) {
-                    String trackId = "track_" + i;
-                    String url = trackUrls.get(i);
-
-                    // Store URL to trackId mapping
-                    urlToTrackIdMap.put(url, trackId);
-
-                    JSObject trackInfo = new JSObject();
-                    trackInfo.put("url", url);
-                    trackInfo.put("loaded", true);
-
-                    // Get metadata from prepared tracks
-                    Map<String, Object> metadata = tracksMetadata.get(url);
-                    if (metadata != null && (Boolean) metadata.getOrDefault("prepared", false)) {
-                        // Track is prepared, get real duration from MediaPlayer
-                        int durationMs = (Integer) metadata.getOrDefault("duration", 0);
-                        double durationSeconds = durationMs / 1000.0;
-                        trackInfo.put("duration", durationSeconds);
-                        Log.d(TAG, "Using prepared track duration: " + durationSeconds + "s for " + url);
-                    } else {
-                        // Track not prepared yet or failed, try to extract from file/URL
-                        Log.w(TAG, "Track not prepared, attempting fallback metadata extraction for: " + url);
-                        try {
-                            JSObject extractedMetadata = extractTrackMetadata(url);
-                            Double duration = extractedMetadata.has("duration") ? extractedMetadata.getDouble("duration") : 0.0;
-                            trackInfo.put("duration", duration);
-                        } catch (Exception e) {
-                            Log.w(TAG, "Failed to extract metadata for track: " + url, e);
-                            trackInfo.put("duration", 0.0);
+                        completedCount[0]++;
+                        if (completedCount[0] == totalTracks) {
+                            JSObject response = new JSObject();
+                            response.put("tracks", results);
+                            call.resolve(response);
                         }
                     }
 
-                    // Extract mimeType and size
-                    try {
-                        JSObject extractedMetadata = extractTrackMetadata(url);
-                        String mimeType = extractedMetadata.has("mimeType") ? extractedMetadata.getString("mimeType") : "audio/mpeg";
-                        Long size = extractedMetadata.has("size") ? extractedMetadata.getLong("size") : 0L;
+                    @Override
+                    public void onError(String trackUrl, String message) {
+                        JSObject trackResult = new JSObject();
+                        trackResult.put("url", trackUrl);
+                        trackResult.put("loaded", false);
+                        trackResult.put("error", message);
+                        results.put(trackResult);
 
-                        trackInfo.put("mimeType", mimeType);
-                        trackInfo.put("size", size);
-                    } catch (Exception e) {
-                        Log.w(TAG, "Failed to extract metadata for track: " + url, e);
-                        trackInfo.put("mimeType", "audio/mpeg");
-                        trackInfo.put("size", 0L);
+                        completedCount[0]++;
+                        if (completedCount[0] == totalTracks) {
+                            JSObject response = new JSObject();
+                            response.put("tracks", results);
+                            call.resolve(response);
+                        }
                     }
-
-                    trackResults.add(trackInfo);
-                }
-
-                // Convert List<JSObject> to JSArray to ensure proper JSON serialization
-                JSArray resultTracksArray = new JSArray();
-                for (JSObject trackResult : trackResults) {
-                    resultTracksArray.put(trackResult);
-                }
-
-                JSObject result = new JSObject();
-                result.put("tracks", resultTracksArray);
-                call.resolve(result);
-
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to preload tracks", e);
-                call.reject("Failed to preload tracks: " + e.getMessage());
+                });
             }
-        }).start();
-    }
 
-    /**
-     * Extract metadata for a track URL (local file or remote URL)
-     * Returns mimeType, duration, and size
-     */
-    private JSObject extractTrackMetadata(String url) throws Exception {
-        JSObject metadata = new JSObject();
-
-        // Determine MIME type from URL extension for remote files
-        String mimeType = getMimeType(url);
-
-        // Check if it's a local file
-        if (url.startsWith("file://") || (!url.startsWith("http://") && !url.startsWith("https://"))) {
-            String filePath = url.startsWith("file://") ? url.substring(7) : url;
-            File file = new File(filePath);
-
-            if (file.exists()) {
-                // Get file size
-                metadata.put("size", file.length());
-
-                // Use AudioFileProcessor to get detailed audio info
-                JSObject fileInfo = AudioFileProcessor.getAudioFileInfo(filePath);
-                String fileMimeType = fileInfo.has("mimeType") ? fileInfo.getString("mimeType") : mimeType;
-                Double duration = fileInfo.has("duration") ? fileInfo.getDouble("duration") : 0.0;
-
-                metadata.put("mimeType", fileMimeType);
-                metadata.put("duration", duration);
-            } else {
-                // File doesn't exist - provide defaults
-                metadata.put("size", 0L);
-                metadata.put("mimeType", mimeType);
-                metadata.put("duration", 0.0);
-            }
-        } else {
-            // Remote URL - we can't get file size without downloading
-            metadata.put("size", 0L);
-            metadata.put("mimeType", mimeType);
-            metadata.put("duration", 0.0);
-
-            // Note: For remote URLs, duration will be available after the MediaPlayer is prepared
-            // The calling code should use waitForTracksMetadata() to get accurate duration
+        } catch (Exception e) {
+            Log.e(TAG, "Error preloading tracks", e);
+            call.reject("PRELOAD_ERROR", "Failed to preload tracks: " + e.getMessage());
         }
-
-        return metadata;
-    }
-
-    @NonNull
-    private static String getMimeType(String url) {
-        String mimeType = "audio/mpeg"; // default
-        if (url.endsWith(".aac")) {
-            mimeType = "audio/aac";
-        } else if (url.endsWith(".m4a")) {
-            mimeType = "audio/m4a";
-        } else if (url.endsWith(".mp3")) {
-            mimeType = "audio/mpeg";
-        } else if (url.endsWith(".wav")) {
-            mimeType = "audio/wav";
-        } else if (url.endsWith(".ogg")) {
-            mimeType = "audio/ogg";
-        } else if (url.endsWith(".flac")) {
-            mimeType = "audio/flac";
-        }
-        return mimeType;
     }
 
     @PluginMethod
-    public void playAudio(PluginCall call) {
+    public void playTrack(PluginCall call) {
         try {
             String url = call.getString("url");
-            if (url != null) {
-                // Find track ID by URL and play
-                String trackId = findTrackIdByUrl(url);
-                if (trackId != null) {
-                    playbackManager.play(trackId);
-                } else {
-                    call.reject("Track not found: " + url);
-                    return;
-                }
-            } else {
-                // Play first available track
-                String currentTrackId = playbackManager.getCurrentTrackId();
-                if (currentTrackId != null) {
-                    playbackManager.play(currentTrackId);
-                } else {
-                    call.reject("No tracks available to play");
-                    return;
-                }
-            }
+            playbackManager.playTrack(url);
             call.resolve();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to play audio", e);
-            call.reject("Failed to play audio: " + e.getMessage());
+            Log.e(TAG, "Error playing track", e);
+            call.reject("PLAY_ERROR", "Failed to play track: " + e.getMessage());
         }
     }
 
     @PluginMethod
-    public void pauseAudio(PluginCall call) {
+    public void pauseTrack(PluginCall call) {
         try {
             String url = call.getString("url");
-            if (url != null) {
-                // Find track ID by URL and pause
-                String trackId = findTrackIdByUrl(url);
-                if (trackId != null) {
-                    playbackManager.pause(trackId);
-                } else {
-                    call.reject("Track not found: " + url);
-                    return;
-                }
-            } else {
-                // Pause current track
-                String currentTrackId = playbackManager.getCurrentTrackId();
-                if (currentTrackId != null) {
-                    playbackManager.pause(currentTrackId);
-                }
-            }
+            playbackManager.pauseTrack(url);
             call.resolve();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to pause audio", e);
-            call.reject("Failed to pause audio: " + e.getMessage());
+            Log.e(TAG, "Error pausing track", e);
+            call.reject("PAUSE_ERROR", "Failed to pause track: " + e.getMessage());
         }
     }
 
     @PluginMethod
-    public void resumeAudio(PluginCall call) {
+    public void resumeTrack(PluginCall call) {
         try {
             String url = call.getString("url");
-            if (url != null) {
-                // Find track ID by URL and resume (play)
-                String trackId = findTrackIdByUrl(url);
-                if (trackId != null) {
-                    playbackManager.play(trackId);
-                } else {
-                    call.reject("Track not found: " + url);
-                    return;
-                }
-            } else {
-                // Resume current track
-                String currentTrackId = playbackManager.getCurrentTrackId();
-                if (currentTrackId != null) {
-                    playbackManager.play(currentTrackId);
-                }
-            }
+            playbackManager.resumeTrack(url);
             call.resolve();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to resume audio", e);
-            call.reject("Failed to resume audio: " + e.getMessage());
+            Log.e(TAG, "Error resuming track", e);
+            call.reject("RESUME_ERROR", "Failed to resume track: " + e.getMessage());
         }
     }
 
     @PluginMethod
-    public void stopAudio(PluginCall call) {
+    public void stopTrack(PluginCall call) {
         try {
             String url = call.getString("url");
-            if (url != null) {
-                // Find track ID by URL and stop
-                String trackId = findTrackIdByUrl(url);
-                if (trackId != null) {
-                    playbackManager.stop(trackId);
-                } else {
-                    call.reject("Track not found: " + url);
-                    return;
-                }
-            } else {
-                // Stop current track
-                String currentTrackId = playbackManager.getCurrentTrackId();
-                if (currentTrackId != null) {
-                    playbackManager.stop(currentTrackId);
-                }
-            }
+            playbackManager.stopTrack(url);
             call.resolve();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to stop audio", e);
-            call.reject("Failed to stop audio: " + e.getMessage());
+            Log.e(TAG, "Error stopping track", e);
+            call.reject("STOP_ERROR", "Failed to stop track: " + e.getMessage());
         }
     }
 
     @PluginMethod
-    public void seekAudio(PluginCall call) {
-        Double seconds = call.getDouble("seconds");
-        if (seconds == null) {
-            call.reject("Missing seconds parameter");
-            return;
-        }
-
-        String url = call.getString("url");
-        if (url != null) {
-            // Find track ID by URL and seek
-            String trackId = findTrackIdByUrl(url);
-            if (trackId != null) {
-                playbackManager.seekTo(trackId, seconds);
-            } else {
-                call.reject("Track not found: " + url);
+    public void seekTrack(PluginCall call) {
+        try {
+            Integer seconds = call.getInt("seconds");
+            if (seconds == null) {
+                call.reject("INVALID_PARAMETERS", "Missing required parameter: seconds");
                 return;
             }
-        } else {
-            // Seek in current track
-            String currentTrackId = playbackManager.getCurrentTrackId();
-            if (currentTrackId != null) {
-                playbackManager.seekTo(currentTrackId, seconds);
-            } else {
-                call.reject("No current track to seek");
-                return;
-            }
+
+            String url = call.getString("url");
+            playbackManager.seekTrack(seconds, url);
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "Error seeking track", e);
+            call.reject("SEEK_ERROR", "Failed to seek track: " + e.getMessage());
         }
-        call.resolve();
     }
 
     @PluginMethod
     public void skipToNext(PluginCall call) {
-        // Simplified implementation - just return success since we don't have playlist functionality
+        // Simplified - no-op for single track playback
         call.resolve();
     }
 
     @PluginMethod
     public void skipToPrevious(PluginCall call) {
-        // Simplified implementation - just return success since we don't have playlist functionality
+        // Simplified - no-op for single track playback
         call.resolve();
     }
 
     @PluginMethod
     public void skipToIndex(PluginCall call) {
-        // Simplified implementation - just return success since we don't have playlist functionality
+        // Simplified - no-op for single track playback
         call.resolve();
     }
 
     @PluginMethod
     public void getPlaybackInfo(PluginCall call) {
-        // Ensure we're on the main thread since ExoPlayer methods need to be called from main thread
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(() -> getPlaybackInfo(call));
-            return;
-        }
-
         try {
+            PlaybackManager.PlaybackInfo info = playbackManager.getPlaybackInfo();
+
             JSObject result = new JSObject();
 
-            String currentTrackId = playbackManager.getCurrentTrackId();
-            if (currentTrackId != null) {
-                // Find the URL for the current track
-                String currentUrl = playbackManager.getCurrentTrackUrl();
-
+            if (info.trackId != null && info.url != null) {
                 JSObject currentTrack = new JSObject();
-                currentTrack.put("id", currentTrackId);
-                currentTrack.put("url", currentUrl != null ? currentUrl : "");
-
+                currentTrack.put("id", info.trackId);
+                currentTrack.put("url", info.url);
                 result.put("currentTrack", currentTrack);
-                result.put("currentIndex", 0); // Single track playback
-                result.put("currentPosition", playbackManager.getCurrentPosition(currentTrackId));
-                result.put("duration", playbackManager.getDuration(currentTrackId));
-                result.put("isPlaying", playbackManager.isPlaying(currentTrackId));
             } else {
                 result.put("currentTrack", JSObject.NULL);
-                result.put("currentIndex", -1);
-                result.put("currentPosition", 0.0);
-                result.put("duration", 0.0);
-                result.put("isPlaying", false);
             }
+
+            result.put("currentIndex", info.currentIndex);
+            result.put("currentPosition", info.currentPosition);
+            result.put("duration", info.duration);
+            result.put("isPlaying", info.isPlaying);
 
             call.resolve(result);
         } catch (Exception e) {
-            call.reject("Failed to get playback info: " + e.getMessage());
+            Log.e(TAG, "Error getting playback info", e);
+            call.reject("PLAYBACK_INFO_ERROR", "Failed to get playback info: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void destroyPlayback(PluginCall call) {
+        try {
+            if (playbackManager != null) {
+                playbackManager.destroy();
+                // Reinitialize with same callback
+                playbackManager = new PlaybackManager(getContext(), new PlaybackManager.PlaybackCallback() {
+                    @Override public void onStatusChanged(String status, String url, int position) {
+                        JSObject data = new JSObject();
+                        data.put("status", status);
+                        data.put("url", url);
+                        data.put("position", position);
+                        notifyListeners("playbackStatusChanged", data);
+                    }
+
+                    @Override public void onError(String trackId, String message) {
+                        JSObject data = new JSObject();
+                        data.put("trackId", trackId);
+                        data.put("message", message);
+                        notifyListeners("playbackError", data);
+                    }
+
+                    @Override public void onProgress(String trackId, String url, int currentPosition, int duration, boolean isPlaying) {
+                        JSObject data = new JSObject();
+                        data.put("trackId", trackId);
+                        data.put("url", url);
+                        data.put("currentPosition", currentPosition);
+                        data.put("duration", duration);
+                        data.put("isPlaying", isPlaying);
+                        notifyListeners("playbackProgress", data);
+                    }
+
+                    @Override public void onTrackCompleted(String trackId, String url) {
+                        JSObject data = new JSObject();
+                        data.put("trackId", trackId);
+                        data.put("url", url);
+                        notifyListeners("playbackCompleted", data);
+                    }
+                });
+            }
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "Error destroying playback", e);
+            call.reject("DESTROY_PLAYBACK_ERROR", "Failed to destroy playback: " + e.getMessage());
         }
     }
 
@@ -795,75 +688,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         }
     }
 
-    // Helper method to find track ID by URL
-    private String findTrackIdByUrl(String url) {
-        return urlToTrackIdMap.get(url);
-    }
-
-    // PlaybackManagerListener implementation (Simplified)
-    @Override
-    public void onPlaybackStarted(String trackId) {
-        try {
-            String url = playbackManager.getCurrentTrackUrl();
-            JSObject data = new JSObject();
-            data.put("trackId", trackId);
-            data.put("url", url != null ? url : "");
-            notifyListeners("playbackStarted", data);
-        } catch (Exception e) {
-            Log.e(TAG, "Error notifying playback started", e);
-        }
-    }
-
-    @Override
-    public void onPlaybackPaused(String trackId) {
-        try {
-            String url = playbackManager.getCurrentTrackUrl();
-            JSObject data = new JSObject();
-            data.put("trackId", trackId);
-            data.put("url", url != null ? url : "");
-            data.put("position", playbackManager.getCurrentPosition(trackId));
-            notifyListeners("playbackPaused", data);
-        } catch (Exception e) {
-            Log.e(TAG, "Error notifying playback paused", e);
-        }
-    }
-
-    @Override
-    public void onPlaybackStopped(String trackId) {
-        try {
-            String url = playbackManager.getCurrentTrackUrl();
-            JSObject data = new JSObject();
-            data.put("trackId", trackId);
-            data.put("url", url != null ? url : "");
-            notifyListeners("playbackStopped", data);
-        } catch (Exception e) {
-            Log.e(TAG, "Error notifying playback stopped", e);
-        }
-    }
-
-    @Override
-    public void onPlaybackError(String trackId, String error) {
-        JSObject data = new JSObject();
-        data.put("trackId", trackId);
-        data.put("message", error);
-        notifyListeners("playbackError", data);
-    }
-
-    @Override
-    public void onPlaybackProgress(String trackId, long currentPosition, long duration) {
-        try {
-            String url = playbackManager.getCurrentTrackUrl();
-            JSObject data = new JSObject();
-            data.put("trackId", trackId);
-            data.put("url", url != null ? url : "");
-            data.put("currentPosition", currentPosition / 1000.0); // Convert to seconds
-            data.put("duration", duration / 1000.0); // Convert to seconds
-            data.put("isPlaying", playbackManager.isPlaying(trackId));
-            notifyListeners("playbackProgress", data);
-        } catch (Exception e) {
-            Log.e(TAG, "Error notifying playback progress", e);
-        }
-    }
 
     @Override
     protected void handleOnDestroy() {
@@ -872,12 +696,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         Log.d(TAG, "Plugin destroying - cleaning up all resources");
 
         try {
-            // Release managers
-            if (playbackManager != null) {
-                playbackManager.release();
-                playbackManager = null;
-            }
-
             if (eventManager != null) {
                 eventManager = null;
             }
@@ -890,6 +708,12 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             if (waveLevelEmitter != null) {
                 waveLevelEmitter.cleanup();
                 waveLevelEmitter = null;
+            }
+
+            // Clean up playback manager
+            if (playbackManager != null) {
+                playbackManager.destroy();
+                playbackManager = null;
             }
 
             // Clear main handler

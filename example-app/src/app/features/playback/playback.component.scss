@@ -1,0 +1,114 @@
+ion-card {
+  margin: 16px;
+
+  ion-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.2rem;
+  }
+}
+
+ion-item {
+  --padding-start: 16px;
+  --padding-end: 16px;
+
+  ion-label {
+    h2 {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    p {
+      font-size: 0.85rem;
+      color: var(--ion-color-medium);
+      margin-top: 4px;
+    }
+  }
+}
+
+.playback-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px !important;
+  font-size: 0.9rem;
+
+  .status-playing {
+    color: var(--ion-color-success);
+    font-weight: 600;
+  }
+
+  .status-paused {
+    color: var(--ion-color-warning);
+    font-weight: 600;
+  }
+
+  .time-display {
+    color: var(--ion-color-dark);
+    font-family: 'Courier New', monospace;
+  }
+}
+
+.not-preloaded {
+  color: var(--ion-color-medium);
+  font-style: italic;
+}
+
+ion-progress-bar {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 2px;
+
+  &.playing {
+    --progress-background: var(--ion-color-success);
+  }
+
+  &:not(.playing) {
+    --progress-background: var(--ion-color-medium);
+  }
+}
+
+ion-grid {
+  ion-button {
+    margin: 2px;
+  }
+}
+
+// Responsive layout for controls
+@media (max-width: 768px) {
+  ion-card {
+    margin: 12px;
+  }
+
+  ion-button {
+    font-size: 0.9rem;
+  }
+}
+
+// List item styling
+ion-list {
+  background: transparent;
+
+  ion-item {
+    --background: var(--ion-card-background);
+    margin-bottom: 8px;
+    border-radius: 8px;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+}
+
+// Button group styling
+.button-group {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+
+  ion-button {
+    flex: 1;
+  }
+}
+

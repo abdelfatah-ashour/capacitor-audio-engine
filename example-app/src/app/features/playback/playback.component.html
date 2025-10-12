@@ -1,0 +1,177 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-buttons slot="start">
+      <ion-back-button defaultHref="/features-demo"></ion-back-button>
+    </ion-buttons>
+    <ion-title>Audio Playback Demo</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content>
+  <!-- Header Info Card -->
+  <ion-card>
+    <ion-card-header>
+      <ion-card-title>
+        <ion-icon name="musical-notes"></ion-icon>
+        Audio Playback Manager
+      </ion-card-title>
+      <ion-card-subtitle> Demo tracks playback with real-time progress updates </ion-card-subtitle>
+    </ion-card-header>
+    <ion-card-content>
+      <p><strong>Status:</strong> {{ realtimeUpdatesActive() ? '🟢 Active' : '⚪ Inactive' }}</p>
+      <p>
+        <strong>Preloaded Tracks:</strong> {{ preloadedTracksCount() }} / {{ demoPlaylist.length }}
+      </p>
+      <p><strong>Currently Playing:</strong> {{ getCurrentlyPlayingTrack() }}</p>
+    </ion-card-content>
+  </ion-card>
+
+  <!-- Preload Controls Card -->
+  <ion-card>
+    <ion-card-header>
+      <ion-card-title>Preload Controls</ion-card-title>
+    </ion-card-header>
+    <ion-card-content>
+      <ion-button
+        expand="block"
+        (click)="preloadAllTracks()"
+        [disabled]="preloadedTracksCount() === demoPlaylist.length"
+      >
+        <ion-icon slot="start" name="checkmark-circle"></ion-icon>
+        Preload All Tracks
+      </ion-button>
+
+      <ion-button
+        expand="block"
+        fill="outline"
+        (click)="refreshAllTrackStates()"
+        [disabled]="!hasPreloadedTracks()"
+      >
+        <ion-icon slot="start" name="refresh"></ion-icon>
+        Refresh Track States
+      </ion-button>
+    </ion-card-content>
+  </ion-card>
+
+  <!-- Demo Playlist Card -->
+  <ion-card>
+    <ion-card-header>
+      <ion-card-title>Demo Playlist</ion-card-title>
+      <ion-card-subtitle>{{ demoPlaylist.length }} tracks available</ion-card-subtitle>
+    </ion-card-header>
+    <ion-card-content>
+      <ion-list>
+        @for (track of demoPlaylist; track track.id) {
+          <ion-item>
+            <ion-label>
+              <h2>{{ track.title }}</h2>
+              <p>{{ track.artist }}</p>
+
+              <!-- Playback Status -->
+              @if (isTrackPreloaded(track.url)) {
+                <p class="playback-status">
+                  @if (isTrackPlaying(track.url)) {
+                    <span class="status-playing">▶️ Playing</span>
+                  } @else {
+                    <span class="status-paused">⏸️ Paused</span>
+                  }
+                  <span class="time-display">
+                    {{ formatTime(getTrackPosition(track.url)) }} /
+                    {{ formatTime(getTrackDuration(track.url)) }}
+                  </span>
+                </p>
+
+                <!-- Progress Bar -->
+                <ion-progress-bar
+                  [value]="getTrackProgress(track.url)"
+                  [class.playing]="isTrackPlaying(track.url)"
+                >
+                </ion-progress-bar>
+              } @else {
+                <p class="not-preloaded">⭕ Not preloaded</p>
+              }
+            </ion-label>
+
+            <!-- Playback Controls -->
+            <ion-grid class="ion-no-padding">
+              <ion-row>
+                <ion-col size="auto">
+                  @if (!isTrackPreloaded(track.url)) {
+                    <ion-button size="small" fill="outline" (click)="preloadTrack(track.url)">
+                      Load
+                    </ion-button>
+                  }
+
+                  @if (isTrackPreloaded(track.url)) {
+                    @if (isTrackPlaying(track.url)) {
+                      <ion-button size="small" color="warning" (click)="pauseTrack(track.url)">
+                        <ion-icon slot="icon-only" name="pause"></ion-icon>
+                      </ion-button>
+                    } @else {
+                      <ion-button size="small" color="success" (click)="playTrack(track.url)">
+                        <ion-icon slot="icon-only" name="play"></ion-icon>
+                      </ion-button>
+                    }
+
+                    <ion-button size="small" color="danger" (click)="stopTrack(track.url)">
+                      <ion-icon slot="icon-only" name="stop"></ion-icon>
+                    </ion-button>
+                  }
+                </ion-col>
+              </ion-row>
+            </ion-grid>
+          </ion-item>
+        }
+      </ion-list>
+    </ion-card-content>
+  </ion-card>
+
+  <!-- Technical Info Card -->
+  <ion-card>
+    <ion-card-header>
+      <ion-card-title>Technical Information</ion-card-title>
+    </ion-card-header>
+    <ion-card-content>
+      <ion-list>
+        <ion-item>
+          <ion-label>
+            <h3>Preloaded Tracks</h3>
+            <p>{{ preloadedTracks().size }} tracks ready for playback</p>
+          </ion-label>
+        </ion-item>
+
+        <ion-item>
+          <ion-label>
+            <h3>Real-time Updates</h3>
+            <p>
+              Progress updates every 250ms: {{ realtimeUpdatesActive() ? 'Active' : 'Inactive' }}
+            </p>
+          </ion-label>
+        </ion-item>
+
+        <ion-item>
+          <ion-label>
+            <h3>Event Listeners</h3>
+            <p>playbackProgress, playbackStarted, playbackPaused, playbackStopped, playbackError</p>
+          </ion-label>
+        </ion-item>
+
+        @if (preloadedTrackInfo().length > 0) {
+          <ion-item>
+            <ion-label>
+              <h3>Track Details</h3>
+              @for (info of preloadedTrackInfo(); track info.url) {
+                <p>
+                  <strong>{{ getTrackTitle(info.url) }}</strong
+                  ><br />
+                  Duration: {{ formatTime(info.duration) }} | Size:
+                  {{ (info.size / 1024 / 1024).toFixed(2) }} MB | Type: {{ info.mimeType }}
+                </p>
+              }
+            </ion-label>
+          </ion-item>
+        }
+      </ion-list>
+    </ion-card-content>
+  </ion-card>
+</ion-content>

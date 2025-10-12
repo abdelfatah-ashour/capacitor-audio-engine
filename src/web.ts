@@ -9,13 +9,13 @@ import type {
   PreloadTracksOptions,
   PreloadTracksResult,
   PlaybackInfo,
-  SeekOptions,
-  SkipToIndexOptions,
+  SeekTrackOptions,
+  SkipToIndexTrackOptions,
   WaveLevelConfigurationResult,
   PermissionRequestOptions,
   PermissionStatusResults,
   RecordingStatusInfo,
-  TrimAudioOptions,
+  TrimTrackOptions,
 } from './definitions';
 import { PermissionStatus } from './definitions';
 
@@ -228,7 +228,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves when playback starts
    * @platform web Not supported
    */
-  async playAudio(_options?: { url?: string }): Promise<void> {
+  async playTrack(_options?: { url?: string }): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
       'playAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
@@ -242,7 +242,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves when playback is paused
    * @platform web Not supported
    */
-  async pauseAudio(_options?: { url?: string }): Promise<void> {
+  async pauseTrack(_options?: { url?: string }): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
       'pauseAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
@@ -256,7 +256,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves when playback resumes
    * @platform web Not supported
    */
-  async resumeAudio(_options?: { url?: string }): Promise<void> {
+  async resumeTrack(_options?: { url?: string }): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
       'resumeAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
@@ -270,7 +270,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves when playback stops
    * @platform web Not supported
    */
-  async stopAudio(_options?: { url?: string }): Promise<void> {
+  async stopTrack(_options?: { url?: string }): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
       'stopAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
@@ -284,7 +284,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves when seek completes
    * @platform web Not supported
    */
-  async seekAudio(_options: SeekOptions): Promise<void> {
+  async seekTrack(_options: SeekTrackOptions): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
       'seekAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
@@ -322,7 +322,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves when skip completes
    * @platform web Not supported
    */
-  async skipToIndex(_options: SkipToIndexOptions): Promise<void> {
+  async skipToIndex(_options: SkipToIndexTrackOptions): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
       'skipToIndex is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
@@ -340,6 +340,16 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
       'getPlaybackInfo is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
     );
     throw new Error('getPlaybackInfo is not supported on web platform');
+  }
+
+  /**
+   * Destroy and reinitialize the playback manager
+   * @returns Promise that resolves when playback manager is destroyed and reinitialized
+   * @platform web No-op (browser handles cleanup automatically)
+   */
+  async destroyPlayback(): Promise<void> {
+    // No-op on web - browser handles cleanup automatically
+    console.log('destroyPlayback called on web (no-op)');
   }
 
   /**
@@ -386,7 +396,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     throw new Error('getRecordingStatus is not supported on web platform');
   }
 
-  async trimAudio(_options: TrimAudioOptions): Promise<AudioFileInfo> {
+  async trimAudio(_options: TrimTrackOptions): Promise<AudioFileInfo> {
     void _options; // Parameter for API compatibility
     console.warn(
       'trimAudio is not fully supported on web platform. Consider using Web Audio API for client-side audio processing.',
