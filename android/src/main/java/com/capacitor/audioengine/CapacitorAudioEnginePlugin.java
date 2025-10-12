@@ -1051,4 +1051,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         }
     }
 
+    @PluginMethod
+    public void removeAllListeners(PluginCall call) {
+        try {
+            super.removeAllListeners(call);
+        } catch (Exception e) {
+            Log.e(TAG, "Error removing all listeners", e);
+            call.reject("Failed to remove all listeners: " + e.getMessage());
+        }
+    }
+
 }
