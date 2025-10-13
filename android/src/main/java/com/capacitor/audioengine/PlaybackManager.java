@@ -101,7 +101,7 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
     }
 
     /**
-     * Preload a track from URL
+     * Preload a track from URL (supports HTTP/HTTPS URLs and local file URIs)
      */
     void preloadTrack(String url, PreloadCallback preloadCallback) {
         if (url == null || url.isEmpty()) {
@@ -160,9 +160,19 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
                 }
             });
 
-            // Set data source and prepare async
-            Uri uri = Uri.parse(url);
-            player.setDataSource(context, uri);
+            // Normalize the URL/URI to handle different formats
+            String normalizedUrl = normalizeAudioUrl(url);
+            Log.d(TAG, "Normalized URL: " + normalizedUrl + " (original: " + url + ")");
+
+            // Set data source based on URL type
+            if (isRemoteUrl(url)) {
+                // For HTTP/HTTPS URLs, use Uri parsing
+                Uri uri = Uri.parse(normalizedUrl);
+                player.setDataSource(context, uri);
+            } else {
+                // For local file paths, use the file path directly
+                player.setDataSource(normalizedUrl);
+            }
             player.prepareAsync();
 
             trackInfo.player = player;
@@ -175,6 +185,47 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
             Log.e(TAG, "Exception preloading track: " + url, e);
             preloadCallback.onError(url, "Exception: " + e.getMessage());
         }
+    }
+
+    /**
+     * Normalize audio URL/URI to handle different formats:
+     * - HTTP/HTTPS URLs (CDN) - returned as-is
+     * - Capacitor file URIs (capacitor://localhost/_capacitor_file_) - converted to file path
+     * - file:// URIs - converted to file path
+     * - Direct file paths - returned as-is
+     */
+    private String normalizeAudioUrl(String url) {
+        if (url == null || url.isEmpty()) {
+            return url;
+        }
+
+        // Handle HTTP/HTTPS URLs - return as-is
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            return url;
+        }
+
+        // Handle Capacitor file URI format
+        if (url.contains("capacitor://localhost/_capacitor_file_")) {
+            return url.replace("capacitor://localhost/_capacitor_file_", "");
+        }
+
+        // Handle file:// URI format
+        if (url.startsWith("file://")) {
+            return url.substring(7); // Remove "file://" prefix
+        }
+
+        // Return as-is for direct file paths
+        return url;
+    }
+
+    /**
+     * Check if the URL is a remote URL (HTTP/HTTPS)
+     */
+    private boolean isRemoteUrl(String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        return url.startsWith("http://") || url.startsWith("https://");
     }
 
     /**

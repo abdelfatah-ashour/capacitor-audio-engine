@@ -108,7 +108,7 @@ final class PlaybackManager: NSObject {
     // MARK: - Public Methods
 
     /**
-     * Preload a track from URL
+     * Preload a track from URL (supports HTTP/HTTPS URLs and local file URIs)
      */
     func preloadTrack(url: String, completion: @escaping (Result<(url: String, mimeType: String, duration: Int, size: Int64), Error>) -> Void) {
         stateQueue.async { [weak self] in
@@ -133,11 +133,24 @@ final class PlaybackManager: NSObject {
 
             let trackInfo = TrackInfo(url: url, trackId: trackId)
 
-            guard let audioUrl = URL(string: url) else {
-                DispatchQueue.main.async {
-                    completion(.failure(NSError(domain: "PlaybackManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL format"])))
+            // Normalize the URL/URI to handle different formats
+            let normalizedUrl = self.normalizeAudioUrl(url)
+            print("[PlaybackManager] Normalized URL: \(normalizedUrl) (original: \(url))")
+
+            // Create URL based on whether it's a remote or local file
+            let audioUrl: URL
+            if self.isRemoteUrl(url) {
+                // For HTTP/HTTPS URLs
+                guard let remoteUrl = URL(string: normalizedUrl) else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "PlaybackManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid remote URL format"])))
+                    }
+                    return
                 }
-                return
+                audioUrl = remoteUrl
+            } else {
+                // For local file paths
+                audioUrl = URL(fileURLWithPath: normalizedUrl)
             }
 
             let playerItem = AVPlayerItem(url: audioUrl)
@@ -515,6 +528,40 @@ final class PlaybackManager: NSObject {
 
     private func generateTrackId(from url: String) -> String {
         return "track_\(abs(url.hashValue))"
+    }
+
+    /**
+     * Normalize audio URL/URI to handle different formats:
+     * - HTTP/HTTPS URLs (CDN) - returned as-is
+     * - Capacitor file URIs (capacitor://localhost/_capacitor_file_) - converted to file path
+     * - file:// URIs - converted to file path
+     * - Direct file paths - returned as-is
+     */
+    private func normalizeAudioUrl(_ url: String) -> String {
+        // Handle HTTP/HTTPS URLs - return as-is
+        if url.hasPrefix("http://") || url.hasPrefix("https://") {
+            return url
+        }
+
+        // Handle Capacitor file URI format
+        if url.contains("capacitor://localhost/_capacitor_file_") {
+            return url.replacingOccurrences(of: "capacitor://localhost/_capacitor_file_", with: "")
+        }
+
+        // Handle file:// URI format
+        if url.hasPrefix("file://") {
+            return String(url.dropFirst(7)) // Remove "file://" prefix
+        }
+
+        // Return as-is for direct file paths
+        return url
+    }
+
+    /**
+     * Check if the URL is a remote URL (HTTP/HTTPS)
+     */
+    private func isRemoteUrl(_ url: String) -> Bool {
+        return url.hasPrefix("http://") || url.hasPrefix("https://")
     }
 
     private func handleTrackCompletion(_ trackInfo: TrackInfo) {
