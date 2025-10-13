@@ -1,6 +1,6 @@
 {
   "name": "capacitor-audio-engine",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "description": "High-quality audio recording Capacitor plugin with native iOS & Android support. Features pause/resume, microphone management, real-time monitoring, audio trimming, and comprehensive mobile audio recording capabilities.",
   "type": "module",
   "sideEffects": false,
