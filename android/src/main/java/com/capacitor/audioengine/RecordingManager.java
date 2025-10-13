@@ -6,7 +6,6 @@ import android.content.Intent;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaRecorder;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -35,8 +34,8 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     private MediaRecorder mediaRecorder;
 
     // Audio focus management
-    private AudioManager audioManager;
-    private AudioFocusRequest audioFocusRequest;
+    private final AudioManager audioManager;
+    private final AudioFocusRequest audioFocusRequest;
     private boolean hasAudioFocus = false;
 
     // Duration monitoring
@@ -61,17 +60,15 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
 
         // Create audio focus request for recording
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(
+        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
                     new android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setOnAudioFocusChangeListener(this)
-                .build();
-        }
+                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+            )
+            .setOnAudioFocusChangeListener(this)
+            .build();
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
@@ -465,19 +462,10 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
 
         try {
             int result;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (audioFocusRequest != null) {
-                    result = audioManager.requestAudioFocus(audioFocusRequest);
-                } else {
-                    return false;
-                }
+            if (audioFocusRequest != null) {
+                result = audioManager.requestAudioFocus(audioFocusRequest);
             } else {
-                // For older devices
-                result = audioManager.requestAudioFocus(
-                    this,
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN
-                );
+                return false;
             }
             hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
             if (hasAudioFocus) {
@@ -496,12 +484,8 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
         if (audioManager == null || !hasAudioFocus) return;
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (audioFocusRequest != null) {
-                    audioManager.abandonAudioFocusRequest(audioFocusRequest);
-                }
-            } else {
-                audioManager.abandonAudioFocus(this);
+            if (audioFocusRequest != null) {
+                audioManager.abandonAudioFocusRequest(audioFocusRequest);
             }
             hasAudioFocus = false;
             Log.d(TAG, "Audio focus abandoned");

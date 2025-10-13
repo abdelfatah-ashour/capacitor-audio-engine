@@ -6,11 +6,11 @@ import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
@@ -42,13 +42,12 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
     private final Map<String, TrackInfo> preloadedTracks;
 
     // Audio focus management
-    private AudioManager audioManager;
-    private AudioFocusRequest audioFocusRequest;
+    private final AudioManager audioManager;
+    private final AudioFocusRequest audioFocusRequest;
     private boolean hasAudioFocus = false;
 
     // Current playback state
     private String currentTrackUrl = null;
-    private String currentTrackId = null;
     private PlaybackStatus currentStatus = PlaybackStatus.IDLE;
 
     // Progress monitoring
@@ -87,17 +86,15 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
 
         // Create audio focus request for playback
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(
+        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
                     new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                .setOnAudioFocusChangeListener(this)
-                .build();
-        }
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+            )
+            .setOnAudioFocusChangeListener(this)
+            .build();
     }
 
     /**
@@ -122,6 +119,10 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
         TrackInfo trackInfo = new TrackInfo(url, trackId);
 
+        // Normalize the URL/URI to handle different formats first (needed for listeners)
+        String normalizedUrl = normalizeAudioUrl(url);
+        Log.d(TAG, "Normalized URL: " + normalizedUrl + " (original: " + url + ")");
+
         try {
             MediaPlayer player = new MediaPlayer();
             player.setAudioAttributes(
@@ -133,11 +134,16 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
             player.setOnPreparedListener(mp -> {
                 trackInfo.isLoaded = true;
-                trackInfo.duration = mp.getDuration();
-                trackInfo.mimeType = "audio/*";
-                trackInfo.size = 0; // Size not readily available from MediaPlayer
+                // Convert duration from milliseconds to seconds
+                trackInfo.duration = mp.getDuration() / 1000;
 
-                Log.d(TAG, "Track preloaded successfully: " + url);
+                // Detect MIME type from file extension or URL
+                trackInfo.mimeType = detectMimeType(url, normalizedUrl);
+
+                // Get file size for local files
+                trackInfo.size = getFileSize(normalizedUrl);
+
+                Log.d(TAG, "Track preloaded successfully: " + url + " (mimeType: " + trackInfo.mimeType + ", duration: " + trackInfo.duration + "s, size: " + trackInfo.size + " bytes)");
                 preloadCallback.onSuccess(trackInfo.url, trackInfo.mimeType, trackInfo.duration, trackInfo.size);
             });
 
@@ -160,18 +166,23 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
                 }
             });
 
-            // Normalize the URL/URI to handle different formats
-            String normalizedUrl = normalizeAudioUrl(url);
-            Log.d(TAG, "Normalized URL: " + normalizedUrl + " (original: " + url + ")");
-
             // Set data source based on URL type
             if (isRemoteUrl(url)) {
                 // For HTTP/HTTPS URLs, use Uri parsing
                 Uri uri = Uri.parse(normalizedUrl);
                 player.setDataSource(context, uri);
+                Log.d(TAG, "Using remote URL with Uri: " + uri);
             } else {
-                // For local file paths, use the file path directly
+                // For all local files (file://, capacitor://, or direct paths), use file path
+                // The normalization already converts file:// to path
+                File file = new File(normalizedUrl);
+                if (!file.exists()) {
+                    Log.e(TAG, "File does not exist: " + normalizedUrl);
+                    preloadCallback.onError(url, "File does not exist: " + normalizedUrl);
+                    return;
+                }
                 player.setDataSource(normalizedUrl);
+                Log.d(TAG, "Using local file path: " + normalizedUrl);
             }
             player.prepareAsync();
 
@@ -229,6 +240,50 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
     }
 
     /**
+     * Detect MIME type from file extension
+     */
+    private String detectMimeType(String url, String normalizedPath) {
+        // Extract file extension from URL or path
+        String extension = "";
+        String source = url != null && !url.isEmpty() ? url : normalizedPath;
+
+        int lastDot = source.lastIndexOf('.');
+        if (lastDot > 0 && lastDot < source.length() - 1) {
+            extension = source.substring(lastDot + 1).toLowerCase();
+        }
+
+        // Map extension to MIME type
+        return switch (extension) {
+            case "m4a" -> "audio/m4a";
+            case "mp3" -> "audio/mpeg";
+            case "wav" -> "audio/wav";
+            case "aac" -> "audio/aac";
+            case "ogg" -> "audio/ogg";
+            case "flac" -> "audio/flac";
+            case "mp4" -> "audio/mp4";
+            default -> "audio/*";
+        };
+    }
+
+    /**
+     * Get file size for local files
+     */
+    private long getFileSize(String normalizedPath) {
+        try {
+            // Only get size for local files, not remote URLs
+            if (normalizedPath != null && !normalizedPath.startsWith("http://") && !normalizedPath.startsWith("https://")) {
+                File file = new File(normalizedPath);
+                if (file.exists()) {
+                    return file.length();
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get file size: " + e.getMessage());
+        }
+        return 0;
+    }
+
+    /**
      * Play a track (or resume current track if no URL specified)
      */
     void playTrack(String url) {
@@ -260,7 +315,7 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
             }
 
             // Request audio focus
-            if (!requestAudioFocus()) {
+            if (requestAudioFocus()) {
                 Log.w(TAG, "Failed to gain audio focus, but continuing with playback");
             }
 
@@ -276,7 +331,6 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
             if (!player.isPlaying()) {
                 player.start();
                 currentTrackUrl = url;
-                currentTrackId = trackInfo.trackId;
                 updateStatus(PlaybackStatus.PLAYING);
                 startProgressMonitoring(trackInfo);
 
@@ -285,7 +339,7 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
         } catch (Exception e) {
             Log.e(TAG, "Error playing track: " + url, e);
-            if (callback != null) {
+            if (callback != null && url != null) {
                 callback.onError(generateTrackId(url), "Error playing track: " + e.getMessage());
             }
         }
@@ -320,7 +374,7 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
         } catch (Exception e) {
             Log.e(TAG, "Error pausing track", e);
-            if (callback != null) {
+            if (callback != null && url != null) {
                 callback.onError(generateTrackId(url), "Error pausing track: " + e.getMessage());
             }
         }
@@ -345,7 +399,7 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
             }
 
             // Request audio focus
-            if (!requestAudioFocus()) {
+            if (requestAudioFocus()) {
                 Log.w(TAG, "Failed to gain audio focus, but continuing with playback");
             }
 
@@ -353,7 +407,6 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
             if (!player.isPlaying()) {
                 player.start();
                 currentTrackUrl = targetUrl;
-                currentTrackId = trackInfo.trackId;
                 updateStatus(PlaybackStatus.PLAYING);
                 startProgressMonitoring(trackInfo);
 
@@ -362,7 +415,7 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
         } catch (Exception e) {
             Log.e(TAG, "Error resuming track", e);
-            if (callback != null) {
+            if (callback != null && url != null) {
                 callback.onError(generateTrackId(url), "Error resuming track: " + e.getMessage());
             }
         }
@@ -395,7 +448,6 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
             if (currentTrackUrl != null && currentTrackUrl.equals(targetUrl)) {
                 currentTrackUrl = null;
-                currentTrackId = null;
                 updateStatus(PlaybackStatus.IDLE);
                 stopProgressMonitoring();
                 abandonAudioFocus();
@@ -405,7 +457,7 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
         } catch (Exception e) {
             Log.e(TAG, "Error stopping track", e);
-            if (callback != null) {
+            if (callback != null && url != null) {
                 callback.onError(generateTrackId(url), "Error stopping track: " + e.getMessage());
             }
         }
@@ -437,7 +489,7 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
         } catch (Exception e) {
             Log.e(TAG, "Error seeking track", e);
-            if (callback != null) {
+            if (callback != null && url != null) {
                 callback.onError(generateTrackId(url), "Error seeking track: " + e.getMessage());
             }
         }
@@ -503,7 +555,6 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
 
         // Reset state
         currentTrackUrl = null;
-        currentTrackId = null;
         currentStatus = PlaybackStatus.IDLE;
 
         Log.d(TAG, "Playback manager destroyed and reinitialized");
@@ -548,13 +599,12 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
     }
 
     private String statusToString(PlaybackStatus status) {
-        switch (status) {
-            case PLAYING: return "playing";
-            case PAUSED: return "paused";
-            case LOADING: return "loading";
-            case IDLE:
-            default: return "idle";
-        }
+        return switch (status) {
+            case PLAYING -> "playing";
+            case PAUSED -> "paused";
+            case LOADING -> "loading";
+            default -> "idle";
+        };
     }
 
     private String generateTrackId(String url) {
@@ -618,22 +668,14 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
     // Audio focus management
 
     private boolean requestAudioFocus() {
-        if (audioManager == null) return false;
+        if (audioManager == null) return true;
 
         try {
             int result;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (audioFocusRequest != null) {
-                    result = audioManager.requestAudioFocus(audioFocusRequest);
-                } else {
-                    return false;
-                }
+            if (audioFocusRequest != null) {
+                result = audioManager.requestAudioFocus(audioFocusRequest);
             } else {
-                result = audioManager.requestAudioFocus(
-                    this,
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN
-                );
+                return true;
             }
             hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
             if (hasAudioFocus) {
@@ -641,10 +683,10 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
             } else {
                 Log.w(TAG, "Audio focus denied for playback");
             }
-            return hasAudioFocus;
+            return !hasAudioFocus;
         } catch (Exception e) {
             Log.e(TAG, "Error requesting audio focus", e);
-            return false;
+            return true;
         }
     }
 
@@ -652,12 +694,8 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
         if (audioManager == null || !hasAudioFocus) return;
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (audioFocusRequest != null) {
-                    audioManager.abandonAudioFocusRequest(audioFocusRequest);
-                }
-            } else {
-                audioManager.abandonAudioFocus(this);
+            if (audioFocusRequest != null) {
+                audioManager.abandonAudioFocusRequest(audioFocusRequest);
             }
             hasAudioFocus = false;
             Log.d(TAG, "Audio focus abandoned");

@@ -148,8 +148,17 @@ final class PlaybackManager: NSObject {
                     return
                 }
                 audioUrl = remoteUrl
+            } else if url.hasPrefix("file://") {
+                // For file:// URIs, parse directly as URL
+                guard let fileUrl = URL(string: url) else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "PlaybackManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI format"])))
+                    }
+                    return
+                }
+                audioUrl = fileUrl
             } else {
-                // For local file paths
+                // For direct file paths or Capacitor URIs (already normalized)
                 audioUrl = URL(fileURLWithPath: normalizedUrl)
             }
 
@@ -167,7 +176,9 @@ final class PlaybackManager: NSObject {
                 case .readyToPlay:
                     trackInfo.isLoaded = true
                     trackInfo.duration = Int(CMTimeGetSeconds(item.duration))
-                    trackInfo.mimeType = "audio/*"
+
+                    // Detect MIME type from file extension or URL
+                    trackInfo.mimeType = self.detectMimeType(from: url)
 
                     // Try to get file size
                     if let asset = item.asset as? AVURLAsset {
@@ -179,7 +190,7 @@ final class PlaybackManager: NSObject {
                         }
                     }
 
-                    print("[PlaybackManager] Track preloaded successfully: \(url)")
+                    print("[PlaybackManager] Track preloaded successfully: \(url) (mimeType: \(trackInfo.mimeType), size: \(trackInfo.size))")
                     DispatchQueue.main.async {
                         completion(.success((url: trackInfo.url, mimeType: trackInfo.mimeType, duration: trackInfo.duration, size: trackInfo.size)))
                     }
@@ -562,6 +573,32 @@ final class PlaybackManager: NSObject {
      */
     private func isRemoteUrl(_ url: String) -> Bool {
         return url.hasPrefix("http://") || url.hasPrefix("https://")
+    }
+
+    /**
+     * Detect MIME type from file extension
+     */
+    private func detectMimeType(from url: String) -> String {
+        // Extract file extension
+        let urlString = url.lowercased()
+
+        if urlString.hasSuffix(".m4a") {
+            return "audio/m4a"
+        } else if urlString.hasSuffix(".mp3") {
+            return "audio/mpeg"
+        } else if urlString.hasSuffix(".wav") {
+            return "audio/wav"
+        } else if urlString.hasSuffix(".aac") {
+            return "audio/aac"
+        } else if urlString.hasSuffix(".ogg") {
+            return "audio/ogg"
+        } else if urlString.hasSuffix(".flac") {
+            return "audio/flac"
+        } else if urlString.hasSuffix(".mp4") {
+            return "audio/mp4"
+        } else {
+            return "audio/*"
+        }
     }
 
     private func handleTrackCompletion(_ trackInfo: TrackInfo) {
