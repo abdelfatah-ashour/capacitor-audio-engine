@@ -81,7 +81,9 @@ A powerful Capacitor plugin for audio recording and playback on mobile devices. 
 
 ### Prerequisites
 
-- Capacitor 5.0.0+
+- Capacitor 7.0.0+
+- **Android:** Minimum API 29 (Android 10) or higher
+- **iOS:** Minimum iOS 13.0 or higher
 
 ### Setup
 
@@ -119,6 +121,8 @@ Add this to your `AndroidManifest.xml`:
 ```xml
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
 ```
+
+> ℹ️ **AndroidX Compatibility:** This package is fully AndroidX-compatible and does not require Jetifier. If you see Jetifier warnings during installation, they can be safely ignored. The package uses modern AndroidX libraries and doesn't depend on legacy Android support libraries.
 
 ## 📖 API Documentation
 

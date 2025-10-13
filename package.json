@@ -31,6 +31,8 @@
   "files": [
     "android/src/main/",
     "android/build.gradle",
+    "android/gradle.properties",
+    ".jetifier-ignore",
     "dist/",
     "!dist/docs.json",
     "!dist/**/*.map",

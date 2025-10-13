@@ -1,0 +1,5 @@
+# This package is already AndroidX compatible
+# No jetification needed
+android/**/*.java
+ios/**/*.swift
+

@@ -1,3 +1,39 @@
+tasks.register("publishAarsToLocalMaven") {
+    doLast {
+        def libsDirs = [
+            file("../capacitor-cordova-android-plugins/src/main/libs"),
+            file("libs")
+        ]
+
+        def repoDir = file("$rootDir/android/local-maven-repo")
+
+        libsDirs.each { dir ->
+            if (dir.exists()) {
+                dir.eachFileMatch(~/.*\.aar/) { aar ->
+                    def name = aar.name.replace(".aar", "")
+                    def group = "local.plugins"
+                    def version = "1.0.0"
+                    def targetDir = new File(repoDir, "${group.replace('.', '/')}/${name}/${version}")
+                    targetDir.mkdirs()
+                    copy {
+                        from aar
+                        into targetDir
+                        rename { "${name}-${version}.aar" }
+                    }
+                    new File(targetDir, "pom.xml").text = """
+                        <project>
+                          <modelVersion>4.0.0</modelVersion>
+                          <groupId>${group}</groupId>
+                          <artifactId>${name}</artifactId>
+                          <version>${version}</version>
+                        </project>
+                    """
+                }
+            }
+        }
+    }
+}
+
 ext {
     junitVersion = project.hasProperty('junitVersion') ? rootProject.ext.junitVersion : '4.13.2'
     androidxAppCompatVersion = project.hasProperty('androidxAppCompatVersion') ? rootProject.ext.androidxAppCompatVersion : '1.7.0'
@@ -19,10 +55,10 @@ apply plugin: 'com.android.library'
 
 android {
     namespace "com.capacitor.audioengine"
-    compileSdkVersion 36
+    compileSdkVersion 35
     defaultConfig {
         minSdkVersion 29
-        targetSdkVersion 36
+        targetSdkVersion 35
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
