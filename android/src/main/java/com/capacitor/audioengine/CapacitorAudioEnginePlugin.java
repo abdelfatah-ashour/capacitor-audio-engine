@@ -772,7 +772,18 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 return;
             }
 
-            call.resolve();
+            // Get the recording status to retrieve the file path/URI
+            RecordingManager.StatusInfo status = recordingManager.getStatus();
+
+            if (status.path() == null || status.path().isEmpty()) {
+                call.reject("RECORDING_START_ERROR", "No recording file path available");
+                return;
+            }
+
+            // Return the URI
+            JSObject result = new JSObject();
+            result.put("uri", "file://" + status.path());
+            call.resolve(result);
         } catch (Exception e) {
             Log.e(TAG, "Failed to start stream", e);
             call.reject("RECORDING_START_ERROR", e.getMessage());

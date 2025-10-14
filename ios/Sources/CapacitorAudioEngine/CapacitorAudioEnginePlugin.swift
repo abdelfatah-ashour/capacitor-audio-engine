@@ -745,7 +745,18 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         // Start shared wave monitoring when recording starts
         waveLevelEmitter.startMonitoring()
 
-        call.resolve()
+        // Get the recording status to retrieve the file path/URI
+        let status = recordingManager.getStatus()
+
+        guard let filePath = status.path else {
+            call.reject("No recording file path available")
+            return
+        }
+
+        // Return the URI
+        call.resolve([
+            "uri": "file://" + filePath
+        ])
     }
 
     @objc func stopRecording(_ call: CAPPluginCall) {

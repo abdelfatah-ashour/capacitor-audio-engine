@@ -595,8 +595,9 @@ export interface CapacitorAudioEnginePlugin {
 
   /**
    * Start live recording capture from microphone.
+   * @returns Promise that resolves with the recording URI
    */
-  startRecording(options: { path: string }): Promise<void>;
+  startRecording(options: { path: string }): Promise<{ uri: string }>;
 
   /**
    * Stop live recording capture and get file information.
