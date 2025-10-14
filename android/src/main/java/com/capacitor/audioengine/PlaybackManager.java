@@ -158,11 +158,26 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
                 // Only emit events if this track is actually the current playing track
                 if (currentTrackUrl != null && currentTrackUrl.equals(url)) {
                     Log.d(TAG, "Track completed: " + url);
+
+                    // Stop the track completely (reset to beginning)
+                    mp.seekTo(0);
+
+                    // Clear current track state
+                    currentTrackUrl = null;
+
+                    // Update status to idle and stop monitoring
                     updateStatus(PlaybackStatus.IDLE);
+                    stopProgressMonitoring();
+
+                    // Abandon audio focus
+                    abandonAudioFocus();
+
+                    // Emit completion event
                     if (callback != null) {
                         callback.onTrackCompleted(trackInfo.trackId, url);
                     }
-                    stopProgressMonitoring();
+
+                    Log.d(TAG, "Track completed and automatically stopped: " + url);
                 }
             });
 

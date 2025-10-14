@@ -610,12 +610,26 @@ final class PlaybackManager: NSObject {
                 return
             }
 
+            // Stop the track completely (reset to beginning)
+            if let player = trackInfo.player {
+                player.pause()
+                player.seek(to: .zero)
+            }
+
+            // Clear current track state
+            self.currentTrackUrl = nil
+            self.currentTrackId = nil
+
+            // Update status to idle and stop monitoring
             self.updateStatus(.idle)
             self.stopProgressMonitoring()
 
+            // Emit completion event
             DispatchQueue.main.async {
                 self.delegate?.playbackDidComplete(trackInfo.trackId, url: trackInfo.url)
             }
+
+            print("[PlaybackManager] Track completed and automatically stopped: \(trackInfo.url)")
         }
     }
 
