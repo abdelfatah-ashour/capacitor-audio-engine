@@ -183,6 +183,59 @@ final class RecordingManager {
         }
     }
 
+    /// Stop recording and wait for the file to be fully written to disk
+    /// Returns the file path asynchronously via completion handler
+    func stopRecordingAndWaitForFile(completion: @escaping (String?) -> Void) {
+        performStateOperation {
+            guard isRecording else {
+                completion(fileURL?.path)
+                return
+            }
+
+            let filePath = fileURL?.path
+
+            if let engine = audioEngine {
+                if inputNodeTapInstalled {
+                    engine.inputNode.removeTap(onBus: 0)
+                    inputNodeTapInstalled = false
+                }
+                engine.stop()
+            }
+
+            // Stop duration and wave level monitoring
+            stopDurationMonitoring()
+            stopWaveLevelMonitoring()
+
+            // Finish writer and wait for completion
+            if assetWriter != nil {
+                finishWriterAndWait { [weak self] in
+                    guard let self = self else {
+                        completion(nil)
+                        return
+                    }
+
+                    self.performStateOperation {
+                        self.audioEngine = nil
+                        self.converter = nil
+                        self.aacFormat = nil
+                        self.isRecording = false
+                        self.isPaused = false
+                        self.delegate?.recordingDidChangeStatus("stopped")
+                        completion(filePath)
+                    }
+                }
+            } else {
+                audioEngine = nil
+                converter = nil
+                aacFormat = nil
+                isRecording = false
+                isPaused = false
+                delegate?.recordingDidChangeStatus("stopped")
+                completion(filePath)
+            }
+        }
+    }
+
     func pauseRecording() {
         performStateOperation {
             guard isRecording && !isPaused else { return }
@@ -360,6 +413,52 @@ final class RecordingManager {
                 }
             }
         }
+        writerInput = nil
+        assetWriter = nil
+        writerStarted = false
+    }
+
+    /// Finish writer and wait for completion
+    private func finishWriterAndWait(completion: @escaping () -> Void) {
+        if let input = writerInput {
+            input.markAsFinished()
+        }
+
+        let finalizedPath = fileURL?.path
+
+        if let writer = assetWriter {
+            print("[RecordingManager] Finishing asset writer...")
+            writer.finishWriting { [weak self] in
+                guard let self = self else {
+                    completion()
+                    return
+                }
+
+                if writer.status == .failed, let err = writer.error {
+                    print("[RecordingManager] Asset writer failed: \(err.localizedDescription)")
+                    self.delegate?.recordingDidEncounterError(err)
+                } else if let path = finalizedPath {
+                    // Verify the file exists and has content
+                    if FileManager.default.fileExists(atPath: path) {
+                        do {
+                            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+                            let fileSize = attributes[.size] as? Int64 ?? 0
+                            print("[RecordingManager] Recording file ready: \(fileSize) bytes at \(path)")
+                        } catch {
+                            print("[RecordingManager] Could not get file attributes: \(error.localizedDescription)")
+                        }
+                    } else {
+                        print("[RecordingManager] Warning: Recording file does not exist at \(path)")
+                    }
+                    self.delegate?.recordingDidFinalize(path)
+                }
+
+                completion()
+            }
+        } else {
+            completion()
+        }
+
         writerInput = nil
         assetWriter = nil
         writerStarted = false

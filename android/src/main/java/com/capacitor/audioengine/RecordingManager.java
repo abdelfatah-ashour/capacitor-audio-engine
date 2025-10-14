@@ -224,6 +224,48 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
         if (callback != null) callback.onStatusChanged("idle");
     }
 
+    /**
+     * Stop recording and wait for the file to be fully written to disk
+     * @return The path to the recording file, or null if failed
+     */
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    String stopRecordingAndWaitForFile() {
+        if (!isRecording) return currentOutputPath;
+
+        String filePath = currentOutputPath;
+
+        try {
+            if (isPaused && mediaRecorder != null) {
+                // If paused, some devices require a resume before stop; ignore errors
+                try { mediaRecorder.resume(); } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
+
+        // Stop the MediaRecorder and ensure it's properly flushed
+        cleanupMediaRecorderAndWaitForFile();
+
+        // Stop duration monitoring
+        stopDurationMonitoring();
+
+        // Stop foreground service
+        try {
+            Intent serviceIntent = new Intent(context, AudioRecordingService.class);
+            context.stopService(serviceIntent);
+            Log.d(TAG, "Foreground service stopped");
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to stop foreground service", e);
+        }
+
+        // Abandon audio focus
+        abandonAudioFocus();
+
+        isRecording = false;
+        isPaused = false;
+        if (callback != null) callback.onStatusChanged("idle");
+
+        return filePath;
+    }
+
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     void pauseRecording() {
         if (!isRecording || isPaused) return;
@@ -338,6 +380,56 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
             }
         } catch (Exception e) {
             Log.w(TAG, "cleanupMediaRecorder error", e);
+        }
+    }
+
+    /**
+     * Cleanup MediaRecorder and wait for file to be fully written to disk
+     */
+    private void cleanupMediaRecorderAndWaitForFile() {
+        try {
+            if (mediaRecorder != null) {
+                // Stop the MediaRecorder - this blocks until it's done
+                try {
+                    Log.d(TAG, "Stopping MediaRecorder...");
+                    mediaRecorder.stop();
+                    Log.d(TAG, "MediaRecorder stopped successfully");
+
+                    // MediaRecorder.stop() is synchronous and should flush all data
+                    // Add a small safety delay to ensure file system operations complete
+                    Thread.sleep(100);
+
+                } catch (IllegalStateException ise) {
+                    Log.w(TAG, "MediaRecorder stop called in illegal state", ise);
+                } catch (RuntimeException re) {
+                    Log.w(TAG, "MediaRecorder stop runtime error", re);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    Log.w(TAG, "Interrupted while waiting for file", ie);
+                }
+
+                // Reset and release
+                try {
+                    mediaRecorder.reset();
+                } catch (Exception ignored) {}
+                try {
+                    mediaRecorder.release();
+                } catch (Exception ignored) {}
+                mediaRecorder = null;
+
+                // Verify the file is ready
+                if (currentOutputPath != null) {
+                    File outputFile = new File(currentOutputPath);
+                    if (outputFile.exists() && outputFile.length() > 0) {
+                        Log.d(TAG, "Recording file verified: " + outputFile.length() + " bytes");
+                    } else {
+                        Log.w(TAG, "Recording file not ready: exists=" + outputFile.exists() +
+                              ", size=" + outputFile.length());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error in cleanupMediaRecorderAndWaitForFile", e);
         }
     }
 

@@ -256,6 +256,23 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             Log.d(TAG, "Resolved URI to file path: " + actualPath);
 
             // Validate file exists and is accessible
+            File sourceFile = new File(actualPath);
+            if (!sourceFile.exists()) {
+                Log.e(TAG, "Source file does not exist: " + actualPath);
+                call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(),
+                           "File does not exist: " + actualPath + ". Please ensure the recording was stopped successfully before trimming.");
+                return;
+            }
+
+            if (sourceFile.length() == 0) {
+                Log.e(TAG, "Source file is empty: " + actualPath);
+                call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(),
+                           "File is empty: " + actualPath + ". The recording may not have completed properly.");
+                return;
+            }
+
+            Log.d(TAG, "Source file validated - exists: true, size: " + sourceFile.length() + " bytes");
+
             ValidationUtils.validateFileExists(actualPath);
 
             // Get actual audio duration and clamp end time if needed
@@ -281,7 +298,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             Log.d(TAG, "Trimming audio from " + startTime + "s to " + actualEndTime + "s (original endTime: " + endTime + "s, duration: " + audioDuration + "s)");
 
             // Create output file in the same directory as the source file
-            File sourceFile = new File(actualPath);
             File sourceDirectory = sourceFile.getParentFile();
             String originalFileName = sourceFile.getName();
             // Create temporary name first to avoid conflicts during processing
@@ -794,9 +810,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @PluginMethod
     public void stopRecording(PluginCall call) {
         try {
-            recordingManager.stopRecording();
-
-            // Stop wave level monitoring
+            // Stop wave level monitoring first
             if (waveLevelEmitter != null && waveLevelEmitter.isMonitoring()) {
                 try {
                     waveLevelEmitter.stopMonitoring();
@@ -806,18 +820,33 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 }
             }
 
-            // Get the recording status to retrieve the file path
-            RecordingManager.StatusInfo status = recordingManager.getStatus();
+            // Stop recording and wait for file to be ready
+            String filePath = recordingManager.stopRecordingAndWaitForFile();
 
-            if (status.path() == null || status.path().isEmpty()) {
+            if (filePath == null || filePath.isEmpty()) {
                 call.reject("RECORDING_STOP_ERROR", "No recording file path available");
                 return;
             }
 
+            // Verify file exists and has content
+            File recordingFile = new File(filePath);
+            if (!recordingFile.exists()) {
+                call.reject("RECORDING_STOP_ERROR", "Recording file was not created: " + filePath);
+                return;
+            }
+
+            if (recordingFile.length() == 0) {
+                call.reject("RECORDING_STOP_ERROR", "Recording file is empty: " + filePath);
+                return;
+            }
+
+            Log.d(TAG, "Recording stopped successfully. File: " + filePath + ", size: " + recordingFile.length() + " bytes");
+
             // Get audio file info
-            JSObject audioInfo = AudioFileProcessor.getAudioFileInfo(status.path());
+            JSObject audioInfo = AudioFileProcessor.getAudioFileInfo(filePath);
             call.resolve(audioInfo);
         } catch (Exception e) {
+            Log.e(TAG, "Error stopping recording", e);
             call.reject("RECORDING_STOP_ERROR", e.getMessage());
         }
     }
