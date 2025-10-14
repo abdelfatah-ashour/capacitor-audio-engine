@@ -693,6 +693,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         Log.d(TAG, "Plugin destroying - cleaning up all resources");
 
         try {
+            // Stop recording if active
+            if (recordingManager != null) {
+                try {
+                    recordingManager.stopRecording();
+                    Log.d(TAG, "Recording stopped during plugin destruction");
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping recording during destruction", e);
+                }
+                recordingManager = null;
+            }
+
             if (eventManager != null) {
                 eventManager = null;
             }

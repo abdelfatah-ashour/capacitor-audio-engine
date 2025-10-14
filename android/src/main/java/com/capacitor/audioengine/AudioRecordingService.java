@@ -34,7 +34,8 @@ public class AudioRecordingService extends Service {
         Notification notification = createNotification();
         startForeground(NOTIFICATION_ID, notification);
 
-        return START_STICKY; // Restart service if killed by system
+        // the recording should stop when app is closed
+        return START_NOT_STICKY;
     }
 
     @Override
@@ -43,9 +44,19 @@ public class AudioRecordingService extends Service {
     }
 
     @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        super.onTaskRemoved(rootIntent);
+        Log.d(TAG, "App task removed - stopping recording service");
+        // Stop the service when the app is force closed or removed from recent apps
+        stopSelf();
+    }
+
+    @Override
     public void onDestroy() {
         super.onDestroy();
         Log.d(TAG, "AudioRecordingService destroyed");
+        // we remove the foreground service notification
+        stopForeground(true);
     }
 
     private void createNotificationChannel() {
