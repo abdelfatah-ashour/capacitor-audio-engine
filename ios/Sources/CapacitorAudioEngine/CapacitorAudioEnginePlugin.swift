@@ -908,19 +908,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
                     // Extract audio file info for the trimmed file
                     Task {
                         do {
-                            let tempFileExists = FileManager.default.fileExists(atPath: outputURL.path)
-                            if tempFileExists {
-                                    let attrs = try FileManager.default.attributesOfItem(atPath: outputURL.path)
-                                    let fileSize = attrs[.size] as? Int64 ?? 0
-                                }
-                            }
-
                             // Delete the original file first (if it exists)
                             let originalExists = FileManager.default.fileExists(atPath: sourceURL.path)
 
                             if originalExists {
                                 do {
                                     try FileManager.default.removeItem(at: sourceURL)
+                                } catch {
+                                    // Ignore error if file cannot be removed
+                                    print("Warning: Could not remove original file: \(error.localizedDescription)")
                                 }
                             }
 
