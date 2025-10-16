@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - Real-time RMS-based audio level calculation
  * - Configurable emission frequency (50-500ms, default 1000ms)
  * - Normalized amplitude values between 0.0 and 1.0
+ * - Optimized for human speech detection (-50dB to -10dB range)
+ * - Gentle compression curve for better visual representation
  * - Cross-platform consistency with iOS implementation
  * - Low CPU overhead with efficient background processing
  */
@@ -277,10 +279,14 @@ public class WaveLevelEmitter {
         }
         float rms = (float) Math.sqrt(sumSquares / Math.max(1, samplesRead));
 
-        // Convert RMS to dB and normalize to 0..1 (minDb -> 0, 0 dB -> 1)
-        final float minDb = -60.0f;
-        final float maxDb = 0.0f;
+        // Convert RMS to dB - optimized for human speech
+        // Human speech typically ranges from -40dB to -10dB
+        // Using -50dB to -10dB provides better sensitivity for normal conversation
+        final float minDb = -50.0f;  // Adjusted for human speech (was -60dB)
+        final float maxDb = -10.0f;  // Adjusted for human speech (was 0dB)
         float rmsDb = 20.0f * (float) Math.log10(rms + 1e-8f); // avoid log(0)
+
+        // Normalize to 0..1 range (minDb -> 0, maxDb -> 1)
         float normalized = (rmsDb - minDb) / (maxDb - minDb);
         normalized = Math.max(0.0f, Math.min(1.0f, normalized));
 
@@ -288,6 +294,10 @@ public class WaveLevelEmitter {
         if (normalized < SILENCE_THRESHOLD) {
             normalized = 0.0f;
         }
+
+        // Apply gentle compression curve for better visual representation
+        // This makes lower levels more visible while preserving dynamic range
+        normalized = (float) Math.pow(normalized, 0.7);
 
         // Emit the level on main thread
         final float finalLevel = normalized;

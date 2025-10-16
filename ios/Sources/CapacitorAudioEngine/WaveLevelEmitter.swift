@@ -15,6 +15,8 @@ protocol WaveLevelEventCallback: AnyObject {
  * - Real-time RMS-based audio level calculation using AVAudioEngine
  * - Configurable emission frequency (50-500ms, default 1000ms)
  * - Normalized amplitude values between 0.0 and 1.0
+ * - Optimized for human speech detection (-50dB to -10dB range)
+ * - Gentle compression curve for better visual representation
  * - Cross-platform consistency with Android implementation
  * - Low CPU overhead with efficient audio tap processing
  * - Automatic hardware format adaptation (supports 44.1kHz, 48kHz, etc.)
@@ -287,14 +289,22 @@ class WaveLevelEmitter {
         // Combine channels (use average for consistent behavior across platforms)
         let combinedRMS = channelRMS.reduce(0, +) / Float(channelRMS.count)
 
-        // Convert RMS to dB (logarithmic scale)
-        let minDb: Float = -60.0 // Silence threshold (dB)
-        let maxDb: Float = 0.0   // Max (full scale)
+        // Convert RMS to dB - optimized for human speech
+        // Human speech typically ranges from -40dB to -10dB
+        // Using -50dB to -10dB provides better sensitivity for normal conversation
+        let minDb: Float = -50.0 // Adjusted for human speech (was -60dB)
+        let maxDb: Float = -10.0 // Adjusted for human speech (was 0dB)
         let rmsDb = 20.0 * log10(combinedRMS + 1e-8) // Avoid log(0)
 
         // Normalize dB to 0.0–1.0 (minDb maps to 0, maxDb to 1)
-        let normalized = (rmsDb - minDb) / (maxDb - minDb)
-        return max(0.0, min(1.0, normalized))
+        var normalized = (rmsDb - minDb) / (maxDb - minDb)
+        normalized = max(0.0, min(1.0, normalized))
+
+        // Apply gentle compression curve for better visual representation
+        // This makes lower levels more visible while preserving dynamic range
+        normalized = pow(normalized, 0.7)
+
+        return normalized
     }
 
     /**
