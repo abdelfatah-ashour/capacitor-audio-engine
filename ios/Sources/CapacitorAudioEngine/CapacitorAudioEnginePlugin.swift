@@ -477,6 +477,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
 
         let filename = fileURL.lastPathComponent
         let absolutePath = fileURL.path
+        let relativePath = getRelativePathForDirectoryData(absolutePath: absolutePath)
 
         // Determine MIME type based on file extension
         let pathExtension = fileURL.pathExtension.lowercased()
@@ -552,12 +553,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
 
         let durationInSeconds = CMTimeGetSeconds(duration)
 
-        // Format paths to match Android:
-        // - path: absolute path
-        // - uri: file:// format
+        // Format paths to match Android and Capacitor Filesystem compatibility:
+        // - path: relative path (relative to Directory.Data / Application Support) for Filesystem plugin compatibility
+        // - uri: file:// format with absolute path
         // - webPath: capacitor://localhost/_capacitor_file_ format
         return [
-            "path": absolutePath,
+            "path": relativePath,
             "filename": filename,
             "size": fileSize,
             "createdAt": Int64(createdAt * AudioEngineConstants.timestampMultiplier),
@@ -851,7 +852,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         }
 
         // Check if file exists
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+        let sourceExists = FileManager.default.fileExists(atPath: sourceURL.path)
+        guard sourceExists else {
             call.reject("Source file does not exist: \(sourceURL.path)")
             return
         }
@@ -906,26 +908,50 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
                     // Extract audio file info for the trimmed file
                     Task {
                         do {
-                            // Delete the original file first
-                            do {
-                                try FileManager.default.removeItem(at: sourceURL)
-                                self.log("Deleted original file: \(sourceURL.path)")
-                            } catch {
-                                self.log("Warning: Could not delete original file: \(error.localizedDescription)")
-                                // Don't fail the operation if deletion fails
+                            let tempFileExists = FileManager.default.fileExists(atPath: outputURL.path)
+                            if tempFileExists {
+                                    let attrs = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+                                    let fileSize = attrs[.size] as? Int64 ?? 0
+                                }
+                            }
+
+                            // Delete the original file first (if it exists)
+                            let originalExists = FileManager.default.fileExists(atPath: sourceURL.path)
+
+                            if originalExists {
+                                do {
+                                    try FileManager.default.removeItem(at: sourceURL)
+                                }
                             }
 
                             // Rename the temporary trimmed file to the original filename
                             let finalURL = sourceDirectory.appendingPathComponent(originalFileName)
-                            do {
-                                try FileManager.default.moveItem(at: outputURL, to: finalURL)
-                                self.log("Renamed trimmed file to original name: \(finalURL.path)")
-                            } catch {
-                                self.log("Warning: Could not rename trimmed file: \(error.localizedDescription)")
-                                // Use the temp file path if rename fails
+                            var actualFileURL = finalURL
+
+                            // Try to rename temp file to original filename
+                            if FileManager.default.fileExists(atPath: outputURL.path) {
+                                do {
+                                    try FileManager.default.moveItem(at: outputURL, to: finalURL)
+
+                                    // Verify the moved file exists
+                                    let movedFileExists = FileManager.default.fileExists(atPath: finalURL.path)
+                                } catch {
+                                    // Use temp file if rename fails
+                                    actualFileURL = outputURL
+                                }
+                            } else {
+                                actualFileURL = outputURL
                             }
 
-                            let audioInfo = try await self.createAudioFileInfo(filePath: finalURL.path)
+                            // Verify the actual file exists before getting info
+                            let finalFileExists = FileManager.default.fileExists(atPath: actualFileURL.path)
+
+                            guard finalFileExists else {
+                                throw NSError(domain: "CapacitorAudioEngine", code: -1,
+                                            userInfo: [NSLocalizedDescriptionKey: "Trimmed file not found at: \(actualFileURL.path)"])
+                            }
+
+                            let audioInfo = try await self.createAudioFileInfo(filePath: actualFileURL.path)
                             call.resolve(audioInfo)
                         } catch {
                             call.reject("Export completed but failed to get audio info: \(error.localizedDescription)")

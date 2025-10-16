@@ -1306,7 +1306,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       this.recordingWaveLevel.set(0);
       this.recordingWaveLevelHistory.set([]);
       this.recordingMaxWaveLevel.set(0);
-      await this.showToast(`Recording started (${encoding.toUpperCase()})`, 'success');
       this.setupRecordingEventListeners();
     } catch (error) {
       console.error('Failed to start recording:', error);
@@ -1363,6 +1362,33 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       await this.registerRecordedFile();
 
       await this.showToast('Recording stopped - File saved', 'success');
+
+      setTimeout(async () => {
+        try {
+          const trimmedFile = await CapacitorAudioEngine.trimAudio({
+            uri: audioFileInfo.uri,
+            startTime: 0,
+            endTime: audioFileInfo.duration,
+          });
+          console.log('🚀 ~ FeaturesDemoComponent ~ stopRecording ~ trimmedFile:', trimmedFile);
+
+          try {
+            console.log('[DEBUG] recordingFilePath value:', this.recordingFilePath());
+            console.log('[DEBUG] trimmedFile.path:', trimmedFile.path);
+            console.log('[DEBUG] trimmedFile.uri:', trimmedFile.uri);
+
+            // Try reading with the path from trimmedFile response
+            const file = await Filesystem.readFile({
+              path: trimmedFile.uri,
+            });
+            console.log('Successfully read trimmed file:', file.data);
+          } catch (error) {
+            console.error('Failed to read trimmed file:', error);
+          }
+        } catch (error) {
+          console.error('Failed to trim audio:', error);
+        }
+      });
     } catch (error) {
       console.error('Failed to stop recording:', error);
       await this.showToast('Failed to stop recording', 'danger');
@@ -1501,10 +1527,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         console.warn('No recording file info available for registration');
         return;
       }
-
-      const file = await Filesystem.readFile({
-        path: audioFileInfo.uri,
-      });
 
       try {
         const results = await CapacitorAudioEngine.preloadTracks({
