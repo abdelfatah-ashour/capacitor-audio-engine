@@ -17,6 +17,10 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+      - run: npm --version
+      - run: node --version
+      - run: cat package.json | grep typescript
+      - run: cat package-lock.json | grep -A 5 -B 5 "typescript.*5\.9\.3"
       - run: npm ci
       - run: npm run build
       - run: npm publish --provenance --access public --ignore-scripts
