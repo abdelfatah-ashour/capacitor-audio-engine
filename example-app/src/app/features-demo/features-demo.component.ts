@@ -76,11 +76,6 @@ import type {
 } from 'capacitor-audio-engine';
 import { IntelligentWaveformComponent } from '../components/intelligent-waveform.component';
 import { Filesystem } from '@capacitor/filesystem';
-interface AudioFileInfoWithMetadata extends AudioFileInfo {
-  isSegmentRolled?: boolean;
-  segmentCount?: number;
-  maxDurationSeconds?: number;
-}
 
 // Waveform configuration enums and constants
 const WaveformBarsCount = {
@@ -276,8 +271,8 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   protected readonly silenceEmissions = signal(0);
 
   // Audio files signals
-  protected readonly recordedFiles = signal<AudioFileInfoWithMetadata[]>([]);
-  protected readonly selectedAudioInfo = signal<AudioFileInfoWithMetadata | null>(null);
+  protected readonly recordedFiles = signal<AudioFileInfo[]>([]);
+  protected readonly selectedAudioInfo = signal<AudioFileInfo | null>(null);
   protected readonly filesWithInfo = signal<Set<string>>(new Set());
 
   // Trimming signals
@@ -293,7 +288,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Recorded audio playback signals
   protected readonly recordedAudioPlaybackInfo = signal<PlaybackInfo | null>(null);
   protected readonly recordedPlaylistInitialized = signal(false);
-  protected readonly currentRecordedFile = signal<AudioFileInfoWithMetadata | null>(null);
+  protected readonly currentRecordedFile = signal<AudioFileInfo | null>(null);
   protected readonly preloadedFiles = signal<Set<string>>(new Set());
 
   // Demo playlist for per-URL playback (simplified)
@@ -884,7 +879,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   }
 
   // Recorded audio playback methods
-  async preloadRecordedAudio(file: AudioFileInfoWithMetadata): Promise<void> {
+  async preloadRecordedAudio(file: AudioFileInfo): Promise<void> {
     try {
       console.log('🚀 ~ preloadRecordedAudio ~ file.uri:', file.uri);
 
@@ -921,7 +916,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     }
   }
 
-  async playRecordedAudio(file?: AudioFileInfoWithMetadata): Promise<void> {
+  async playRecordedAudio(file?: AudioFileInfo): Promise<void> {
     try {
       console.log('🚀 ~ playRecordedAudio ~ file:', file);
       console.log('🚀 ~ playRecordedAudio ~ file?.uri:', file?.uri);
@@ -1017,12 +1012,12 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     return this.filesWithInfo().has(fileUri);
   }
 
-  isCurrentlyPlaying(file: AudioFileInfoWithMetadata): boolean {
+  isCurrentlyPlaying(file: AudioFileInfo): boolean {
     return this.currentRecordedFile()?.uri === file.uri && this.isRecordedAudioPlaying();
   }
 
   // Audio trimming
-  async trimAudio(file: AudioFileInfoWithMetadata): Promise<void> {
+  async trimAudio(file: AudioFileInfo): Promise<void> {
     const alert = await this.alertController.create({
       header: 'Trim Audio',
       message: `Trim "${file.filename}" (Duration: ${this.formatTime(file.duration)})`,
@@ -1357,38 +1352,28 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       this.recordingWaveLevel.set(0);
       this.recordingWaveLevelHistory.set([]);
       this.recordingMaxWaveLevel.set(0);
+      await this.startRecording();
 
       // Get file info and register the recorded file
       await this.registerRecordedFile();
 
       await this.showToast('Recording stopped - File saved', 'success');
 
-      setTimeout(async () => {
-        try {
-          const trimmedFile = await CapacitorAudioEngine.trimAudio({
-            uri: audioFileInfo.uri,
-            startTime: 0,
-            endTime: audioFileInfo.duration,
-          });
-          console.log('🚀 ~ FeaturesDemoComponent ~ stopRecording ~ trimmedFile:', trimmedFile);
-
-          try {
-            console.log('[DEBUG] recordingFilePath value:', this.recordingFilePath());
-            console.log('[DEBUG] trimmedFile.path:', trimmedFile.path);
-            console.log('[DEBUG] trimmedFile.uri:', trimmedFile.uri);
-
-            // Try reading with the path from trimmedFile response
-            const file = await Filesystem.readFile({
-              path: trimmedFile.uri,
-            });
-            console.log('Successfully read trimmed file:', file.data);
-          } catch (error) {
-            console.error('Failed to read trimmed file:', error);
-          }
-        } catch (error) {
-          console.error('Failed to trim audio:', error);
-        }
+      const trimmedFile = await CapacitorAudioEngine.trimAudio({
+        uri: audioFileInfo.uri,
+        startTime: 0,
+        endTime: audioFileInfo.duration,
       });
+      console.log('🚀 ~ FeaturesDemoComponent ~ stopRecording ~ trimmedFile:', trimmedFile);
+
+      try {
+        const file = await Filesystem.readFile({
+          path: trimmedFile.uri,
+        });
+        console.log('Successfully read trimmed file:', file.data);
+      } catch (error) {
+        console.error('Failed to read trimmed file:', error);
+      }
     } catch (error) {
       console.error('Failed to stop recording:', error);
       await this.showToast('Failed to stop recording', 'danger');
@@ -1499,10 +1484,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
               this.lastRecordedAudioFile.set(trimmedFile);
 
               // Register the trimmed file
-              this.recordedFiles.update(files => [
-                ...files,
-                { ...trimmedFile, isSegmentRolled: false },
-              ]);
+              this.recordedFiles.update(files => [...files, trimmedFile]);
             } catch (error) {
               console.error('Failed to trim audio:', error);
               await this.showToast('Failed to trim audio', 'danger');
@@ -1540,13 +1522,8 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         throw preloadError;
       }
 
-      const recordedFile: AudioFileInfoWithMetadata = {
-        ...audioFileInfo,
-        isSegmentRolled: false,
-      };
-
-      this.recordedFiles.update(files => [...files, recordedFile]);
-      this.currentRecordedFile.set(recordedFile);
+      this.recordedFiles.update(files => [...files, audioFileInfo]);
+      this.currentRecordedFile.set(audioFileInfo);
       this.recordedPlaylistInitialized.set(false);
 
       // Mark this file as having info fetched

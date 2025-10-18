@@ -138,8 +138,17 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
                 }
             }
             // Configure MediaRecorder using unified configuration
-            mediaRecorder = new MediaRecorder();
-            setBestAudioSource(mediaRecorder);
+            // Reuse pre-warmed recorder if available, otherwise create new one
+            if (mediaRecorder == null) {
+                Log.d(TAG, "Creating new MediaRecorder");
+                mediaRecorder = new MediaRecorder();
+                setBestAudioSource(mediaRecorder);
+            } else {
+                // Use the pre-warmed recorder (it's already created and has audio source set)
+                Log.d(TAG, "Reusing pre-warmed MediaRecorder");
+                // No need to reset or reconfigure audio source - it's already set
+            }
+
             configureRecorderCommon(mediaRecorder, currentOutputPath);
             try {
                 mediaRecorder.prepare();
@@ -385,6 +394,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
 
     /**
      * Cleanup MediaRecorder and wait for file to be fully written to disk
+     * Optimized for faster cleanup after long recordings
      */
     private void cleanupMediaRecorderAndWaitForFile() {
         try {
@@ -396,8 +406,8 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
                     Log.d(TAG, "MediaRecorder stopped successfully");
 
                     // MediaRecorder.stop() is synchronous and should flush all data
-                    // Add a small safety delay to ensure file system operations complete
-                    Thread.sleep(100);
+                    // Reduced sleep time for faster cleanup after long recordings
+                    Thread.sleep(50);
 
                 } catch (IllegalStateException ise) {
                     Log.w(TAG, "MediaRecorder stop called in illegal state", ise);
@@ -408,7 +418,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
                     Log.w(TAG, "Interrupted while waiting for file", ie);
                 }
 
-                // Reset and release
+                // Reset and release immediately - don't wait for file verification
                 try {
                     mediaRecorder.reset();
                 } catch (Exception ignored) {}
@@ -417,20 +427,36 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
                 } catch (Exception ignored) {}
                 mediaRecorder = null;
 
-                // Verify the file is ready
+                // Verify the file is ready asynchronously to avoid blocking
                 if (currentOutputPath != null) {
-                    File outputFile = new File(currentOutputPath);
-                    if (outputFile.exists() && outputFile.length() > 0) {
-                        Log.d(TAG, "Recording file verified: " + outputFile.length() + " bytes");
-                    } else {
-                        Log.w(TAG, "Recording file not ready: exists=" + outputFile.exists() +
-                              ", size=" + outputFile.length());
-                    }
+                    verifyFileAsync(currentOutputPath);
                 }
             }
         } catch (Exception e) {
             Log.e(TAG, "Error in cleanupMediaRecorderAndWaitForFile", e);
         }
+    }
+
+    /**
+     * Verify file existence and size asynchronously to avoid blocking
+     */
+    private void verifyFileAsync(String filePath) {
+        new Thread(() -> {
+            try {
+                // Wait a bit for file system to catch up
+                Thread.sleep(100);
+
+                File outputFile = new File(filePath);
+                if (outputFile.exists() && outputFile.length() > 0) {
+                    Log.d(TAG, "Recording file verified: " + outputFile.length() + " bytes");
+                } else {
+                    Log.w(TAG, "Recording file not ready: exists=" + outputFile.exists() +
+                          ", size=" + outputFile.length());
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Error verifying file asynchronously", e);
+            }
+        }).start();
     }
 
     private void prepareMediaRecorderForCurrentPath() {
@@ -643,4 +669,33 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     }
 
     record StatusInfo(String status, double duration, String path) {}
+
+    /**
+     * Pre-warm MediaRecorder for faster subsequent recordings
+     * This helps reduce delay when starting new recordings after long sessions
+     */
+    public void preWarmRecorder() {
+        try {
+            if (mediaRecorder == null && !isRecording) {
+                Log.d(TAG, "Pre-warming MediaRecorder for faster subsequent recordings");
+                // Just create and configure the MediaRecorder, but don't prepare it yet
+                // This avoids the IllegalStateException when reusing
+                mediaRecorder = new MediaRecorder();
+                setBestAudioSource(mediaRecorder);
+                // Don't call configureRecorderCommon or prepare yet
+                // This will be done in startRecording when we have the actual output path
+                Log.d(TAG, "MediaRecorder pre-warmed successfully (ready for configuration)");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to pre-warm MediaRecorder", e);
+            // Clean up on failure
+            if (mediaRecorder != null) {
+                try {
+                    mediaRecorder.release();
+                } catch (Exception ignored) {}
+                mediaRecorder = null;
+            }
+        }
+    }
+
 }

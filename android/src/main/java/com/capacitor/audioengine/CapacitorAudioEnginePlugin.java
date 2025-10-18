@@ -702,6 +702,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     }
 
 
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     @Override
     protected void handleOnDestroy() {
         super.handleOnDestroy();
@@ -842,6 +843,14 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
             Log.d(TAG, "Recording stopped successfully. File: " + filePath + ", size: " + recordingFile.length() + " bytes");
 
+            // Pre-warm recorder for faster subsequent recordings after long sessions
+            try {
+                recordingManager.preWarmRecorder();
+                Log.d(TAG, "MediaRecorder pre-warmed for faster subsequent recordings");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to pre-warm MediaRecorder", e);
+            }
+
             // Get audio file info
             JSObject audioInfo = AudioFileProcessor.getAudioFileInfo(filePath);
             call.resolve(audioInfo);
@@ -932,5 +941,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             call.reject("Failed to remove all listeners: " + e.getMessage());
         }
     }
+
 
 }

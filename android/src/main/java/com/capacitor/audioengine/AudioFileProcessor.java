@@ -55,8 +55,11 @@ public class AudioFileProcessor {
      */
     private static double getAudioDurationWithRetriever(String filePath) {
         File file = new File(filePath);
-        int maxRetries = 5; // Increased retries
-        long retryDelayMs = 150; // Increased initial delay
+
+        // Optimize retry strategy based on file size for faster processing of large files
+        long fileSize = file.length();
+        int maxRetries = fileSize > 100 * 1024 * 1024 ? 3 : 5; // Fewer retries for large files (>100MB)
+        long retryDelayMs = fileSize > 100 * 1024 * 1024 ? 50 : 150; // Shorter delay for large files
 
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             MediaMetadataRetriever retriever = null;
@@ -75,12 +78,10 @@ public class AudioFileProcessor {
                 retriever = new MediaMetadataRetriever();
                 retriever.setDataSource(filePath);
 
-                // Try to get multiple metadata fields to verify file integrity
+                // For large files, only get duration to minimize processing time
                 String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-                String mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
-                String bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
 
-                Log.d(TAG, "Attempt " + attempt + " - Duration: " + durationStr + ", MIME: " + mimeType + ", Bitrate: " + bitrate);
+                Log.d(TAG, "Attempt " + attempt + " - Duration: " + durationStr + " (file size: " + fileSize + " bytes)");
 
                 if (durationStr != null && !durationStr.isEmpty()) {
                     try {
