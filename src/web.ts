@@ -16,6 +16,7 @@ import type {
   PermissionStatusResults,
   RecordingStatusInfo,
   TrimTrackOptions,
+  MicAvailableResult,
 } from './definitions';
 import { PermissionStatus } from './definitions';
 
@@ -407,5 +408,30 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async getAudioInfo(): Promise<AudioFileInfo> {
     console.warn('getAudioInfo is not supported on web platform.');
     throw new Error('getAudioInfo is not supported on web platform');
+  }
+
+  async micAvailable(): Promise<MicAvailableResult> {
+    try {
+      // Try to enumerate media devices if available
+      if ('enumerateDevices' in navigator.mediaDevices) {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter((device) => device.kind === 'audioinput');
+
+        return {
+          isAvailable: audioInputs.length > 0,
+        };
+      }
+
+      // Fallback if API not available
+      console.warn('navigator.mediaDevices.enumerateDevices is not available on this browser.');
+      return {
+        isAvailable: false,
+      };
+    } catch (error) {
+      console.error('Error checking microphone availability:', error);
+      return {
+        isAvailable: false,
+      };
+    }
   }
 }

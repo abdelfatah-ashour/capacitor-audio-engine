@@ -10,6 +10,8 @@ import androidx.core.app.ActivityCompat;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -20,19 +22,10 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
-@CapacitorPlugin(
-    name = "CapacitorAudioEngine",
-    permissions = {
-        @Permission(
-            alias = "microphone",
-            strings = { Manifest.permission.RECORD_AUDIO }
-        ),
-        @Permission(
-            alias = "notifications",
-            strings = { Manifest.permission.POST_NOTIFICATIONS }
-        )
-    }
-)
+@CapacitorPlugin(name = "CapacitorAudioEngine", permissions = {
+        @Permission(alias = "microphone", strings = { Manifest.permission.RECORD_AUDIO }),
+        @Permission(alias = "notifications", strings = { Manifest.permission.POST_NOTIFICATIONS })
+})
 public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.EventCallback {
     private static final String TAG = "CapacitorAudioEngine";
 
@@ -48,25 +41,33 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     private PlaybackManager playbackManager;
     private Handler mainHandler;
 
+    // Background executor for heavy audio processing operations
+    private ExecutorService audioProcessingExecutor;
+
     @Override
     public void load() {
         super.load();
         mainHandler = new Handler(Looper.getMainLooper());
 
-        // Initialize managers
-        permissionService = new PermissionManagerService(getContext(), new PermissionManagerService.PermissionServiceCallback() {
-            public void requestPermission(String alias, PluginCall call, String callbackMethod) {
-                requestPermissionForAlias(alias, call, callbackMethod);
-            }
+        // Initialize background executor for audio processing
+        audioProcessingExecutor = Executors.newSingleThreadExecutor();
 
-            public boolean shouldShowRequestPermissionRationale(String permission) {
-                boolean hasActivity = getActivity() != null;
-                boolean shouldShow = hasActivity && ActivityCompat.shouldShowRequestPermissionRationale(getActivity(), permission);
-                Log.d(TAG, "shouldShowRequestPermissionRationale - permission: " + permission +
-                           ", hasActivity: " + hasActivity + ", shouldShow: " + shouldShow);
-                return shouldShow;
-            }
-        });
+        // Initialize managers
+        permissionService = new PermissionManagerService(getContext(),
+                new PermissionManagerService.PermissionServiceCallback() {
+                    public void requestPermission(String alias, PluginCall call, String callbackMethod) {
+                        requestPermissionForAlias(alias, call, callbackMethod);
+                    }
+
+                    public boolean shouldShowRequestPermissionRationale(String permission) {
+                        boolean hasActivity = getActivity() != null;
+                        boolean shouldShow = hasActivity
+                                && ActivityCompat.shouldShowRequestPermissionRationale(getActivity(), permission);
+                        Log.d(TAG, "shouldShowRequestPermissionRationale - permission: " + permission +
+                                ", hasActivity: " + hasActivity + ", shouldShow: " + shouldShow);
+                        return shouldShow;
+                    }
+                });
         eventManager = new EventManager(this);
         fileManager = new FileDirectoryManager(getContext());
 
@@ -75,18 +76,22 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
         // Initialize recording manager
         recordingManager = new RecordingManager(getContext(), new RecordingManager.RecordingCallback() {
-            @Override public void onStatusChanged(String status) {
+            @Override
+            public void onStatusChanged(String status) {
                 JSObject data = new JSObject();
                 data.put("status", status);
                 notifyListeners("recordingStatusChanged", data);
             }
-            @Override public void onError(String message) {
+
+            @Override
+            public void onError(String message) {
                 JSObject data = new JSObject();
                 data.put("message", message);
                 notifyListeners("error", data);
             }
 
-            @Override public void onDurationChanged(double duration) {
+            @Override
+            public void onDurationChanged(double duration) {
                 JSObject data = new JSObject();
                 data.put("duration", duration);
                 notifyListeners("durationChange", data);
@@ -102,7 +107,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
         // Initialize playback manager
         playbackManager = new PlaybackManager(getContext(), new PlaybackManager.PlaybackCallback() {
-            @Override public void onStatusChanged(String status, String url, int position) {
+            @Override
+            public void onStatusChanged(String status, String url, int position) {
                 JSObject data = new JSObject();
                 data.put("status", status);
                 data.put("url", url);
@@ -110,14 +116,16 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 notifyListeners("playbackStatusChanged", data);
             }
 
-            @Override public void onError(String trackId, String message) {
+            @Override
+            public void onError(String trackId, String message) {
                 JSObject data = new JSObject();
                 data.put("trackId", trackId);
                 data.put("message", message);
                 notifyListeners("playbackError", data);
             }
 
-            @Override public void onProgress(String trackId, String url, int currentPosition, int duration, boolean isPlaying) {
+            @Override
+            public void onProgress(String trackId, String url, int currentPosition, int duration, boolean isPlaying) {
                 JSObject data = new JSObject();
                 data.put("trackId", trackId);
                 data.put("url", url);
@@ -127,7 +135,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 notifyListeners("playbackProgress", data);
             }
 
-            @Override public void onTrackCompleted(String trackId, String url) {
+            @Override
+            public void onTrackCompleted(String trackId, String url) {
                 JSObject data = new JSObject();
                 data.put("trackId", trackId);
                 data.put("url", url);
@@ -225,128 +234,142 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
     @PluginMethod
     public void trimAudio(PluginCall call) {
-        try {
-            // Validate input parameters
-            String sourcePath = call.getString("uri");
-            if (sourcePath == null) {
-                call.reject(AudioEngineError.INVALID_URI.getCode(),
-                           AudioEngineError.INVALID_URI.getMessage());
-                return;
-            }
+        // Validate input parameters on main thread
+        String sourcePath = call.getString("uri");
+        if (sourcePath == null) {
+            call.reject(AudioEngineError.INVALID_URI.getCode(),
+                    AudioEngineError.INVALID_URI.getMessage());
+            return;
+        }
 
-            Double startTime = call.getDouble("startTime");
-            Double endTime = call.getDouble("endTime");
+        Double startTime = call.getDouble("startTime");
+        Double endTime = call.getDouble("endTime");
 
-            if (startTime == null || endTime == null) {
-                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(),
-                           "Missing required parameters: startTime and endTime");
-                return;
-            }
+        if (startTime == null || endTime == null) {
+            call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(),
+                    "Missing required parameters: startTime and endTime");
+            return;
+        }
 
-            Log.d(TAG, "trimAudio called with URI: " + sourcePath + ", startTime: " + startTime + ", endTime: " + endTime);
+        Log.d(TAG,
+                "trimAudio called with URI: " + sourcePath + ", startTime: " + startTime + ", endTime: " + endTime);
 
-            // Handle legacy URI formats (simplified for legacy compatibility)
-            String actualPath = sourcePath;
-            if (sourcePath.contains("capacitor://localhost/_capacitor_file_")) {
-                actualPath = sourcePath.replace("capacitor://localhost/_capacitor_file_", "");
-            } else if (sourcePath.startsWith("file://")) {
-                actualPath = sourcePath.substring(7);
-            }
+        // Handle legacy URI formats (simplified for legacy compatibility)
+        String actualPath = sourcePath;
+        if (sourcePath.contains("capacitor://localhost/_capacitor_file_")) {
+            actualPath = sourcePath.replace("capacitor://localhost/_capacitor_file_", "");
+        } else if (sourcePath.startsWith("file://")) {
+            actualPath = sourcePath.substring(7);
+        }
 
-            Log.d(TAG, "Resolved URI to file path: " + actualPath);
+        Log.d(TAG, "Resolved URI to file path: " + actualPath);
 
-            // Validate file exists and is accessible
-            File sourceFile = new File(actualPath);
-            if (!sourceFile.exists()) {
-                Log.e(TAG, "Source file does not exist: " + actualPath);
-                call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(),
-                           "File does not exist: " + actualPath + ". Please ensure the recording was stopped successfully before trimming.");
-                return;
-            }
+        // Quick validation before moving to background
+        File sourceFile = new File(actualPath);
+        if (!sourceFile.exists()) {
+            Log.e(TAG, "Source file does not exist: " + actualPath);
+            call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(),
+                    "File does not exist: " + actualPath
+                            + ". Please ensure the recording was stopped successfully before trimming.");
+            return;
+        }
 
-            if (sourceFile.length() == 0) {
-                Log.e(TAG, "Source file is empty: " + actualPath);
-                call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(),
-                           "File is empty: " + actualPath + ". The recording may not have completed properly.");
-                return;
-            }
+        if (sourceFile.length() == 0) {
+            Log.e(TAG, "Source file is empty: " + actualPath);
+            call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(),
+                    "File is empty: " + actualPath + ". The recording may not have completed properly.");
+            return;
+        }
 
-            Log.d(TAG, "Source file validated - exists: true, size: " + sourceFile.length() + " bytes");
+        // Move heavy processing to background thread to avoid blocking event emission
+        final String finalActualPath = actualPath;
+        final double finalStartTime = startTime;
+        final double finalEndTime = endTime;
 
-            ValidationUtils.validateFileExists(actualPath);
-
-            // Get actual audio duration and clamp end time if needed
-            double audioDuration = AudioFileProcessor.getAudioDuration(actualPath);
-            double actualEndTime = Math.min(endTime, audioDuration);
-
-            // Validate time range with basic checks
-            if (startTime < 0) {
-                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "Start time cannot be negative");
-                return;
-            }
-
-            if (actualEndTime <= startTime) {
-                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "End time must be greater than start time");
-                return;
-            }
-
-            if (startTime >= audioDuration) {
-                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "Start time cannot exceed audio duration (" + audioDuration + " seconds)");
-                return;
-            }
-
-            Log.d(TAG, "Trimming audio from " + startTime + "s to " + actualEndTime + "s (original endTime: " + endTime + "s, duration: " + audioDuration + "s)");
-
-            // Create output file in the same directory as the source file
-            File sourceDirectory = sourceFile.getParentFile();
-            String originalFileName = sourceFile.getName();
-            // Create temporary name first to avoid conflicts during processing
-            String tempOutputFileName = "temp_trimming_" + System.currentTimeMillis() + ".m4a";
-            File tempOutputFile = new File(sourceDirectory, tempOutputFileName);
-
-            // Perform trimming using AudioFileProcessor with clamped end time
-            AudioFileProcessor.trimAudioFile(sourceFile, tempOutputFile, startTime, actualEndTime);
-
-            // Delete the original file
+        audioProcessingExecutor.execute(() -> {
             try {
-                if (sourceFile.delete()) {
-                    Log.d(TAG, "Deleted original file: " + sourceFile.getAbsolutePath());
-                } else {
-                    Log.w(TAG, "Warning: Could not delete original file: " + sourceFile.getAbsolutePath());
+                Log.d(TAG, "Source file validated - exists: true, size: " + sourceFile.length() + " bytes");
+
+                ValidationUtils.validateFileExists(finalActualPath);
+
+                // Get actual audio duration and clamp end time if needed
+                double audioDuration = AudioFileProcessor.getAudioDuration(finalActualPath);
+                double actualEndTime = Math.min(finalEndTime, audioDuration);
+
+                // Validate time range with basic checks
+                if (finalStartTime < 0) {
+                    call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), "Start time cannot be negative");
+                    return;
                 }
-            } catch (Exception deleteError) {
-                Log.w(TAG, "Warning: Exception deleting original file: " + deleteError.getMessage());
-            }
 
-            // Rename the temporary trimmed file to the original filename
-            File finalOutputFile = new File(sourceDirectory, originalFileName);
-            try {
-                if (tempOutputFile.renameTo(finalOutputFile)) {
-                    Log.d(TAG, "Renamed trimmed file to original name: " + finalOutputFile.getAbsolutePath());
-                } else {
-                    Log.w(TAG, "Warning: Could not rename trimmed file, using temp name");
+                if (actualEndTime <= finalStartTime) {
+                    call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(),
+                            "End time must be greater than start time");
+                    return;
+                }
+
+                if (finalStartTime >= audioDuration) {
+                    call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(),
+                            "Start time cannot exceed audio duration (" + audioDuration + " seconds)");
+                    return;
+                }
+
+                Log.d(TAG,
+                        "Trimming audio from " + finalStartTime + "s to " + actualEndTime + "s (original endTime: "
+                                + finalEndTime
+                                + "s, duration: " + audioDuration + "s)");
+
+                // Create output file in the same directory as the source file
+                File sourceDirectory = sourceFile.getParentFile();
+                String originalFileName = sourceFile.getName();
+                // Create temporary name first to avoid conflicts during processing
+                String tempOutputFileName = "temp_trimming_" + System.currentTimeMillis() + ".m4a";
+                File tempOutputFile = new File(sourceDirectory, tempOutputFileName);
+
+                // Perform trimming using AudioFileProcessor with clamped end time
+                AudioFileProcessor.trimAudioFile(sourceFile, tempOutputFile, finalStartTime, actualEndTime);
+
+                // Delete the original file
+                try {
+                    if (sourceFile.delete()) {
+                        Log.d(TAG, "Deleted original file: " + sourceFile.getAbsolutePath());
+                    } else {
+                        Log.w(TAG, "Warning: Could not delete original file: " + sourceFile.getAbsolutePath());
+                    }
+                } catch (Exception deleteError) {
+                    Log.w(TAG, "Warning: Exception deleting original file: " + deleteError.getMessage());
+                }
+
+                // Rename the temporary trimmed file to the original filename
+                File finalOutputFile = new File(sourceDirectory, originalFileName);
+                try {
+                    if (tempOutputFile.renameTo(finalOutputFile)) {
+                        Log.d(TAG, "Renamed trimmed file to original name: " + finalOutputFile.getAbsolutePath());
+                    } else {
+                        Log.w(TAG, "Warning: Could not rename trimmed file, using temp name");
+                        finalOutputFile = tempOutputFile; // Use temp file if rename fails
+                    }
+                } catch (Exception renameError) {
+                    Log.w(TAG, "Warning: Exception renaming trimmed file: " + renameError.getMessage());
                     finalOutputFile = tempOutputFile; // Use temp file if rename fails
                 }
-            } catch (Exception renameError) {
-                Log.w(TAG, "Warning: Exception renaming trimmed file: " + renameError.getMessage());
-                finalOutputFile = tempOutputFile; // Use temp file if rename fails
+
+                // Get complete audio file info
+                JSObject audioInfo = AudioFileProcessor.getAudioFileInfo(finalOutputFile.getAbsolutePath());
+                call.resolve(audioInfo);
+
+            } catch (SecurityException e) {
+                Log.e(TAG, "Security error in trimAudio", e);
+                call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(), e.getMessage());
+            } catch (IllegalArgumentException e) {
+                Log.e(TAG, "Validation error in trimAudio", e);
+                call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), e.getMessage());
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to trim audio", e);
+                call.reject(AudioEngineError.TRIMMING_FAILED.getCode(),
+                        AudioEngineError.TRIMMING_FAILED.getDetailedMessage(e.getMessage()));
             }
-
-            // Get complete audio file info
-            JSObject audioInfo = AudioFileProcessor.getAudioFileInfo(finalOutputFile.getAbsolutePath());
-            call.resolve(audioInfo);
-
-        } catch (SecurityException e) {
-            Log.e(TAG, "Security error in trimAudio", e);
-            call.reject(AudioEngineError.INVALID_FILE_PATH.getCode(), e.getMessage());
-        } catch (IllegalArgumentException e) {
-            Log.e(TAG, "Validation error in trimAudio", e);
-            call.reject(AudioEngineError.INVALID_PARAMETERS.getCode(), e.getMessage());
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to trim audio", e);
-            call.reject(AudioEngineError.TRIMMING_FAILED.getCode(),
-                       AudioEngineError.TRIMMING_FAILED.getDetailedMessage(e.getMessage()));
-        }
+        });
     }
 
     @PluginMethod
@@ -355,7 +378,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             String uri = call.getString("uri");
             if (uri == null) {
                 call.reject(AudioEngineError.INVALID_URI.getCode(),
-                           AudioEngineError.INVALID_URI.getMessage());
+                        AudioEngineError.INVALID_URI.getMessage());
                 return;
             }
 
@@ -467,7 +490,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
             // Preload all tracks
             JSArray results = new JSArray();
-            int[] completedCount = {0};
+            int[] completedCount = { 0 };
             int totalTracks = tracks.size();
 
             for (String url : tracks) {
@@ -633,7 +656,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 playbackManager.destroy();
                 // Reinitialize with same callback
                 playbackManager = new PlaybackManager(getContext(), new PlaybackManager.PlaybackCallback() {
-                    @Override public void onStatusChanged(String status, String url, int position) {
+                    @Override
+                    public void onStatusChanged(String status, String url, int position) {
                         JSObject data = new JSObject();
                         data.put("status", status);
                         data.put("url", url);
@@ -641,14 +665,17 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                         notifyListeners("playbackStatusChanged", data);
                     }
 
-                    @Override public void onError(String trackId, String message) {
+                    @Override
+                    public void onError(String trackId, String message) {
                         JSObject data = new JSObject();
                         data.put("trackId", trackId);
                         data.put("message", message);
                         notifyListeners("playbackError", data);
                     }
 
-                    @Override public void onProgress(String trackId, String url, int currentPosition, int duration, boolean isPlaying) {
+                    @Override
+                    public void onProgress(String trackId, String url, int currentPosition, int duration,
+                            boolean isPlaying) {
                         JSObject data = new JSObject();
                         data.put("trackId", trackId);
                         data.put("url", url);
@@ -658,7 +685,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                         notifyListeners("playbackProgress", data);
                     }
 
-                    @Override public void onTrackCompleted(String trackId, String url) {
+                    @Override
+                    public void onTrackCompleted(String trackId, String url) {
                         JSObject data = new JSObject();
                         data.put("trackId", trackId);
                         data.put("url", url);
@@ -691,7 +719,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         try {
             // Check the actual permission status instead of relying on data field
             JSObject currentStatus = permissionService.checkPermissions();
-            boolean granted = currentStatus.getBoolean("granted", false);
+            boolean granted = Boolean.TRUE.equals(currentStatus.getBoolean("granted", false));
             Log.d(TAG, "Permission status after callback - granted: " + granted);
 
             permissionService.handlePermissionCallback(call, granted);
@@ -700,7 +728,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             call.reject("Failed to handle permission callback: " + e.getMessage());
         }
     }
-
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     @Override
@@ -745,6 +772,19 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             if (mainHandler != null) {
                 mainHandler.removeCallbacksAndMessages(null);
                 mainHandler = null;
+            }
+
+            // Shutdown audio processing executor
+            if (audioProcessingExecutor != null) {
+                try {
+                    audioProcessingExecutor.shutdown();
+                    // Don't wait for termination - allow any in-progress tasks to complete
+                    // naturally
+                    Log.d(TAG, "Audio processing executor shutdown initiated");
+                } catch (Exception e) {
+                    Log.w(TAG, "Error shutting down audio processing executor", e);
+                }
+                audioProcessingExecutor = null;
             }
 
             Log.i(TAG, "CapacitorAudioEngine plugin destroyed - all resources cleaned up");
@@ -841,7 +881,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 return;
             }
 
-            Log.d(TAG, "Recording stopped successfully. File: " + filePath + ", size: " + recordingFile.length() + " bytes");
+            Log.d(TAG, "Recording stopped successfully. File: " + filePath + ", size: " + recordingFile.length()
+                    + " bytes");
 
             // Pre-warm recorder for faster subsequent recordings after long sessions
             try {
@@ -859,7 +900,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             call.reject("RECORDING_STOP_ERROR", e.getMessage());
         }
     }
-
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     @PluginMethod
@@ -942,5 +982,168 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         }
     }
 
+    @PluginMethod
+    public void micAvailable(PluginCall call) {
+        try {
+            android.media.AudioManager audioManager = (android.media.AudioManager) getContext()
+                    .getSystemService(android.content.Context.AUDIO_SERVICE);
+
+            if (audioManager == null) {
+                call.reject("AUDIO_MANAGER_ERROR", "Failed to get AudioManager");
+                return;
+            }
+
+            // Check if microphone exists
+            boolean microphoneExists = false;
+
+            // Check if any input audio device exists
+            android.media.AudioDeviceInfo[] devices = audioManager
+                    .getDevices(android.media.AudioManager.GET_DEVICES_INPUTS);
+
+            for (android.media.AudioDeviceInfo device : devices) {
+                int type = device.getType();
+                if (type == android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC ||
+                        type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE ||
+                        type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
+                        type == android.media.AudioDeviceInfo.TYPE_TELEPHONY) {
+                    microphoneExists = true;
+                    break;
+                }
+            }
+
+            // Check if MIC audio source is currently in use
+            // We specifically test MediaRecorder.AudioSource.MIC since that's what we use
+            // for recording
+            boolean microphoneInUse = false;
+            if (microphoneExists) {
+                microphoneInUse = isMicrophoneInUse();
+            }
+
+            // isAvailable is true only if MIC exists AND is not in use by another app
+            boolean isAvailable = microphoneExists && !microphoneInUse;
+
+            JSObject result = new JSObject();
+            result.put("isAvailable", isAvailable);
+
+            call.resolve(result);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking microphone availability", e);
+            call.reject("MIC_AVAILABLE_ERROR", "Failed to check microphone availability: " + e.getMessage());
+        }
+    }
+
+    private boolean isMicrophoneInUse() {
+        // Check if MIC is being used by another app using AudioManager
+        android.media.AudioManager audioManager = (android.media.AudioManager) getContext()
+                .getSystemService(android.content.Context.AUDIO_SERVICE);
+
+        if (audioManager == null) {
+            Log.w(TAG, "AudioManager not available for MIC check");
+            return false;
+        }
+
+        // Check if audio is being recorded by any app (Android 10+)
+        try {
+            // Get active recording configurations to see if any app is recording
+            List<android.media.AudioRecordingConfiguration> configs = audioManager
+                    .getActiveRecordingConfigurations();
+
+            if (!configs.isEmpty()) {
+                Log.d(TAG, "Active recording detected - " + configs.size() + " active recording(s)");
+                // Check if any of the active recordings are using MIC source
+                for (android.media.AudioRecordingConfiguration config : configs) {
+                    android.media.AudioFormat format = config.getClientFormat();
+                    if (format != null) {
+                        Log.d(TAG, "Active recording found - likely MIC in use");
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error checking active recordings", e);
+        }
+
+        // Fallback: Try to create AudioRecord and test if we can use it
+        android.media.AudioRecord recorder = null;
+        try {
+            int sampleRate = AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
+            int channelConfig = android.media.AudioFormat.CHANNEL_IN_MONO;
+            int audioFormat = android.media.AudioFormat.ENCODING_PCM_16BIT;
+
+            int bufferSize = android.media.AudioRecord.getMinBufferSize(
+                    sampleRate,
+                    channelConfig,
+                    audioFormat);
+
+            if (bufferSize == android.media.AudioRecord.ERROR_BAD_VALUE ||
+                    bufferSize == android.media.AudioRecord.ERROR) {
+                Log.w(TAG, "Invalid buffer size for MIC check");
+                return false;
+            }
+
+            recorder = new android.media.AudioRecord(
+                    android.media.MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    bufferSize);
+
+            if (recorder.getState() != android.media.AudioRecord.STATE_INITIALIZED) {
+                Log.d(TAG, "MIC audio source not initialized - likely in use");
+                return true;
+            }
+
+            // Try to read a small amount of data to verify MIC is truly available
+            try {
+                recorder.startRecording();
+
+                // Wait a tiny bit for recording to actually start
+                Thread.sleep(10);
+
+                // Try to read audio data
+                short[] buffer = new short[bufferSize / 2];
+                int bytesRead = recorder.read(buffer, 0, buffer.length);
+
+                recorder.stop();
+
+                // If we couldn't read any data, MIC might be in use
+                if (bytesRead <= 0) {
+                    Log.d(TAG, "Could not read from MIC - likely in use, bytesRead: " + bytesRead);
+                    return true;
+                }
+
+                Log.d(TAG, "MIC is available - successfully read " + bytesRead + " samples");
+                return false;
+
+            } catch (InterruptedException e) {
+                Log.w(TAG, "Interrupted while testing MIC", e);
+                return true;
+            } catch (Exception e) {
+                Log.d(TAG, "Exception while testing MIC recording - likely in use", e);
+                return true;
+            }
+
+        } catch (SecurityException e) {
+            Log.w(TAG, "Security exception - permission not granted", e);
+            return false;
+        } catch (Exception e) {
+            Log.w(TAG, "Exception creating AudioRecord - MIC might be in use", e);
+            return true;
+        } finally {
+            if (recorder != null) {
+                try {
+                    if (recorder.getState() == android.media.AudioRecord.STATE_INITIALIZED) {
+                        recorder.stop();
+                    }
+                    recorder.release();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error releasing test AudioRecord", e);
+                }
+            }
+        }
+    }
 
 }

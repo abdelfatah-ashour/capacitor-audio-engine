@@ -64,6 +64,10 @@ import {
   radioButtonOn,
   radioButtonOff,
   cloudDownload,
+  warning,
+  logoAndroid,
+  logoApple,
+  globe,
 } from 'ionicons/icons';
 import { addIcons } from 'ionicons';
 import { CapacitorAudioEngine } from 'capacitor-audio-engine';
@@ -191,6 +195,10 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       radioButtonOn,
       radioButtonOff,
       cloudDownload,
+      warning,
+      logoAndroid,
+      logoApple,
+      globe,
     });
   }
 
@@ -210,6 +218,8 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Microphone signals
   protected readonly currentMicrophone = signal<number | null>(null);
   protected readonly microphoneBusy = signal(false);
+  protected readonly micAvailability = signal<{ isAvailable: boolean } | null>(null);
+  protected readonly micListLoading = signal(false);
 
   // Waveform data signals - growing waveform history with enum support
   protected readonly waveformHistory = signal<number[]>([]);
@@ -600,6 +610,29 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       );
       // Fallback to checking overall permissions
       await this.checkPermission();
+    }
+  }
+
+  async checkMicAvailability(): Promise<void> {
+    try {
+      this.micListLoading.set(true);
+      const result = await CapacitorAudioEngine.micAvailable();
+      this.micAvailability.set(result);
+
+      if (result.isAvailable) {
+        await this.showToast('Microphone is available for recording', 'success');
+      } else {
+        await this.showToast('Microphone is busy or unavailable', 'warning');
+      }
+    } catch (error) {
+      console.error('Failed to check microphone availability:', error);
+      await this.showToast(
+        'Failed to check microphone availability: ' + (error as Error).message,
+        'danger'
+      );
+      this.micAvailability.set(null);
+    } finally {
+      this.micListLoading.set(false);
     }
   }
 
@@ -1352,8 +1385,6 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       this.recordingWaveLevel.set(0);
       this.recordingWaveLevelHistory.set([]);
       this.recordingMaxWaveLevel.set(0);
-      await this.startRecording();
-
       // Get file info and register the recorded file
       await this.registerRecordedFile();
 
@@ -1528,6 +1559,8 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
 
       // Mark this file as having info fetched
       this.filesWithInfo.update(files => new Set([...Array.from(files), audioFileInfo.uri]));
+
+      await this.startRecording();
     } catch (e) {
       console.error('Failed to register recorded file', e);
     }

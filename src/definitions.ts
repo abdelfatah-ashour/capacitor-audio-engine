@@ -298,6 +298,11 @@ export interface RecordingStatusInfo {
   path?: string;
 }
 
+export interface MicAvailableResult {
+  /** Whether microphone is available for recording (not busy/in use by another app) */
+  isAvailable: boolean;
+}
+
 /**
  * Interface for the Native Audio Plugin that provides audio recording capabilities.
  *
@@ -646,4 +651,30 @@ export interface CapacitorAudioEnginePlugin {
    * ```
    */
   trimAudio(options: TrimTrackOptions): Promise<AudioFileInfo>;
+
+  /**
+   * Check if the microphone is available for recording.
+   * Returns whether the MIC audio source is ready to use
+   * (not currently in use by another app).
+   *
+   * @returns Promise that resolves with microphone availability information
+   * @platform web Not fully supported - basic implementation, cannot detect if mic is in use
+   * @platform android Android 10+: Uses getActiveRecordingConfigurations() to detect active recordings. Fallback: Tests AudioRecord by attempting to read audio data
+   * @platform ios Tests AVAudioEngine tap installation and checks for specific error codes (ResourceNotAvailable, InsufficientPriority)
+   *
+   * @example
+   * ```typescript
+   * const result = await CapacitorAudioEngine.micAvailable();
+   * console.log('MIC available:', result.isAvailable); // true if MIC exists and not in use by another app
+   *
+   * if (result.isAvailable) {
+   *   // MIC is ready to record
+   *   await CapacitorAudioEngine.startRecording({ path: 'recording.m4a' });
+   * } else {
+   *   // MIC is in use by another app
+   *   console.log('Microphone is busy');
+   * }
+   * ```
+   */
+  micAvailable(): Promise<MicAvailableResult>;
 }

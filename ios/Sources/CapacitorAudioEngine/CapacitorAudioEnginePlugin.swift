@@ -44,6 +44,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         CAPPluginMethod(name: "resetRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getRecordingStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimAudio", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "micAvailable", returnType: CAPPluginReturnPromise),
     ]
 
     // MARK: - Properties
@@ -930,7 +931,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
                                     try FileManager.default.moveItem(at: outputURL, to: finalURL)
 
                                     // Verify the moved file exists
-                                    let movedFileExists = FileManager.default.fileExists(atPath: finalURL.path)
+                                    FileManager.default.fileExists(atPath: finalURL.path)
                                 } catch {
                                     // Use temp file if rename fails
                                     actualFileURL = outputURL
@@ -971,6 +972,121 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         }
     }
 
+
+    @objc func micAvailable(_ call: CAPPluginCall) {
+        Task {
+            let audioSession = AVAudioSession.sharedInstance()
+
+            // Try to activate the audio session to get input availability
+            try? audioSession.setCategory(.record, mode: .default)
+
+            // Check if microphone exists
+            let microphoneExists: Bool
+            if let availableInputs = audioSession.availableInputs {
+                microphoneExists = !availableInputs.isEmpty
+            } else {
+                microphoneExists = audioSession.isInputAvailable
+            }
+
+            // Check if microphone is currently in use for recording
+            // We specifically test the record category since that's what we use for recording
+            let microphoneInUse = microphoneExists ? isMicrophoneInUse(audioSession: audioSession) : false
+
+            // isAvailable is true only if MIC exists AND is not in use by another app
+            let isAvailable = microphoneExists && !microphoneInUse
+
+            let result: [String: Any] = [
+                "isAvailable": isAvailable
+            ]
+
+            await MainActor.run {
+                call.resolve(result)
+            }
+        }
+    }
+
+    private func isMicrophoneInUse(audioSession: AVAudioSession) -> Bool {
+        // Check if the MIC is currently in use for recording by another app
+        do {
+            // Set category to record - same as we use for actual recording
+            try audioSession.setCategory(.record, mode: .default, options: [])
+
+            // Try to activate the audio session for recording
+            try audioSession.setActive(true, options: [])
+
+            // Check if input is available
+            let isInputAvailable = audioSession.isInputAvailable
+
+            if !isInputAvailable {
+                try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+                print("[AudioEngine] Input not available - MIC might be in use")
+                return true
+            }
+
+            // Try to get the input and check if we can actually use it
+            // by attempting to set it as the preferred input
+            if let currentRoute = audioSession.currentRoute.inputs.first {
+                print("[AudioEngine] Current audio input: \(currentRoute.portName)")
+
+                // Try to set input gain if supported (this will fail if mic is locked by another app)
+                if audioSession.isInputGainSettable {
+                    let currentGain = audioSession.inputGain
+                    // Try to set the same gain to test if we have access
+                    do {
+                        try audioSession.setInputGain(currentGain)
+                        print("[AudioEngine] Successfully tested input gain - MIC is available")
+                    } catch {
+                        try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+                        print("[AudioEngine] Cannot set input gain - MIC might be in use: \(error)")
+                        return true
+                    }
+                }
+            }
+
+            // Try to create a temporary audio engine to test if we can actually record
+            let audioEngine = AVAudioEngine()
+            let inputNode = audioEngine.inputNode
+
+            // Get the input format
+            let inputFormat = inputNode.inputFormat(forBus: 0)
+
+            if inputFormat.sampleRate == 0 || inputFormat.channelCount == 0 {
+                try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+                print("[AudioEngine] Invalid input format - MIC might be in use")
+                return true
+            }
+
+            // Try to install a tap to verify we can access the input
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { (buffer, time) in
+                // We don't need to do anything with the data
+            }
+            // Remove the tap immediately
+            inputNode.removeTap(onBus: 0)
+
+            // Deactivate the session
+            try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+
+            print("[AudioEngine] MIC is available for recording")
+            return false
+
+        } catch let error as NSError {
+            try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+
+            // Check for specific error codes that indicate mic is in use
+            if error.domain == NSOSStatusErrorDomain {
+                // Error codes that indicate resource is busy
+                // AVAudioSessionErrorCodeResourceNotAvailable = 561017449 ('!res')
+                // AVAudioSessionErrorCodeInsufficientPriority = 561015905 ('!pri')
+                if error.code == 561017449 || error.code == 561015905 {
+                    print("[AudioEngine] MIC resource not available or insufficient priority - in use by another app")
+                    return true
+                }
+            }
+
+            print("[AudioEngine] Cannot activate audio session for recording - MIC might be in use: \(error)")
+            return true
+        }
+    }
 
     // MARK: - RecordingManagerDelegate
     func recordingDidChangeStatus(_ status: String) {
