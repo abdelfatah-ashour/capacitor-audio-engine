@@ -304,6 +304,63 @@ import UserNotifications
     }
 
     /**
+     * Request microphone permission only
+     */
+    @objc public func requestPermissionMicrophone(options: [String: Any]?) async -> [String: Any] {
+        // Check current status
+        let currentStatus = await checkPermissionMicrophone()
+        let alreadyGranted = currentStatus["granted"] as? Bool ?? false
+
+        if alreadyGranted {
+            return currentStatus
+        }
+
+        let micStatus = await getMicrophonePermissionStatus()
+
+        if micStatus == .notDetermined {
+            // Request microphone permission
+            markPermissionAsRequested(.microphone)
+            let granted = await requestMicrophonePermission()
+
+            if !granted {
+                // Permission denied, return current status
+                return await checkPermissionMicrophone()
+            }
+        }
+
+        // Return final status
+        return await checkPermissionMicrophone()
+    }
+
+    /**
+     * Request notification permission only
+     */
+    @objc public func requestPermissionNotifications(options: [String: Any]?) async -> [String: Any] {
+        // Check current status
+        let currentStatus = await checkPermissionNotifications()
+        let alreadyGranted = currentStatus["granted"] as? Bool ?? false
+
+        if alreadyGranted {
+            return currentStatus
+        }
+
+        if #available(iOS 10.0, *) {
+            let notificationStatus = await getNotificationPermissionStatus()
+
+            if notificationStatus != .granted && notificationStatus != .unsupported {
+                if notificationStatus == .notDetermined {
+                    // Request notification permission
+                    markPermissionAsRequested(.notifications)
+                    let _ = await requestNotificationPermission()
+                }
+            }
+        }
+
+        // Return final status
+        return await checkPermissionNotifications()
+    }
+
+    /**
      * Legacy permission check for backward compatibility
      */
     @objc public func checkLegacyPermissions() async -> [String: Any] {

@@ -95,6 +95,108 @@ public class PermissionManagerService {
     }
 
     /**
+     * Request microphone permission only
+     */
+    public void requestPermissionMicrophone(PluginCall call) {
+        Log.d(TAG, "Requesting microphone permission");
+
+        // Check if already granted
+        JSObject currentStatus = checkPermissions();
+        JSObject micResult = currentStatus.getJSObject("microphone");
+        if (micResult != null && Boolean.TRUE.equals(micResult.getBoolean("granted", false))) {
+            Log.d(TAG, "Microphone permission already granted");
+            call.resolve(checkPermissionMicrophone());
+            return;
+        }
+
+        // Request microphone permission
+        if (isPermissionGranted(Manifest.permission.RECORD_AUDIO)) {
+            // Microphone already granted
+            call.resolve(checkPermissionMicrophone());
+            return;
+        }
+
+        Log.d(TAG, "Requesting microphone permission");
+        try {
+            callback.requestPermission("microphone", call, "permissionCallbackMicrophone");
+        } catch (Exception e) {
+            Log.e(TAG, "Error requesting microphone permission", e);
+            call.reject("Failed to request microphone permission: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Request notification permission only
+     */
+    public void requestPermissionNotifications(PluginCall call) {
+        Log.d(TAG, "Requesting notification permission");
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            // No notification permission needed on older Android versions
+            Log.d(TAG, "Notification permission not required on Android < 13");
+            call.resolve(checkPermissionNotifications());
+            return;
+        }
+
+        // Check if already granted
+        JSObject currentStatus = checkPermissions();
+        JSObject notifResult = currentStatus.getJSObject("notifications");
+        if (notifResult != null && Boolean.TRUE.equals(notifResult.getBoolean("granted", false))) {
+            Log.d(TAG, "Notification permission already granted");
+            call.resolve(checkPermissionNotifications());
+            return;
+        }
+
+        // Request notification permission
+        if (isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS)) {
+            // Notification already granted
+            call.resolve(checkPermissionNotifications());
+            return;
+        }
+
+        Log.d(TAG, "Requesting notification permission");
+        try {
+            callback.requestPermission("notifications", call, "permissionCallbackNotifications");
+        } catch (Exception e) {
+            Log.e(TAG, "Error requesting notification permission", e);
+            call.reject("Failed to request notification permission: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Check microphone permission status only
+     */
+    public JSObject checkPermissionMicrophone() {
+        boolean micGranted = isPermissionGranted(Manifest.permission.RECORD_AUDIO);
+        String micStatus = getPermissionStatusString(Manifest.permission.RECORD_AUDIO);
+
+        JSObject result = new JSObject();
+        result.put("granted", micGranted);
+        result.put("status", micStatus);
+
+        return result;
+    }
+
+    /**
+     * Check notification permission status only
+     */
+    public JSObject checkPermissionNotifications() {
+        boolean notifGranted = true; // Default to granted for older Android versions
+        String notifStatus = "unsupported";
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifGranted = isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS);
+            notifStatus = getPermissionStatusString(Manifest.permission.POST_NOTIFICATIONS);
+        }
+
+        JSObject result = new JSObject();
+        result.put("granted", notifGranted);
+        result.put("status", notifStatus);
+
+        return result;
+    }
+
+    /**
      * Open app settings for manual permission management
      */
     public void openSettings() {
@@ -155,6 +257,22 @@ public class PermissionManagerService {
             Log.d(TAG, "Permission denied, returning current status");
             call.resolve(checkPermissions());
         }
+    }
+
+    /**
+     * Handle microphone permission callback
+     */
+    public void handlePermissionCallbackMicrophone(PluginCall call, boolean granted) {
+        Log.d(TAG, "Handling microphone permission callback - granted: " + granted);
+        call.resolve(checkPermissionMicrophone());
+    }
+
+    /**
+     * Handle notification permission callback
+     */
+    public void handlePermissionCallbackNotifications(PluginCall call, boolean granted) {
+        Log.d(TAG, "Handling notification permission callback - granted: " + granted);
+        call.resolve(checkPermissionNotifications());
     }
 
     // ========== Private Helper Methods ==========

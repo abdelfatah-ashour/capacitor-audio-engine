@@ -354,6 +354,26 @@ export interface CapacitorAudioEnginePlugin {
    */
   requestPermissions(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
 
+  /**
+   * Request microphone permission only.
+   * @param options - Permission request options
+   * @returns Promise that resolves with microphone permission status
+   * @platform web Returns unsupported status
+   * @platform android Uses ActivityCompat.requestPermissions for RECORD_AUDIO
+   * @platform ios Uses AVAudioSession.requestRecordPermission
+   */
+  requestPermissionMicrophone(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
+
+  /**
+   * Request notification permission only.
+   * @param options - Permission request options
+   * @returns Promise that resolves with notification permission status
+   * @platform web Returns unsupported status
+   * @platform android Uses ActivityCompat.requestPermissions for POST_NOTIFICATIONS (Android 13+)
+   * @platform ios Uses UNUserNotificationCenter.requestAuthorization
+   */
+  requestPermissionNotifications(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
+
   // Recording APIs removed (recording-only)
 
   /**

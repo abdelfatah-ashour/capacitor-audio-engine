@@ -8,35 +8,37 @@ A powerful Capacitor plugin for audio recording and playback on mobile devices. 
 
 ### Methods
 
-| Method Name                                                     | Description                                             |
-| --------------------------------------------------------------- | ------------------------------------------------------- |
-| [`checkPermissions`](#checkpermissions)                         | Check all audio-related permissions.                    |
-| [`checkPermissionMicrophone`](#checkpermissionmicrophone)       | Check microphone permission.                            |
-| [`checkPermissionNotifications`](#checkpermissionnotifications) | Check notification permission.                          |
-| [`requestPermissions`](#requestpermissionsoptions)              | Request permissions with optional configuration.        |
-| [`openSettings`](#opensettings)                                 | Open device settings for manual permission management.  |
-| [`startRecording`](#startrecordingoptions)                      | Start recording with specified output path.             |
-| [`stopRecording`](#stoprecording)                               | Stop recording and get file information.                |
-| [`pauseRecording`](#pauserecording)                             | Pause the current recording.                            |
-| [`resumeRecording`](#resumerecording)                           | Resume a paused recording.                              |
-| [`resetRecording`](#resetrecording)                             | Reset the current recording session without finalizing. |
-| [`getRecordingStatus`](#getrecordingstatus)                     | Get current recording status.                           |
-| [`preloadTracks`](#preloadtracksoptions)                        | Preload audio tracks for optimized playback.            |
-| [`playAudio`](#playaudiooptions)                                | Play current track or specific track by URL.            |
-| [`pauseAudio`](#pauseaudiooptions)                              | Pause current track or specific track.                  |
-| [`resumeAudio`](#resumeaudiooptions)                            | Resume paused playback.                                 |
-| [`stopAudio`](#stopaudiooptions)                                | Stop playback and reset to beginning.                   |
-| [`seekAudio`](#seekaudiooptions)                                | Seek to specific position in track.                     |
-| [`skipToNext`](#skiptonext)                                     | Skip to next track in playlist.                         |
-| [`skipToPrevious`](#skiptoprevious)                             | Skip to previous track in playlist.                     |
-| [`skipToIndex`](#skiptoindexoptions)                            | Jump to specific track by index.                        |
-| [`getPlaybackInfo`](#getplaybackinfo)                           | Get current playback information.                       |
-| [`configureWaveform`](#configurewaveformoptions)                | Configure real-time audio level monitoring.             |
-| [`destroyWaveform`](#destroywaveform)                           | Clean up waveform resources.                            |
-| [`trimAudio`](#trimaudiooptions)                                | Trim audio file to specific time range.                 |
-| [`getAudioInfo`](#getaudioinfooptions)                          | Get detailed audio file information.                    |
-| [`addListener`](#addlistenereventname-callback)                 | Listen for recording and playback events.               |
-| [`removeAllListeners`](#removealllisteners)                     | Remove all event listeners.                             |
+| Method Name                                                                | Description                                             |
+| -------------------------------------------------------------------------- | ------------------------------------------------------- |
+| [`checkPermissions`](#checkpermissions)                                    | Check all audio-related permissions.                    |
+| [`checkPermissionMicrophone`](#checkpermissionmicrophone)                  | Check microphone permission.                            |
+| [`checkPermissionNotifications`](#checkpermissionnotifications)            | Check notification permission.                          |
+| [`requestPermissions`](#requestpermissionsoptions)                         | Request all permissions with optional configuration.    |
+| [`requestPermissionMicrophone`](#requestpermissionmicrophoneoptions)       | Request microphone permission only.                     |
+| [`requestPermissionNotifications`](#requestpermissionnotificationsoptions) | Request notification permission only.                   |
+| [`openSettings`](#opensettings)                                            | Open device settings for manual permission management.  |
+| [`startRecording`](#startrecordingoptions)                                 | Start recording with specified output path.             |
+| [`stopRecording`](#stoprecording)                                          | Stop recording and get file information.                |
+| [`pauseRecording`](#pauserecording)                                        | Pause the current recording.                            |
+| [`resumeRecording`](#resumerecording)                                      | Resume a paused recording.                              |
+| [`resetRecording`](#resetrecording)                                        | Reset the current recording session without finalizing. |
+| [`getRecordingStatus`](#getrecordingstatus)                                | Get current recording status.                           |
+| [`preloadTracks`](#preloadtracksoptions)                                   | Preload audio tracks for optimized playback.            |
+| [`playAudio`](#playaudiooptions)                                           | Play current track or specific track by URL.            |
+| [`pauseAudio`](#pauseaudiooptions)                                         | Pause current track or specific track.                  |
+| [`resumeAudio`](#resumeaudiooptions)                                       | Resume paused playback.                                 |
+| [`stopAudio`](#stopaudiooptions)                                           | Stop playback and reset to beginning.                   |
+| [`seekAudio`](#seekaudiooptions)                                           | Seek to specific position in track.                     |
+| [`skipToNext`](#skiptonext)                                                | Skip to next track in playlist.                         |
+| [`skipToPrevious`](#skiptoprevious)                                        | Skip to previous track in playlist.                     |
+| [`skipToIndex`](#skiptoindexoptions)                                       | Jump to specific track by index.                        |
+| [`getPlaybackInfo`](#getplaybackinfo)                                      | Get current playback information.                       |
+| [`configureWaveform`](#configurewaveformoptions)                           | Configure real-time audio level monitoring.             |
+| [`destroyWaveform`](#destroywaveform)                                      | Clean up waveform resources.                            |
+| [`trimAudio`](#trimaudiooptions)                                           | Trim audio file to specific time range.                 |
+| [`getAudioInfo`](#getaudioinfooptions)                                     | Get detailed audio file information.                    |
+| [`addListener`](#addlistenereventname-callback)                            | Listen for recording and playback events.               |
+| [`removeAllListeners`](#removealllisteners)                                | Remove all event listeners.                             |
 
 ### Interfaces, Enums, and Types
 
@@ -256,7 +258,7 @@ checkPermissionNotifications(): Promise<PermissionStatusResults>
 
 ##### `requestPermissions(options?)`
 
-Request permissions with optional configuration:
+Request all permissions with optional configuration:
 
 ```typescript
 requestPermissions(options?: PermissionRequestOptions): Promise<PermissionStatusResults>
@@ -265,6 +267,58 @@ interface PermissionRequestOptions {
   showRationale?: boolean;      // Show rationale before requesting (Android)
   rationaleMessage?: string;    // Custom rationale message
   forceRequest?: boolean;       // Force request even if denied permanently
+}
+```
+
+##### `requestPermissionMicrophone(options?)`
+
+Request microphone permission only:
+
+```typescript
+requestPermissionMicrophone(options?: PermissionRequestOptions): Promise<PermissionStatusResults>
+
+interface PermissionRequestOptions {
+  showRationale?: boolean;      // Show rationale before requesting (Android)
+  rationaleMessage?: string;    // Custom rationale message
+  forceRequest?: boolean;       // Force request even if denied permanently
+}
+```
+
+**Example:**
+
+```typescript
+// Request only microphone permission
+const micResult = await CapacitorAudioEngine.requestPermissionMicrophone();
+if (micResult.granted) {
+  console.log('Microphone permission granted');
+} else {
+  console.log('Microphone permission status:', micResult.status);
+}
+```
+
+##### `requestPermissionNotifications(options?)`
+
+Request notification permission only:
+
+```typescript
+requestPermissionNotifications(options?: PermissionRequestOptions): Promise<PermissionStatusResults>
+
+interface PermissionRequestOptions {
+  showRationale?: boolean;      // Show rationale before requesting (Android)
+  rationaleMessage?: string;    // Custom rationale message
+  forceRequest?: boolean;       // Force request even if denied permanently
+}
+```
+
+**Example:**
+
+```typescript
+// Request only notification permission
+const notifResult = await CapacitorAudioEngine.requestPermissionNotifications();
+if (notifResult.granted) {
+  console.log('Notification permission granted');
+} else {
+  console.log('Notification permission status:', notifResult.status);
 }
 ```
 

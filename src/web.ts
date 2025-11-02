@@ -105,6 +105,36 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     return this.checkPermissions();
   }
 
+  /**
+   * Request microphone permission only.
+   * @param options - Permission request options
+   * @returns Promise that resolves with microphone permission status
+   * @platform web Returns unsupported status
+   */
+  async requestPermissionMicrophone(_options?: PermissionRequestOptions): Promise<PermissionStatusResults> {
+    void _options; // Parameter for API compatibility
+    console.warn(
+      'requestPermissionMicrophone is not fully supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
+    );
+
+    return this.checkPermissionMicrophone();
+  }
+
+  /**
+   * Request notification permission only.
+   * @param options - Permission request options
+   * @returns Promise that resolves with notification permission status
+   * @platform web Returns unsupported status
+   */
+  async requestPermissionNotifications(_options?: PermissionRequestOptions): Promise<PermissionStatusResults> {
+    void _options; // Parameter for API compatibility
+    console.warn(
+      'requestPermissionNotifications is not fully supported on web platform. For web implementation, consider using Notification.requestPermission API directly.',
+    );
+
+    return this.checkPermissionNotifications();
+  }
+
   // Recording APIs removed on web implementation
 
   /**

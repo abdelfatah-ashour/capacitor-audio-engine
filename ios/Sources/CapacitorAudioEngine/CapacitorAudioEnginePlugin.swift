@@ -16,6 +16,8 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         CAPPluginMethod(name: "checkPermissionMicrophone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "checkPermissionNotifications", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermissions", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestPermissionMicrophone", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestPermissionNotifications", returnType: CAPPluginReturnPromise),
 
         CAPPluginMethod(name: "configureWaveform", returnType: CAPPluginReturnPromise),
 
@@ -194,6 +196,26 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         Task {
             let options = call.getObject("options")
             let result = await permissionService.requestPermissions(options: options)
+            await MainActor.run {
+                call.resolve(result)
+            }
+        }
+    }
+
+    @objc func requestPermissionMicrophone(_ call: CAPPluginCall) {
+        Task {
+            let options = call.getObject("options")
+            let result = await permissionService.requestPermissionMicrophone(options: options)
+            await MainActor.run {
+                call.resolve(result)
+            }
+        }
+    }
+
+    @objc func requestPermissionNotifications(_ call: CAPPluginCall) {
+        Task {
+            let options = call.getObject("options")
+            let result = await permissionService.requestPermissionNotifications(options: options)
             await MainActor.run {
                 call.resolve(result)
             }

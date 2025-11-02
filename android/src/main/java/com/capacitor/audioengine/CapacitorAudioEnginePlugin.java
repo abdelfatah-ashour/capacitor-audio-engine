@@ -161,7 +161,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @PluginMethod
     public void checkPermissionMicrophone(PluginCall call) {
         try {
-            JSObject result = permissionService.checkPermissions();
+            JSObject result = permissionService.checkPermissionMicrophone();
             call.resolve(result);
         } catch (Exception e) {
             Log.e(TAG, "Error checking microphone permission", e);
@@ -172,7 +172,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @PluginMethod
     public void checkPermissionNotifications(PluginCall call) {
         try {
-            JSObject result = permissionService.checkPermissions();
+            JSObject result = permissionService.checkPermissionNotifications();
             call.resolve(result);
         } catch (Exception e) {
             Log.e(TAG, "Error checking notification permission", e);
@@ -187,6 +187,26 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         } catch (Exception e) {
             Log.e(TAG, "Error requesting permissions", e);
             call.reject("Failed to request permissions: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void requestPermissionMicrophone(PluginCall call) {
+        try {
+            permissionService.requestPermissionMicrophone(call);
+        } catch (Exception e) {
+            Log.e(TAG, "Error requesting microphone permission", e);
+            call.reject("Failed to request microphone permission: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void requestPermissionNotifications(PluginCall call) {
+        try {
+            permissionService.requestPermissionNotifications(call);
+        } catch (Exception e) {
+            Log.e(TAG, "Error requesting notification permission", e);
+            call.reject("Failed to request notification permission: " + e.getMessage());
         }
     }
 
@@ -727,6 +747,46 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             Log.e(TAG, "Error handling permission callback", e);
             call.reject("Failed to handle permission callback: " + e.getMessage());
         }
+    }
+
+    @PermissionCallback
+    public void permissionCallbackMicrophone(PluginCall call) {
+        Log.d(TAG, "Microphone permission callback received");
+
+        try {
+            // Check the actual microphone permission status
+            boolean granted = isPermissionGranted(Manifest.permission.RECORD_AUDIO);
+            Log.d(TAG, "Microphone permission status after callback - granted: " + granted);
+
+            permissionService.handlePermissionCallbackMicrophone(call, granted);
+        } catch (Exception e) {
+            Log.e(TAG, "Error handling microphone permission callback", e);
+            call.reject("Failed to handle microphone permission callback: " + e.getMessage());
+        }
+    }
+
+    @PermissionCallback
+    public void permissionCallbackNotifications(PluginCall call) {
+        Log.d(TAG, "Notification permission callback received");
+
+        try {
+            // Check the actual notification permission status (Android 13+)
+            boolean granted = true;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                granted = isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS);
+            }
+            Log.d(TAG, "Notification permission status after callback - granted: " + granted);
+
+            permissionService.handlePermissionCallbackNotifications(call, granted);
+        } catch (Exception e) {
+            Log.e(TAG, "Error handling notification permission callback", e);
+            call.reject("Failed to handle notification permission callback: " + e.getMessage());
+        }
+    }
+
+    private boolean isPermissionGranted(String permission) {
+        return androidx.core.content.ContextCompat.checkSelfPermission(getContext(), permission)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
