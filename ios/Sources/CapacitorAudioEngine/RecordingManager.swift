@@ -495,7 +495,7 @@ final class RecordingManager {
 
         try session.setCategory(.playAndRecord,
                                 mode: .voiceChat,
-                                options: [.defaultToSpeaker, .allowBluetoothHFP])
+                                options: [.defaultToSpeaker])
 
         try session.setPreferredSampleRate(currentSampleRate)
         try session.setPreferredInput(nil)
