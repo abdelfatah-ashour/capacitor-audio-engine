@@ -149,14 +149,12 @@ final class PlaybackManager: NSObject {
                 }
                 audioUrl = remoteUrl
             } else if url.hasPrefix("file://") {
-                // For file:// URIs, parse directly as URL
-                guard let fileUrl = URL(string: url) else {
-                    DispatchQueue.main.async {
-                        completion(.failure(NSError(domain: "PlaybackManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI format"])))
-                    }
-                    return
+                if let fileUrl = URL(string: url) {
+                    audioUrl = fileUrl
+                } else {
+                    let pathString = String(url.dropFirst(7))
+                    audioUrl = URL(fileURLWithPath: pathString)
                 }
-                audioUrl = fileUrl
             } else {
                 // For direct file paths or Capacitor URIs (already normalized)
                 audioUrl = URL(fileURLWithPath: normalizedUrl)

@@ -54,10 +54,14 @@ final class RecordingManager {
     func configureRecording(encoding: String?, bitrate: Int?, path: String? = nil) {
         if let br = bitrate, br > 0 { desiredBitrate = br }
         if let p = path, !p.isEmpty {
-            // Normalize provided path into app sandbox. If it starts with '/', treat as relative
-            // to Application Support directory (like Capacitor Filesystem Directory.Data)
+            // Normalize provided path into app sandbox
             if p.hasPrefix("file://") {
-                fileURL = URL(string: p)
+                if let url = URL(string: p) {
+                    fileURL = url
+                } else {
+                    let pathString = String(p.dropFirst(7))
+                    fileURL = URL(fileURLWithPath: pathString)
+                }
             } else if p.hasPrefix("/") {
                 let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
                 let trimmed = String(p.dropFirst())

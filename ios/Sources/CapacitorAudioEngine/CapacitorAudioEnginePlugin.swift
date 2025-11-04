@@ -305,12 +305,13 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
             // Local file URI
             let fileURL: URL
             if uri.hasPrefix("file://") {
-                guard let url = URL(string: uri) else {
-                    throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
+                if let url = URL(string: uri) {
+                    fileURL = url
+                } else {
+                    let pathString = String(uri.dropFirst(7))
+                    fileURL = URL(fileURLWithPath: pathString)
                 }
-                fileURL = url
             } else {
-                // Assume it's a path
                 fileURL = URL(fileURLWithPath: uri)
             }
 
@@ -475,10 +476,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
     private func createAudioFileInfo(filePath: String) async throws -> [String: Any] {
         let fileURL: URL
         if filePath.hasPrefix("file://") {
-            guard let url = URL(string: filePath) else {
-                throw NSError(domain: "CapacitorAudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
+            if let url = URL(string: filePath) {
+                fileURL = url
+            } else {
+                let pathString = String(filePath.dropFirst(7))
+                fileURL = URL(fileURLWithPath: pathString)
             }
-            fileURL = url
         } else {
             fileURL = URL(fileURLWithPath: filePath)
         }
@@ -576,16 +579,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
 
         let durationInSeconds = CMTimeGetSeconds(duration)
 
-        // Format paths to match Android and Capacitor Filesystem compatibility:
-        // - path: relative path (relative to Directory.Data / Application Support) for Filesystem plugin compatibility
-        // - uri: file:// format with absolute path
-        // - webPath: capacitor://localhost/_capacitor_file_ format
+        let encodedFileURL = URL(fileURLWithPath: absolutePath)
+        let encodedURI = encodedFileURL.absoluteString
+
         return [
             "path": relativePath,
             "filename": filename,
             "size": fileSize,
             "createdAt": Int64(createdAt * AudioEngineConstants.timestampMultiplier),
-            "uri": "file://" + absolutePath,
+            "uri": encodedURI,
             "webPath": "capacitor://localhost/_capacitor_file_" + absolutePath,
             "duration": round(durationInSeconds * AudioEngineConstants.durationRoundingFactor) / AudioEngineConstants.durationRoundingFactor,
             "mimeType": mimeType,
@@ -865,12 +867,20 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         // Convert URI to URL
         let sourceURL: URL
         if uriString.hasPrefix("file://") {
-            sourceURL = URL(string: uriString)!
+            if let url = URL(string: uriString) {
+                sourceURL = url
+            } else {
+                let pathString = String(uriString.dropFirst(7))
+                sourceURL = URL(fileURLWithPath: pathString)
+            }
         } else if uriString.hasPrefix("/") {
             sourceURL = URL(fileURLWithPath: uriString)
         } else {
             // Relative path - use app's documents directory
-            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            guard let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                call.reject("Failed to access documents directory")
+                return
+            }
             sourceURL = documentsPath.appendingPathComponent(uriString)
         }
 
