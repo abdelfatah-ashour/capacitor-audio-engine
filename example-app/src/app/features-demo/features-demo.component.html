@@ -486,11 +486,23 @@
                         <ion-button
                           expand="block"
                           fill="outline"
-                          color="primary"
+                          [color]="
+                            isFilePreloaded(lastRecordedAudioFile()!.uri) ? 'success' : 'primary'
+                          "
+                          [disabled]="isFilePreloaded(lastRecordedAudioFile()!.uri)"
                           (click)="preloadRecordedAudio(lastRecordedAudioFile()!)"
                         >
-                          <ion-icon name="download" slot="start"></ion-icon>
-                          Preload
+                          <ion-icon
+                            [name]="
+                              isFilePreloaded(lastRecordedAudioFile()!.uri)
+                                ? 'checkmark-circle'
+                                : 'download'
+                            "
+                            slot="start"
+                          ></ion-icon>
+                          {{
+                            isFilePreloaded(lastRecordedAudioFile()!.uri) ? 'Preloaded' : 'Preload'
+                          }}
                         </ion-button>
                       </ion-col>
                     </ion-row>
@@ -535,6 +547,14 @@
                         <strong>Sample Rate:</strong> {{ lastRecordedAudioFile()!.sampleRate }} Hz
                       </p>
                       <p><strong>Channels:</strong> {{ lastRecordedAudioFile()!.channels }}</p>
+                      @if (isFilePreloaded(lastRecordedAudioFile()!.uri)) {
+                        <p>
+                          <ion-chip color="success" size="small">
+                            <ion-icon name="checkmark-circle" slot="start"></ion-icon>
+                            Track Ready for Playback
+                          </ion-chip>
+                        </p>
+                      }
                     </ion-label>
                   </ion-item>
                 </ion-card-content>

@@ -1376,38 +1376,100 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
         path: audioFileInfo.path,
       }));
 
-      // Store the audio file info
-      this.lastRecordedAudioFile.set(audioFileInfo);
-      this.showRecordedFileActions.set(true);
-
       // Reset recording monitoring signals
       this.recordingDuration.set(0);
       this.recordingWaveLevel.set(0);
       this.recordingWaveLevelHistory.set([]);
       this.recordingMaxWaveLevel.set(0);
-      // Get file info and register the recorded file
-      await this.registerRecordedFile();
 
       await this.showToast('Recording stopped - File saved', 'success');
 
-      const trimmedFile = await CapacitorAudioEngine.trimAudio({
-        uri: audioFileInfo.uri,
-        startTime: 0,
-        endTime: audioFileInfo.duration,
-      });
+      // Trim the audio file based on trimLastSeconds setting
+      let trimmedFile: AudioFileInfo;
+      const trimLast = this.trimLastSeconds();
+
+      if (trimLast > 0 && audioFileInfo.duration > trimLast) {
+        // Trim to keep only the last N seconds
+        const startTime = audioFileInfo.duration - trimLast;
+        trimmedFile = await CapacitorAudioEngine.trimAudio({
+          uri: audioFileInfo.uri,
+          startTime,
+          endTime: audioFileInfo.duration,
+        });
+        await this.showToast(
+          `Audio trimmed: ${trimmedFile.duration.toFixed(2)}s (last ${trimLast}s)`,
+          'success'
+        );
+      } else {
+        // No trimming needed, use the full recording
+        trimmedFile = await CapacitorAudioEngine.trimAudio({
+          uri: audioFileInfo.uri,
+          startTime: 0,
+          endTime: audioFileInfo.duration,
+        });
+      }
+
       console.log('🚀 ~ FeaturesDemoComponent ~ stopRecording ~ trimmedFile:', trimmedFile);
 
-      try {
-        const file = await Filesystem.readFile({
-          path: trimmedFile.uri,
-        });
-        console.log('Successfully read trimmed file:', file.data);
-      } catch (error) {
-        console.error('Failed to read trimmed file:', error);
-      }
+      // Store the trimmed audio file info
+      this.lastRecordedAudioFile.set(trimmedFile);
+      this.showRecordedFileActions.set(true);
+
+      // Create track object and preload it for playback
+      await this.setupTrimmedTrackForPlayback(trimmedFile);
     } catch (error) {
       console.error('Failed to stop recording:', error);
       await this.showToast('Failed to stop recording', 'danger');
+    }
+  }
+
+  /**
+   * Sets up a trimmed track object for playback by preloading it and registering it
+   */
+  private async setupTrimmedTrackForPlayback(trimmedFile: AudioFileInfo): Promise<void> {
+    try {
+      // Preload the trimmed track
+      const result = await CapacitorAudioEngine.preloadTracks({
+        tracks: [trimmedFile.uri],
+      });
+
+      const trackInfo = result.tracks.find(t => t.url === trimmedFile.uri);
+
+      if (trackInfo?.loaded) {
+        // Set up the track for playback
+        this.currentRecordedFile.set(trimmedFile);
+        this.recordedPlaylistInitialized.set(true);
+
+        // Mark as preloaded
+        this.preloadedFiles.update(files => new Set([...Array.from(files), trimmedFile.uri]));
+
+        // Register in the files list
+        this.recordedFiles.update(files => {
+          // Avoid duplicates
+          const existingIndex = files.findIndex(f => f.uri === trimmedFile.uri);
+          if (existingIndex >= 0) {
+            return files;
+          }
+          return [...files, trimmedFile];
+        });
+
+        // Mark this file as having info fetched
+        this.filesWithInfo.update(files => new Set([...Array.from(files), trimmedFile.uri]));
+
+        // Small delay to ensure player is fully initialized
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Update playback info
+        await this.updateRecordedPlaybackInfo();
+
+        console.log('✅ Trimmed track preloaded and ready for playback:', trimmedFile.uri);
+      } else {
+        console.warn('⚠️ Failed to preload trimmed track:', trimmedFile.uri);
+        await this.showToast('Trimmed track preloaded but not ready', 'warning');
+      }
+    } catch (error) {
+      console.error('Failed to setup trimmed track for playback:', error);
+      await this.showToast('Failed to setup trimmed track for playback', 'warning');
     }
   }
 
@@ -1514,8 +1576,8 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
               // Update the last recorded file to the trimmed version
               this.lastRecordedAudioFile.set(trimmedFile);
 
-              // Register the trimmed file
-              this.recordedFiles.update(files => [...files, trimmedFile]);
+              // Create track object and preload it for playback
+              await this.setupTrimmedTrackForPlayback(trimmedFile);
             } catch (error) {
               console.error('Failed to trim audio:', error);
               await this.showToast('Failed to trim audio', 'danger');
