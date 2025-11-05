@@ -46,6 +46,8 @@ final class RecordingManager {
     private var writerInput: AVAssetWriterInput?
     private var fileURL: URL?
     private var writerStarted: Bool = false
+    private var audioSessionObserver: Any?
+    private var routeChangeObserver: Any?
 
     init(delegate: RecordingManagerDelegate?) {
         self.delegate = delegate
@@ -99,6 +101,8 @@ final class RecordingManager {
             guard !isRecording else { return }
             do {
                 try configureAudioSessionForRecording()
+                observeAudioSessionInterruptions()
+                observeAudioSessionRouteChanges()
                 let engine = AVAudioEngine()
                 audioEngine = engine
 
@@ -169,6 +173,8 @@ final class RecordingManager {
                 }
                 engine.stop()
             }
+            removeAudioSessionInterruptionsObserver()
+            removeAudioSessionRouteChangeObserver()
             // Only finish writer if one exists (prevents "file not found" error after resetRecording)
             if assetWriter != nil {
                 finishWriter()
@@ -205,6 +211,8 @@ final class RecordingManager {
                 }
                 engine.stop()
             }
+            removeAudioSessionInterruptionsObserver()
+            removeAudioSessionRouteChangeObserver()
 
             // Stop duration and wave level monitoring
             stopDurationMonitoring()
@@ -499,11 +507,228 @@ final class RecordingManager {
 
         try session.setCategory(.playAndRecord,
                                 mode: .voiceChat,
-                                options: [.defaultToSpeaker])
+                                options: [.defaultToSpeaker, .mixWithOthers])
 
         try session.setPreferredSampleRate(currentSampleRate)
         try session.setPreferredInput(nil)
         try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    private func observeAudioSessionInterruptions() {
+        guard audioSessionObserver == nil else { return }
+        audioSessionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            guard let userInfo = notification.userInfo,
+                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+                return
+            }
+
+            switch type {
+            case .began:
+                // Deactivate session to yield mic to other apps (e.g., phone call or another recorder)
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                self.performStateOperation {
+                    if self.isRecording {
+                        if let engine = self.audioEngine, engine.isRunning {
+                            engine.pause()
+                        }
+                        self.isPaused = true
+                        self.pauseDurationMonitoring()
+                        self.pauseWaveLevelMonitoring()
+                        self.delegate?.recordingDidChangeStatus("paused")
+                    }
+                }
+            case .ended:
+                // Check if we should resume - only if microphone is available
+                let session = AVAudioSession.sharedInstance()
+                let hasInput = session.availableInputs?.isEmpty == false
+                let isInputAvailable = session.isInputAvailable
+
+                // Try to reactivate session
+                do {
+                    try session.setActive(true)
+                } catch {
+                    // If activation fails, microphone might be unavailable (e.g., another app using it)
+                    self.performStateOperation {
+                        if self.isRecording {
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+                    return
+                }
+
+                // Only resume if microphone is actually available
+                guard hasInput && isInputAvailable else {
+                    // Microphone unavailable - likely another app is recording or phone call active
+                    self.performStateOperation {
+                        if self.isRecording {
+                            let error = NSError(
+                                domain: "AudioEngine",
+                                code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Microphone unavailable - may be in use by another app or phone call"]
+                            )
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+                    return
+                }
+
+                // Check if we should resume (user may have declined)
+                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                    if !options.contains(.shouldResume) {
+                        // User declined to resume (e.g., dismissed phone call)
+                        return
+                    }
+                }
+
+                self.performStateOperation {
+                    guard self.isRecording else { return }
+                    do {
+                        if let engine = self.audioEngine, !engine.isRunning {
+                            try engine.start()
+                        }
+                        self.isPaused = false
+                        self.resumeDurationMonitoring()
+                        self.resumeWaveLevelMonitoring()
+                        self.delegate?.recordingDidChangeStatus("recording")
+                    } catch {
+                        self.delegate?.recordingDidEncounterError(error)
+                    }
+                }
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private func removeAudioSessionInterruptionsObserver() {
+        if let obs = audioSessionObserver {
+            NotificationCenter.default.removeObserver(obs)
+            audioSessionObserver = nil
+        }
+    }
+
+    private func observeAudioSessionRouteChanges() {
+        guard routeChangeObserver == nil else { return }
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            guard let userInfo = notification.userInfo,
+                  let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+                return
+            }
+
+            let session = AVAudioSession.sharedInstance()
+            let isInputAvailable = session.isInputAvailable
+            let hasInput = session.availableInputs?.isEmpty == false
+
+            self.performStateOperation {
+                guard self.isRecording else { return }
+
+                switch reason {
+                case .newDeviceAvailable:
+                    // New input device available (e.g., headphones plugged in)
+                    // If we were paused and mic is now available, try to resume
+                    if self.isPaused && isInputAvailable && hasInput {
+                        do {
+                            if let engine = self.audioEngine, !engine.isRunning {
+                                try engine.start()
+                            }
+                            self.isPaused = false
+                            self.resumeDurationMonitoring()
+                            self.resumeWaveLevelMonitoring()
+                            self.delegate?.recordingDidChangeStatus("recording")
+                        } catch {
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+
+                case .oldDeviceUnavailable:
+                    // Input device removed (e.g., headphones unplugged)
+                    // Check if built-in mic is still available
+                    if !isInputAvailable || !hasInput {
+                        // No input available - pause recording
+                        if !self.isPaused {
+                            self.isPaused = true
+                            self.pauseDurationMonitoring()
+                            self.pauseWaveLevelMonitoring()
+                            let error = NSError(
+                                domain: "AudioEngine",
+                                code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Microphone input unavailable - device may have been disconnected"]
+                            )
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+
+                case .categoryChange:
+                    // Audio session category changed - check if we still have mic access
+                    if !isInputAvailable || !hasInput {
+                        if !self.isPaused {
+                            self.isPaused = true
+                            self.pauseDurationMonitoring()
+                            self.pauseWaveLevelMonitoring()
+                            let error = NSError(
+                                domain: "AudioEngine",
+                                code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Microphone access lost - another app may be recording"]
+                            )
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+
+                case .override:
+                    // Route was overridden (e.g., phone call routing)
+                    if !isInputAvailable {
+                        if !self.isPaused {
+                            self.isPaused = true
+                            self.pauseDurationMonitoring()
+                            self.pauseWaveLevelMonitoring()
+                        }
+                    }
+
+                default:
+                    // Other route changes - check availability
+                    if !isInputAvailable || !hasInput {
+                        if !self.isPaused {
+                            self.isPaused = true
+                            self.pauseDurationMonitoring()
+                            self.pauseWaveLevelMonitoring()
+                        }
+                    } else if self.isPaused {
+                        // Mic became available again - try to resume
+                        do {
+                            if let engine = self.audioEngine, !engine.isRunning {
+                                try engine.start()
+                            }
+                            self.isPaused = false
+                            self.resumeDurationMonitoring()
+                            self.resumeWaveLevelMonitoring()
+                            self.delegate?.recordingDidChangeStatus("recording")
+                        } catch {
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func removeAudioSessionRouteChangeObserver() {
+        if let obs = routeChangeObserver {
+            NotificationCenter.default.removeObserver(obs)
+            routeChangeObserver = nil
+        }
     }
 
 
