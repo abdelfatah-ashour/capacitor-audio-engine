@@ -901,11 +901,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         // Create asset from source file
         let asset = AVAsset(url: sourceURL)
 
-        // Validate that the trim range is within asset duration
+        // Validate and adjust trim range to be within asset duration
         let assetDuration = CMTimeGetSeconds(asset.duration)
+        var adjustedEndTime = endTime
         if endTime > assetDuration {
-            call.reject("End time (\(endTime)s) exceeds audio duration (\(assetDuration)s)")
-            return
+            adjustedEndTime = assetDuration
         }
 
         // Create export session
@@ -919,7 +919,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
 
         // Set time range for trimming
         let startCMTime = CMTime(seconds: startTime, preferredTimescale: 600)
-        let endCMTime = CMTime(seconds: endTime, preferredTimescale: 600)
+        let endCMTime = CMTime(seconds: adjustedEndTime, preferredTimescale: 600)
         let timeRange = CMTimeRange(start: startCMTime, end: endCMTime)
         exportSession.timeRange = timeRange
 
