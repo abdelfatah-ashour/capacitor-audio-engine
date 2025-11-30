@@ -49,6 +49,14 @@ final class RecordingManager {
     private var audioSessionObserver: Any?
     private var routeChangeObserver: Any?
 
+    // App lifecycle observers
+    private var appWillEnterForegroundObserver: Any?
+    private var appDidBecomeActiveObserver: Any?
+    private var mediaServicesResetObserver: Any?
+
+    // Health check timer
+    private var healthCheckTimer: Timer?
+
     init(delegate: RecordingManagerDelegate?) {
         self.delegate = delegate
     }
@@ -103,6 +111,7 @@ final class RecordingManager {
                 try configureAudioSessionForRecording()
                 observeAudioSessionInterruptions()
                 observeAudioSessionRouteChanges()
+                observeAppLifecycle()
                 let engine = AVAudioEngine()
                 audioEngine = engine
 
@@ -155,6 +164,7 @@ final class RecordingManager {
                 // Start duration and wave level monitoring
                 startDurationMonitoring()
                 startWaveLevelMonitoring()
+                startRecordingHealthCheck()
 
                 delegate?.recordingDidChangeStatus("recording")
             } catch {
@@ -175,6 +185,7 @@ final class RecordingManager {
             }
             removeAudioSessionInterruptionsObserver()
             removeAudioSessionRouteChangeObserver()
+            removeAppLifecycleObservers()
             // Only finish writer if one exists (prevents "file not found" error after resetRecording)
             if assetWriter != nil {
                 finishWriter()
@@ -186,6 +197,7 @@ final class RecordingManager {
             // Stop duration and wave level monitoring
             stopDurationMonitoring()
             stopWaveLevelMonitoring()
+            stopRecordingHealthCheck()
 
             isRecording = false
             isPaused = false
@@ -213,10 +225,12 @@ final class RecordingManager {
             }
             removeAudioSessionInterruptionsObserver()
             removeAudioSessionRouteChangeObserver()
+            removeAppLifecycleObservers()
 
             // Stop duration and wave level monitoring
             stopDurationMonitoring()
             stopWaveLevelMonitoring()
+            stopRecordingHealthCheck()
 
             // Finish writer and wait for completion
             if assetWriter != nil {
@@ -731,6 +745,255 @@ final class RecordingManager {
         }
     }
 
+    // MARK: - App Lifecycle Monitoring
+
+    private func observeAppLifecycle() {
+        // Observe when app returns from background
+        appWillEnterForegroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.validateRecordingStateOnForeground()
+        }
+
+        // Observe when app becomes active
+        appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.validateRecordingStateOnActive()
+        }
+
+        // Observe media services reset (critical for extended background)
+        mediaServicesResetObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            print("[RecordingManager] Media services were reset - attempting to recover")
+            self.handleMediaServicesReset()
+        }
+    }
+
+    private func removeAppLifecycleObservers() {
+        if let obs = appWillEnterForegroundObserver {
+            NotificationCenter.default.removeObserver(obs)
+            appWillEnterForegroundObserver = nil
+        }
+        if let obs = appDidBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(obs)
+            appDidBecomeActiveObserver = nil
+        }
+        if let obs = mediaServicesResetObserver {
+            NotificationCenter.default.removeObserver(obs)
+            mediaServicesResetObserver = nil
+        }
+    }
+
+    // Validate recording state when app enters foreground
+    private func validateRecordingStateOnForeground() {
+        performStateOperation {
+            // Only validate if we think we're recording
+            guard isRecording else { return }
+
+            print("[RecordingManager] App entering foreground - validating recording state")
+
+            // Check if audio engine is actually running
+            guard let engine = audioEngine else {
+                print("[RecordingManager] ERROR: Audio engine is nil but state says recording")
+                handleRecordingLost()
+                return
+            }
+
+            if !engine.isRunning {
+                print("[RecordingManager] ERROR: Audio engine stopped but state says recording")
+                handleRecordingLost()
+                return
+            }
+
+            // Check audio session
+            let session = AVAudioSession.sharedInstance()
+            let isInputAvailable = session.isInputAvailable
+            let hasInput = session.availableInputs?.isEmpty == false
+
+            if !isInputAvailable || !hasInput {
+                print("[RecordingManager] ERROR: Microphone not available after foreground")
+                handleRecordingLost()
+                return
+            }
+
+            // Verify tap is still installed
+            if !inputNodeTapInstalled {
+                print("[RecordingManager] ERROR: Input tap removed but state says recording")
+                handleRecordingLost()
+                return
+            }
+
+            // Check if audio session is still active
+            do {
+                if !session.isOtherAudioPlaying {
+                    // Try to reactivate if needed
+                    try session.setActive(true)
+                }
+                print("[RecordingManager] Recording state validated successfully")
+            } catch {
+                print("[RecordingManager] ERROR: Cannot reactivate audio session: \(error)")
+                handleRecordingLost()
+            }
+        }
+    }
+
+    // Validate when app becomes active (after unlock)
+    private func validateRecordingStateOnActive() {
+        performStateOperation {
+            guard isRecording else { return }
+
+            print("[RecordingManager] App became active - checking recording health")
+
+            // Additional check: verify we're actually receiving audio data
+            // by checking if the asset writer is still writing
+            if let writer = assetWriter {
+                if writer.status == .failed {
+                    print("[RecordingManager] ERROR: Asset writer failed - status: \(writer.status.rawValue)")
+                    if let error = writer.error {
+                        print("[RecordingManager] Writer error: \(error.localizedDescription)")
+                    }
+                    handleRecordingLost()
+                    return
+                } else if writer.status == .cancelled {
+                    print("[RecordingManager] ERROR: Asset writer cancelled")
+                    handleRecordingLost()
+                    return
+                }
+            }
+        }
+    }
+
+    // Handle media services reset (happens after crash or extended background)
+    private func handleMediaServicesReset() {
+        performStateOperation {
+            guard isRecording else { return }
+
+            print("[RecordingManager] Attempting to recover from media services reset")
+
+            // Media services reset means all audio objects are invalid
+            // We need to stop and notify the user
+
+            // Clean up invalid objects
+            if let engine = audioEngine {
+                if inputNodeTapInstalled {
+                    engine.inputNode.removeTap(onBus: 0)
+                    inputNodeTapInstalled = false
+                }
+                engine.stop()
+            }
+
+            // Finish writer if exists
+            if assetWriter != nil {
+                finishWriter()
+            }
+
+            audioEngine = nil
+            converter = nil
+            aacFormat = nil
+            isRecording = false
+            isPaused = false
+
+            stopDurationMonitoring()
+            stopWaveLevelMonitoring()
+            stopRecordingHealthCheck()
+
+            // Notify delegate about the failure
+            let error = NSError(
+                domain: "AudioEngine",
+                code: -2001,
+                userInfo: [NSLocalizedDescriptionKey: "Recording lost due to system audio reset. Please start a new recording."]
+            )
+            delegate?.recordingDidEncounterError(error)
+            delegate?.recordingDidChangeStatus("stopped")
+        }
+    }
+
+    // Handle when recording was silently stopped
+    private func handleRecordingLost() {
+        print("[RecordingManager] Recording was lost - cleaning up and notifying UI")
+
+        // Clean up resources
+        if let engine = audioEngine {
+            if inputNodeTapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+                inputNodeTapInstalled = false
+            }
+            engine.stop()
+        }
+
+        if assetWriter != nil {
+            finishWriter()
+        }
+
+        audioEngine = nil
+        converter = nil
+        aacFormat = nil
+        isRecording = false
+        isPaused = false
+
+        stopDurationMonitoring()
+        stopWaveLevelMonitoring()
+        stopRecordingHealthCheck()
+
+        // Notify the UI with a clear error
+        let error = NSError(
+            domain: "AudioEngine",
+            code: -2000,
+            userInfo: [NSLocalizedDescriptionKey: "Recording was interrupted by the system. The microphone is no longer available. Please start a new recording."]
+        )
+        delegate?.recordingDidEncounterError(error)
+        delegate?.recordingDidChangeStatus("stopped")
+    }
+
+    // MARK: - Recording Health Check
+
+    private func startRecordingHealthCheck() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // Check every 30 seconds
+            self.healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+                self?.performRecordingHealthCheck()
+            }
+        }
+    }
+
+    private func stopRecordingHealthCheck() {
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+    }
+
+    private func performRecordingHealthCheck() {
+        performStateOperation {
+            guard isRecording && !isPaused else { return }
+
+            // Verify engine is still running
+            guard let engine = audioEngine, engine.isRunning else {
+                print("[RecordingManager] Health check FAILED: Engine not running")
+                handleRecordingLost()
+                return
+            }
+
+            // Verify writer is healthy
+            if let writer = assetWriter, writer.status != .writing {
+                print("[RecordingManager] Health check FAILED: Writer status: \(writer.status.rawValue)")
+                handleRecordingLost()
+                return
+            }
+
+            print("[RecordingManager] Health check PASSED")
+        }
+    }
 
     // MARK: - Duration Monitoring
 
