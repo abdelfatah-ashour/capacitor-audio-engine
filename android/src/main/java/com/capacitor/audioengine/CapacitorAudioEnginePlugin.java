@@ -31,6 +31,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
     // Core managers
     private PermissionManagerService permissionService; // Standalone permission service
+    private PermissionManagerService permissionService; // Standalone permission service
     private EventManager eventManager;
 
     private FileDirectoryManager fileManager;
@@ -785,8 +786,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     }
 
     private boolean isPermissionGranted(String permission) {
-        return androidx.core.content.ContextCompat.checkSelfPermission(getContext(), permission)
-                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        return androidx.core.content.ContextCompat.checkSelfPermission(getContext(),
+                permission) == android.content.pm.PackageManager.PERMISSION_GRANTED;
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)

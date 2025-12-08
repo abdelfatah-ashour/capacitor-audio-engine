@@ -132,6 +132,8 @@ Add this to your `AndroidManifest.xml`:
 
 #### `AudioFileInfo`
 
+Information about recorded or audio files:
+
 Complete information about an audio file:
 
 ```typescript

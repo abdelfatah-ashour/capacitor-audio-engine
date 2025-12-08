@@ -1198,6 +1198,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   async destroyWaveform(): Promise<void> {
     try {
       await CapacitorAudioEngine.destroyWaveform();
+      await CapacitorAudioEngine.destroyWaveform();
       await this.showToast('Waveform configuration destroyed', 'success');
     } catch (error) {
       console.error('Error destroying waveform:', error);

@@ -1,5 +1,5 @@
-import type { PluginListenerHandle } from '@capacitor/core';
-import { WebPlugin } from '@capacitor/core';
+import type { PluginListenerHandle } from "@capacitor/core";
+import { WebPlugin } from "@capacitor/core";
 
 import type {
   CapacitorAudioEnginePlugin,
@@ -17,8 +17,8 @@ import type {
   RecordingStatusInfo,
   TrimTrackOptions,
   MicAvailableResult,
-} from './definitions';
-import { PermissionStatus } from './definitions';
+} from "./definitions";
+import { PermissionStatus } from "./definitions";
 
 declare global {
   interface BlobEventInit extends EventInit {
@@ -30,16 +30,19 @@ declare global {
   }
 }
 
-export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudioEnginePlugin {
+export class CapacitorAudioEngineWeb
+  extends WebPlugin
+  implements CapacitorAudioEnginePlugin
+{
   /**
    * Reset the current live recording session.
    * @platform web Not supported
    */
   async resetRecording(): Promise<void> {
     console.warn(
-      'resetRecording is not supported on web platform. For web implementation, consider using MediaRecorder or WebAudio directly.',
+      "resetRecording is not supported on web platform. For web implementation, consider using MediaRecorder or WebAudio directly."
     );
-    throw new Error('resetRecording is not supported on web platform');
+    throw new Error("resetRecording is not supported on web platform");
   }
 
   /**
@@ -49,7 +52,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async checkPermissions(): Promise<PermissionStatusResults> {
     console.warn(
-      'checkPermissions is not fully supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
+      "checkPermissions is not fully supported on web platform. For web implementation, consider using navigator.permissions.query API directly."
     );
 
     return {
@@ -65,7 +68,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async checkPermissionMicrophone(): Promise<PermissionStatusResults> {
     console.warn(
-      'checkPermissionMicrophone is not fully supported on web platform. For web implementation, consider using navigator.permissions.query API directly.',
+      "checkPermissionMicrophone is not fully supported on web platform. For web implementation, consider using navigator.permissions.query API directly."
     );
 
     return {
@@ -81,7 +84,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async checkPermissionNotifications(): Promise<PermissionStatusResults> {
     console.warn(
-      'checkPermissionNotifications is not fully supported on web platform. Notifications not applicable for web audio recording.',
+      "checkPermissionNotifications is not fully supported on web platform. Notifications not applicable for web audio recording."
     );
 
     return {
@@ -96,10 +99,12 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with detailed permission status
    * @platform web Returns unsupported status for all permissions
    */
-  async requestPermissions(_options?: PermissionRequestOptions): Promise<PermissionStatusResults> {
+  async requestPermissions(
+    _options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'requestPermissions is not fully supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
+      "requestPermissions is not fully supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly."
     );
 
     return this.checkPermissions();
@@ -111,10 +116,12 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with microphone permission status
    * @platform web Returns unsupported status
    */
-  async requestPermissionMicrophone(_options?: PermissionRequestOptions): Promise<PermissionStatusResults> {
+  async requestPermissionMicrophone(
+    _options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'requestPermissionMicrophone is not fully supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly.',
+      "requestPermissionMicrophone is not fully supported on web platform. For web implementation, consider using navigator.mediaDevices.getUserMedia API directly."
     );
 
     return this.checkPermissionMicrophone();
@@ -126,10 +133,12 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with notification permission status
    * @platform web Returns unsupported status
    */
-  async requestPermissionNotifications(_options?: PermissionRequestOptions): Promise<PermissionStatusResults> {
+  async requestPermissionNotifications(
+    _options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'requestPermissionNotifications is not fully supported on web platform. For web implementation, consider using Notification.requestPermission API directly.',
+      "requestPermissionNotifications is not fully supported on web platform. For web implementation, consider using Notification.requestPermission API directly."
     );
 
     return this.checkPermissionNotifications();
@@ -144,10 +153,10 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async addListener<T extends AudioEventName>(
     eventName: T,
-    callback: (event: AudioEventMap[T]) => void,
+    callback: (event: AudioEventMap[T]) => void
   ): Promise<PluginListenerHandle> {
     console.warn(
-      `${eventName} event is not supported on web platform. Callback will not be invoked. For web implementation, consider using MediaRecorder events directly.`,
+      `${eventName} event is not supported on web platform. Callback will not be invoked. For web implementation, consider using MediaRecorder events directly.`
     );
     const handle = {
       remove: () => Promise.resolve(),
@@ -163,8 +172,8 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @platform web Not supported
    */
   async isMicrophoneBusy(): Promise<never> {
-    console.warn('isMicrophoneBusy is not supported on web platform.');
-    throw new Error('isMicrophoneBusy is not supported on web platform');
+    console.warn("isMicrophoneBusy is not supported on web platform.");
+    throw new Error("isMicrophoneBusy is not supported on web platform");
   }
 
   /**
@@ -173,8 +182,8 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @platform web Not supported
    */
   async getAvailableMicrophones(): Promise<never> {
-    console.warn('getAvailableMicrophones is not supported on web platform.');
-    throw new Error('getAvailableMicrophones is not supported on web platform');
+    console.warn("getAvailableMicrophones is not supported on web platform.");
+    throw new Error("getAvailableMicrophones is not supported on web platform");
   }
 
   /**
@@ -185,9 +194,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async switchMicrophone(options: { microphoneId: number }): Promise<never> {
     console.warn(
-      `switchMicrophone is not supported on web platform. Attempted to switch to microphone ID: ${options.microphoneId}`,
+      `switchMicrophone is not supported on web platform. Attempted to switch to microphone ID: ${options.microphoneId}`
     );
-    throw new Error('switchMicrophone is not supported on web platform');
+    throw new Error("switchMicrophone is not supported on web platform");
   }
 
   /**
@@ -196,7 +205,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @platform web Not supported
    */
   async removeAllListeners(): Promise<void> {
-    console.warn('removeAllListeners is not supported on web platform.');
+    console.warn("removeAllListeners is not supported on web platform.");
   }
 
   /**
@@ -204,9 +213,11 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with configuration result
    * @platform web Not supported
    */
-  async configureWaveform(options?: { EmissionInterval?: number }): Promise<WaveLevelConfigurationResult> {
+  async configureWaveform(options?: {
+    EmissionInterval?: number;
+  }): Promise<WaveLevelConfigurationResult> {
     console.warn(
-      'configureWaveform is not supported on web platform. Waveform data is not available for web recordings. Consider using MediaRecorder events and manual amplitude analysis.',
+      "configureWaveform is not supported on web platform. Waveform data is not available for web recordings. Consider using MediaRecorder events and manual amplitude analysis."
     );
 
     // Build unified response structure
@@ -224,7 +235,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @platform web Not supported
    */
   async destroyWaveform(): Promise<void> {
-    console.warn('destroyWaveform is not supported on web platform. No waveform resources to clean up.');
+    console.warn(
+      "destroyWaveform is not supported on web platform. No waveform resources to clean up."
+    );
   }
 
   // ==================== AUDIO PLAYBACK METHODS ====================
@@ -235,10 +248,12 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @returns Promise that resolves with preload results for each track including load status, mimetype, duration, and file size
    * @platform web Not supported
    */
-  async preloadTracks(options: PreloadTracksOptions): Promise<PreloadTracksResult> {
+  async preloadTracks(
+    options: PreloadTracksOptions
+  ): Promise<PreloadTracksResult> {
     void options; // Parameter for API compatibility
     console.warn(
-      'preloadTracks is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "preloadTracks is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
 
     // Return empty results for each track URL with loaded=false
@@ -247,7 +262,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
       loaded: false,
       duration: 0,
       size: 0,
-      mimeType: 'unknown',
+      mimeType: "unknown",
     }));
 
     return { tracks };
@@ -262,9 +277,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async playTrack(_options?: { url?: string }): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'playAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "playAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('playAudio is not supported on web platform');
+    throw new Error("playAudio is not supported on web platform");
   }
 
   /**
@@ -276,9 +291,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async pauseTrack(_options?: { url?: string }): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'pauseAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "pauseAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('pauseAudio is not supported on web platform');
+    throw new Error("pauseAudio is not supported on web platform");
   }
 
   /**
@@ -290,9 +305,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async resumeTrack(_options?: { url?: string }): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'resumeAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "resumeAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('resumeAudio is not supported on web platform');
+    throw new Error("resumeAudio is not supported on web platform");
   }
 
   /**
@@ -304,9 +319,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async stopTrack(_options?: { url?: string }): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'stopAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "stopAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('stopAudio is not supported on web platform');
+    throw new Error("stopAudio is not supported on web platform");
   }
 
   /**
@@ -318,9 +333,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async seekTrack(_options: SeekTrackOptions): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'seekAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "seekAudio is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('seekAudio is not supported on web platform');
+    throw new Error("seekAudio is not supported on web platform");
   }
 
   /**
@@ -330,9 +345,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async skipToNext(): Promise<void> {
     console.warn(
-      'skipToNext is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "skipToNext is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('skipToNext is not supported on web platform');
+    throw new Error("skipToNext is not supported on web platform");
   }
 
   /**
@@ -342,9 +357,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async skipToPrevious(): Promise<void> {
     console.warn(
-      'skipToPrevious is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "skipToPrevious is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('skipToPrevious is not supported on web platform');
+    throw new Error("skipToPrevious is not supported on web platform");
   }
 
   /**
@@ -356,9 +371,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async skipToIndex(_options: SkipToIndexTrackOptions): Promise<void> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'skipToIndex is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "skipToIndex is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('skipToIndex is not supported on web platform');
+    throw new Error("skipToIndex is not supported on web platform");
   }
 
   /**
@@ -368,9 +383,9 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async getPlaybackInfo(): Promise<PlaybackInfo> {
     console.warn(
-      'getPlaybackInfo is not supported on web platform. For web implementation, consider using HTML5 Audio API directly.',
+      "getPlaybackInfo is not supported on web platform. For web implementation, consider using HTML5 Audio API directly."
     );
-    throw new Error('getPlaybackInfo is not supported on web platform');
+    throw new Error("getPlaybackInfo is not supported on web platform");
   }
 
   /**
@@ -380,7 +395,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    */
   async destroyPlayback(): Promise<void> {
     // No-op on web - browser handles cleanup automatically
-    console.log('destroyPlayback called on web (no-op)');
+    console.log("destroyPlayback called on web (no-op)");
   }
 
   /**
@@ -389,63 +404,67 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
    * @platform web Shows alert with instructions to manually open browser settings for permissions
    */
   async openSettings(): Promise<void> {
-    console.warn('openSettings is not fully supported on web platform. Showing alert with instructions.');
+    console.warn(
+      "openSettings is not fully supported on web platform. Showing alert with instructions."
+    );
 
     const message =
-      'To manage app permissions:\n\n' +
+      "To manage app permissions:\n\n" +
       "1. Click the lock icon in your browser's address bar\n" +
       '2. Select "Site settings" or "Permissions"\n' +
-      '3. Adjust microphone and other permissions as needed\n\n' +
-      'Or access browser settings directly through the browser menu.';
+      "3. Adjust microphone and other permissions as needed\n\n" +
+      "Or access browser settings directly through the browser menu.";
 
     alert(message);
   }
 
   async startRecording(_options: { path: string }): Promise<{ uri: string }> {
     void _options; // Parameter for API compatibility
-    console.warn('startRecording is not supported on web platform.');
-    return { uri: '' };
+    console.warn("startRecording is not supported on web platform.");
+    return { uri: "" };
   }
 
   async stopRecording(): Promise<AudioFileInfo> {
-    console.warn('stopRecording is not supported on web platform.');
-    throw new Error('stopRecording is not supported on web platform');
+    console.warn("stopRecording is not supported on web platform.");
+    throw new Error("stopRecording is not supported on web platform");
   }
 
   async pauseRecording(): Promise<void> {
-    console.warn('pauseRecording is not supported on web platform.');
-    throw new Error('pauseRecording is not supported on web platform');
+    console.warn("pauseRecording is not supported on web platform.");
+    throw new Error("pauseRecording is not supported on web platform");
   }
 
   async resumeRecording(): Promise<void> {
-    console.warn('resumeRecording is not supported on web platform.');
-    throw new Error('resumeRecording is not supported on web platform');
+    console.warn("resumeRecording is not supported on web platform.");
+    throw new Error("resumeRecording is not supported on web platform");
   }
 
   async getRecordingStatus(): Promise<RecordingStatusInfo> {
-    console.warn('getRecordingStatus is not supported on web platform.');
-    throw new Error('getRecordingStatus is not supported on web platform');
+    console.warn("getRecordingStatus is not supported on web platform.");
+    throw new Error("getRecordingStatus is not supported on web platform");
   }
 
   async trimAudio(_options: TrimTrackOptions): Promise<AudioFileInfo> {
     void _options; // Parameter for API compatibility
     console.warn(
-      'trimAudio is not fully supported on web platform. Consider using Web Audio API for client-side audio processing.',
+      "trimAudio is not fully supported on web platform. Consider using Web Audio API for client-side audio processing."
     );
-    throw new Error('trimAudio is not supported on web platform');
+    throw new Error("trimAudio is not supported on web platform");
   }
 
   async getAudioInfo(): Promise<AudioFileInfo> {
-    console.warn('getAudioInfo is not supported on web platform.');
-    throw new Error('getAudioInfo is not supported on web platform');
+    console.warn("getAudioInfo is not supported on web platform.");
+    throw new Error("getAudioInfo is not supported on web platform");
   }
 
   async micAvailable(): Promise<MicAvailableResult> {
     try {
       // Try to enumerate media devices if available
-      if ('enumerateDevices' in navigator.mediaDevices) {
+      if ("enumerateDevices" in navigator.mediaDevices) {
         const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioInputs = devices.filter((device) => device.kind === 'audioinput');
+        const audioInputs = devices.filter(
+          (device) => device.kind === "audioinput"
+        );
 
         return {
           isAvailable: audioInputs.length > 0,
@@ -453,12 +472,14 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
       }
 
       // Fallback if API not available
-      console.warn('navigator.mediaDevices.enumerateDevices is not available on this browser.');
+      console.warn(
+        "navigator.mediaDevices.enumerateDevices is not available on this browser."
+      );
       return {
         isAvailable: false,
       };
     } catch (error) {
-      console.error('Error checking microphone availability:', error);
+      console.error("Error checking microphone availability:", error);
       return {
         isAvailable: false,
       };

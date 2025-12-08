@@ -1,44 +1,47 @@
-import type { PluginListenerHandle } from '@capacitor/core';
+import type { PluginListenerHandle } from "@capacitor/core";
 
-export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused';
+export type PlaybackStatus = "idle" | "loading" | "playing" | "paused";
 
 // Permission Status Enums
 export enum PermissionStatus {
   /** Permission granted permanently */
-  GRANTED = 'granted',
+  GRANTED = "granted",
   /** Permission denied permanently */
-  DENIED = 'denied',
+  DENIED = "denied",
   /** Permission denied permanently with "Don't ask again" (Android) */
-  DENIED_PERMANENTLY = 'denied_permanently',
+  DENIED_PERMANENTLY = "denied_permanently",
   /** Permission not yet requested from user */
-  NOT_DETERMINED = 'not_determined',
+  NOT_DETERMINED = "not_determined",
   /** Permission granted only for current session (iOS 14+) */
-  LIMITED = 'limited',
+  LIMITED = "limited",
   /** Permission restricted by device policy/parental controls */
-  RESTRICTED = 'restricted',
+  RESTRICTED = "restricted",
   /** Permission request in progress */
-  REQUESTING = 'requesting',
+  REQUESTING = "requesting",
   /** Permission unsupported on current platform/version */
-  UNSUPPORTED = 'unsupported',
+  UNSUPPORTED = "unsupported",
 }
 
 export enum AudioPermissionType {
   /** Microphone recording permission */
-  MICROPHONE = 'microphone',
+  MICROPHONE = "microphone",
   /** Background notification permission */
-  NOTIFICATIONS = 'notifications',
+  NOTIFICATIONS = "notifications",
 }
 
 export type AudioRecordingEventName =
-  | 'durationChange'
-  | 'error'
-  | 'waveLevel'
-  | 'waveLevelInit'
-  | 'waveLevelDestroy'
-  | 'waveLevelError'
-  | 'permissionStatusChanged'
-  | 'recordingStatusChanged';
-export type AudioPlaybackEventName = 'playbackStatusChanged' | 'playbackError' | 'playbackProgress';
+  | "durationChange"
+  | "error"
+  | "waveLevel"
+  | "waveLevelInit"
+  | "waveLevelDestroy"
+  | "waveLevelError"
+  | "permissionStatusChanged"
+  | "recordingStatusChanged";
+export type AudioPlaybackEventName =
+  | "playbackStatusChanged"
+  | "playbackError"
+  | "playbackProgress";
 export type AudioEventName = AudioRecordingEventName | AudioPlaybackEventName;
 
 export interface AudioRecordingEvent<T = any> {
@@ -286,7 +289,7 @@ export interface PermissionRequestOptions {
   forceRequest?: boolean;
 }
 
-export type RecordingStatus = 'recording' | 'paused' | 'stopped' | 'idle';
+export type RecordingStatus = "recording" | "paused" | "stopped" | "idle";
 
 export interface RecordingStatusChangedData {
   status: RecordingStatus;
@@ -352,7 +355,9 @@ export interface CapacitorAudioEnginePlugin {
    * @platform android Uses ActivityCompat.requestPermissions with detailed status handling
    * @platform ios Uses AVAudioSession.requestRecordPermission and UNUserNotificationCenter with detailed status handling
    */
-  requestPermissions(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
+  requestPermissions(
+    options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults>;
 
   /**
    * Request microphone permission only.
@@ -362,7 +367,9 @@ export interface CapacitorAudioEnginePlugin {
    * @platform android Uses ActivityCompat.requestPermissions for RECORD_AUDIO
    * @platform ios Uses AVAudioSession.requestRecordPermission
    */
-  requestPermissionMicrophone(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
+  requestPermissionMicrophone(
+    options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults>;
 
   /**
    * Request notification permission only.
@@ -372,7 +379,9 @@ export interface CapacitorAudioEnginePlugin {
    * @platform android Uses ActivityCompat.requestPermissions for POST_NOTIFICATIONS (Android 13+)
    * @platform ios Uses UNUserNotificationCenter.requestAuthorization
    */
-  requestPermissionNotifications(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
+  requestPermissionNotifications(
+    options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults>;
 
   // Recording APIs removed (recording-only)
 
@@ -424,7 +433,7 @@ export interface CapacitorAudioEnginePlugin {
    */
   addListener<T extends AudioEventName>(
     eventName: T,
-    callback: (event: AudioEventMap[T]) => void,
+    callback: (event: AudioEventMap[T]) => void
   ): Promise<PluginListenerHandle>;
 
   /**
@@ -477,7 +486,9 @@ export interface CapacitorAudioEnginePlugin {
    * await CapacitorAudioEngine.configureWaveform({ EmissionInterval: 200 });
    * ```
    */
-  configureWaveform(options?: { EmissionInterval?: number }): Promise<WaveLevelConfigurationResult>;
+  configureWaveform(options?: {
+    EmissionInterval?: number;
+  }): Promise<WaveLevelConfigurationResult>;
 
   /**
    * Destroy wave level configuration and clean up resources.

@@ -26,6 +26,7 @@ public class PermissionManagerService {
 
     public interface PermissionServiceCallback {
         void requestPermission(String alias, PluginCall call, String callbackMethod);
+
         boolean shouldShowRequestPermissionRationale(String permission);
     }
 
@@ -70,7 +71,7 @@ public class PermissionManagerService {
         result.put("notifications", notifResult);
 
         Log.d(TAG, "Permission check - Mic: " + micStatus + ", Notif: " + notifStatus +
-                   ", Overall: " + (micGranted && notifGranted));
+                ", Overall: " + (micGranted && notifGranted));
 
         return result;
     }

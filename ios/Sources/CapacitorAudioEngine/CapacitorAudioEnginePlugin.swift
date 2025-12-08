@@ -177,12 +177,29 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
     @objc func checkPermissionMicrophone(_ call: CAPPluginCall) {
         Task {
             let result = await permissionService.checkPermissionMicrophone()
+            let result = await permissionService.checkPermissions()
             await MainActor.run {
                 call.resolve(result)
             }
         }
     }
 
+    @objc func checkPermissionMicrophone(_ call: CAPPluginCall) {
+        Task {
+            let result = await permissionService.checkPermissionMicrophone()
+            await MainActor.run {
+                call.resolve(result)
+                call.resolve(result)
+            }
+        }
+    }
+
+    @objc func checkPermissionNotifications(_ call: CAPPluginCall) {
+        Task {
+            let result = await permissionService.checkPermissionNotifications()
+            await MainActor.run {
+                call.resolve(result)
+            }
     @objc func checkPermissionNotifications(_ call: CAPPluginCall) {
         Task {
             let result = await permissionService.checkPermissionNotifications()
