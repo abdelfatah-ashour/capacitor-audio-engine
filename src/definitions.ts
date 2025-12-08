@@ -1,51 +1,47 @@
-import type { PluginListenerHandle } from '@capacitor/core';
+import type { PluginListenerHandle } from "@capacitor/core";
 
-export type RecordingStatus = 'idle' | 'recording' | 'paused';
-export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
+export type PlaybackStatus = "idle" | "loading" | "playing" | "paused";
 
 // Permission Status Enums
 export enum PermissionStatus {
   /** Permission granted permanently */
-  GRANTED = 'granted',
+  GRANTED = "granted",
   /** Permission denied permanently */
-  DENIED = 'denied',
+  DENIED = "denied",
   /** Permission denied permanently with "Don't ask again" (Android) */
-  DENIED_PERMANENTLY = 'denied_permanently',
+  DENIED_PERMANENTLY = "denied_permanently",
   /** Permission not yet requested from user */
-  NOT_DETERMINED = 'not_determined',
+  NOT_DETERMINED = "not_determined",
   /** Permission granted only for current session (iOS 14+) */
-  LIMITED = 'limited',
+  LIMITED = "limited",
   /** Permission restricted by device policy/parental controls */
-  RESTRICTED = 'restricted',
+  RESTRICTED = "restricted",
   /** Permission request in progress */
-  REQUESTING = 'requesting',
+  REQUESTING = "requesting",
   /** Permission unsupported on current platform/version */
-  UNSUPPORTED = 'unsupported',
+  UNSUPPORTED = "unsupported",
 }
 
 export enum AudioPermissionType {
   /** Microphone recording permission */
-  MICROPHONE = 'microphone',
+  MICROPHONE = "microphone",
   /** Background notification permission */
-  NOTIFICATIONS = 'notifications',
+  NOTIFICATIONS = "notifications",
 }
 
 export type AudioRecordingEventName =
-  | 'durationChange'
-  | 'error'
-  | 'waveLevel'
-  | 'waveLevelInit'
-  | 'waveLevelDestroy'
-  | 'waveLevelError'
-  | 'permissionStatusChanged';
+  | "durationChange"
+  | "error"
+  | "waveLevel"
+  | "waveLevelInit"
+  | "waveLevelDestroy"
+  | "waveLevelError"
+  | "permissionStatusChanged"
+  | "recordingStatusChanged";
 export type AudioPlaybackEventName =
-  | 'trackChanged'
-  | 'trackEnded'
-  | 'playbackStarted'
-  | 'playbackPaused'
-  | 'playbackError'
-  | 'playbackProgress'
-  | 'playbackStatusChanged';
+  | "playbackStatusChanged"
+  | "playbackError"
+  | "playbackProgress";
 export type AudioEventName = AudioRecordingEventName | AudioPlaybackEventName;
 
 export interface AudioRecordingEvent<T = any> {
@@ -66,16 +62,19 @@ export type AudioRecordingEventMap = {
   waveLevelDestroy: WaveLevelDestroyData;
   waveLevelError: ErrorEventData;
   permissionStatusChanged: PermissionStatusChangedData;
+  recordingStatusChanged: RecordingStatusChangedData;
 };
 
+export interface PlaybackStatusChangedData {
+  status: PlaybackStatus;
+  url: string;
+  position: number;
+}
+
 export type AudioPlaybackEventMap = {
-  trackChanged: TrackChangedData;
-  trackEnded: TrackEndedData;
-  playbackStarted: PlaybackStartedData;
-  playbackPaused: PlaybackPausedData;
-  playbackError: ErrorEventData;
-  playbackProgress: PlaybackProgressData;
   playbackStatusChanged: PlaybackStatusChangedData;
+  playbackError: PlaybackErrorData;
+  playbackProgress: PlaybackProgressData;
 };
 
 export type AudioEventMap = AudioRecordingEventMap & AudioPlaybackEventMap;
@@ -113,118 +112,40 @@ export interface PermissionStatusChangedData {
   message?: string;
 }
 
-export interface AudioTrack {
-  id: string;
-  url: string;
-  title?: string;
-  artist?: string;
-  artworkUrl?: string;
-}
-
-export interface TrackChangedData {
-  track: AudioTrack;
-  index: number;
-}
-
-export interface TrackEndedData {
-  track: AudioTrack;
-  index: number;
-}
+// Simplified playback event data structures
 
 export interface PlaybackStartedData {
-  track: AudioTrack;
-  index: number;
+  trackId: string;
+  url: string;
 }
 
 export interface PlaybackPausedData {
-  track: AudioTrack;
-  index: number;
+  trackId: string;
+  url: string;
   position: number;
 }
 
+export interface PlaybackStoppedData {
+  trackId: string;
+  url: string;
+}
+
+export interface PlaybackCompletedData {
+  trackId: string;
+  url: string;
+}
+
+export interface PlaybackErrorData {
+  trackId: string;
+  message: string;
+}
+
 export interface PlaybackProgressData {
-  track: AudioTrack;
-  index: number;
+  trackId: string;
+  url: string;
   currentPosition: number;
   duration: number;
   isPlaying: boolean;
-}
-
-export interface PlaybackStatusChangedData {
-  track: AudioTrack | null;
-  index: number;
-  status: PlaybackStatus;
-  currentPosition: number;
-  duration: number;
-  isPlaying: boolean;
-}
-
-// Recording Configuration Enums
-export enum AudioSampleRate {
-  /** Low quality - 8kHz for voice recording */
-  VOICE_8K = 8000,
-  /** Voice quality - 16kHz for speech */
-  VOICE_16K = 16000,
-  /** Standard quality - 22.05kHz (default optimized) */
-  STANDARD_22K = 22050,
-  /** CD quality - 44.1kHz */
-  CD_44K = 44100,
-  /** High quality - 48kHz */
-  HIGH_48K = 48000,
-}
-
-export enum AudioChannels {
-  /** Mono - single channel */
-  MONO = 1,
-  /** Stereo - two channels */
-  STEREO = 2,
-}
-
-export enum AudioBitrate {
-  /** Very low bitrate - 16kbps for voice notes */
-  VERY_LOW = 16000,
-  /** Low bitrate - 32kbps for voice recording */
-  LOW = 32000,
-  /** Medium bitrate - 64kbps (default optimized) */
-  MEDIUM = 64000,
-  /** High bitrate - 128kbps for music */
-  HIGH = 128000,
-  /** Very high bitrate - 256kbps for high quality */
-  VERY_HIGH = 256000,
-}
-
-export interface RecordingOptions {
-  /**
-   * Audio sample rate (Hz). Default: AudioSampleRate.STANDARD_22K (optimized for smaller file sizes)
-   */
-  sampleRate?: AudioSampleRate | number;
-  /**
-   * Number of audio channels. Default: AudioChannels.MONO
-   */
-  channels?: AudioChannels | number;
-  /**
-   * Audio bitrate (bps). Default: AudioBitrate.MEDIUM (optimized for smaller file sizes)
-   */
-  bitrate?: AudioBitrate | number;
-
-  /**
-   * Maximum recording duration in seconds.
-   * When set, enables segment rolling mode:
-   * - Records in multi-minute segments (2–5 minutes each, default 5 minutes)
-   * - Maintains a rolling buffer based on the specified max duration
-   * - Automatically finalizes prior segments; stop only closes the current segment for minimal latency
-   * If not set, segment rolling still improves performance by recording in segments, and the final file will include the full session.
-   */
-  maxDuration?: number;
-  /**
-   * Note: The audio format is always .m4a (MPEG-4/AAC) on all platforms.
-   *
-   * Enhanced Recording Features:
-   * - Automatic segment rolling (multi-minute segments, default 5 minutes) for improved reliability and minimal stop latency
-   * - Rolling window retention based on maxDuration for efficient memory usage
-   * - Automatic segment merging when needed (most stops only close the current segment)
-   * - Better handling of long recording sessions and interruptions
-   */
 }
 
 export interface AudioFileInfo {
@@ -241,32 +162,7 @@ export interface AudioFileInfo {
   filename: string;
 }
 
-export interface MicrophoneInfo {
-  id: number;
-  name: string;
-  type: 'internal' | 'external' | 'unknown';
-  description?: string;
-  uid?: string; // iOS only
-  isConnected?: boolean; // Android only
-}
-
-export interface MicrophoneStatusResult {
-  busy: boolean;
-  reason?: string;
-}
-
-export interface AvailableMicrophonesResult {
-  microphones: MicrophoneInfo[];
-}
-
-export interface SwitchMicrophoneOptions {
-  microphoneId: number;
-}
-
-export interface SwitchMicrophoneResult {
-  success: boolean;
-  microphoneId: number;
-}
+// Microphone utilities removed (recording-only)
 
 // Wave Level Configuration Enums
 export enum WaveLevelEmissionInterval {
@@ -302,15 +198,14 @@ export interface WaveLevelConfigurationResult {
 
 export interface PreloadTracksOptions {
   tracks: string[];
-  preloadNext?: boolean;
 }
 
 export interface PreloadedTrackInfo {
   url: string;
   loaded: boolean;
-  mimeType?: string;
-  duration?: number;
-  size?: number;
+  mimeType: string;
+  duration: number;
+  size: number;
 }
 
 export interface PreloadTracksResult {
@@ -318,78 +213,71 @@ export interface PreloadTracksResult {
 }
 
 export interface PlaybackInfo {
-  currentTrack: AudioTrack | null;
+  currentTrack: {
+    id: string;
+    url: string;
+  } | null;
   currentIndex: number;
   currentPosition: number;
   duration: number;
   isPlaying: boolean;
-  status: PlaybackStatus;
 }
 
-export interface SeekOptions {
+export interface SeekTrackOptions {
   seconds: number;
   url?: string;
 }
 
-export interface PlayAudioOptions {
+export interface PlayTrackOptions {
   url?: string;
 }
 
-export interface PauseAudioOptions {
+export interface PauseTrackOptions {
   url?: string;
 }
 
-export interface ResumeAudioOptions {
+export interface ResumeTrackOptions {
   url?: string;
 }
 
-export interface StopAudioOptions {
+export interface StopTrackOptions {
   url?: string;
 }
 
-export interface SkipToIndexOptions {
+export interface SkipToIndexTrackOptions {
   index: number;
 }
 
-export interface PermissionResult {
-  permissionType: AudioPermissionType;
-  status: PermissionStatus;
-  message?: string;
-  canRequestAgain?: boolean;
+export interface TrimTrackOptions {
+  /** URI or file path of the audio file to trim */
+  uri: string;
+  /** Start time in seconds */
+  startTime: number;
+  /** End time in seconds */
+  endTime: number;
+}
+
+export interface TrimAudioResult {
+  /** URI of the trimmed audio file */
+  uri: string;
+  /** Path of the trimmed audio file */
+  path: string;
+  /** Duration of the trimmed audio in seconds */
+  duration: number;
 }
 
 export interface PermissionStatusResults {
   /** Overall permission status - granted only if all required permissions are granted */
   granted: boolean;
-  /** Detailed status for microphone permission */
-  microphone: PermissionResult;
-  /** Detailed status for notification permission */
-  notifications: PermissionResult;
-  /** Additional platform-specific information */
-  platformInfo?: {
-    /** iOS: Whether user can be prompted again for permissions */
-    canPromptAgain?: boolean;
-    /** Android: API level information for permission behavior */
-    androidApiLevel?: number;
-  };
+  /** Overall permission status */
+  status: PermissionStatus;
 }
 
-export interface SinglePermissionStatus {
+export interface CheckPermissionResults {
   /** Permission type being checked */
   permissionType: AudioPermissionType;
   /** Current permission status */
   status: PermissionStatus;
-  /** Human-readable message about the permission status */
-  message?: string;
-  /** Whether the permission can be requested again */
-  canRequestAgain?: boolean;
-  /** Additional platform-specific information */
-  platformInfo?: {
-    /** iOS: Whether user can be prompted again for this permission */
-    canPromptAgain?: boolean;
-    /** Android: API level information for permission behavior */
-    androidApiLevel?: number;
-  };
 }
 
 export interface PermissionRequestOptions {
@@ -401,6 +289,23 @@ export interface PermissionRequestOptions {
   forceRequest?: boolean;
 }
 
+export type RecordingStatus = "recording" | "paused" | "stopped" | "idle";
+
+export interface RecordingStatusChangedData {
+  status: RecordingStatus;
+}
+
+export interface RecordingStatusInfo {
+  status: RecordingStatus;
+  duration: number;
+  path?: string;
+}
+
+export interface MicAvailableResult {
+  /** Whether microphone is available for recording (not busy/in use by another app) */
+  isAvailable: boolean;
+}
+
 /**
  * Interface for the Native Audio Plugin that provides audio recording capabilities.
  *
@@ -410,45 +315,37 @@ export interface PermissionRequestOptions {
  * - iOS: Uses AVAudioRecorder with AAC format in M4A container for recording
  *
  * Common settings across platforms:
- * - Sample Rate: 44.1kHz
+ * - Sample Rate: 48kHzkHz
  * - Channels: 1 (mono)
  * - Bitrate: 128kbps
  */
 export interface CapacitorAudioEnginePlugin {
   /**
-   * Test method to verify plugin functionality.
-   * @param options - Echo options
-   * @param options.value - String value to echo back
-   * @returns Promise that resolves with the echoed value
-   */
-  echo(options: { value: string }): Promise<{ value: string }>;
-
-  /**
-   * Check permission status with detailed information for each permission type.
-   * @returns Promise that resolves with detailed permission status including granular information
+   * Check permission status with simplified result.
+   * @returns Promise that resolves with simplified permission status including granted boolean and overall status
    * @platform web Returns unsupported status for all permissions
-   * @platform android Uses ContextCompat.checkSelfPermission with detailed status mapping
-   * @platform ios Uses AVAudioSession.recordPermission and UNUserNotificationCenter with detailed status mapping
+   * @platform android Uses ContextCompat.checkSelfPermission with simplified status mapping
+   * @platform ios Uses AVAudioSession.recordPermission and UNUserNotificationCenter with simplified status mapping
    */
   checkPermissions(): Promise<PermissionStatusResults>;
 
   /**
-   * Check microphone permission status with detailed information.
-   * @returns Promise that resolves with detailed microphone permission status
+   * Check microphone permission status with simplified information.
+   * @returns Promise that resolves with simplified microphone permission status
    * @platform web Returns unsupported status
    * @platform android Uses ContextCompat.checkSelfPermission for RECORD_AUDIO
-   * @platform ios Uses AVAudioSession.recordPermission with detailed status mapping
+   * @platform ios Uses AVAudioSession.recordPermission with simplified status mapping
    */
-  checkPermissionMicrophone(): Promise<SinglePermissionStatus>;
+  checkPermissionMicrophone(): Promise<PermissionStatusResults>;
 
   /**
-   * Check notification permission status with detailed information.
-   * @returns Promise that resolves with detailed notification permission status
+   * Check notification permission status with simplified information.
+   * @returns Promise that resolves with simplified notification permission status
    * @platform web Returns unsupported status
    * @platform android Uses ContextCompat.checkSelfPermission for POST_NOTIFICATIONS (Android 13+)
-   * @platform ios Uses UNUserNotificationCenter with detailed status mapping
+   * @platform ios Uses UNUserNotificationCenter with simplified status mapping
    */
-  checkPermissionNotifications(): Promise<SinglePermissionStatus>;
+  checkPermissionNotifications(): Promise<PermissionStatusResults>;
 
   /**
    * Request permissions with detailed options and status information.
@@ -458,97 +355,55 @@ export interface CapacitorAudioEnginePlugin {
    * @platform android Uses ActivityCompat.requestPermissions with detailed status handling
    * @platform ios Uses AVAudioSession.requestRecordPermission and UNUserNotificationCenter with detailed status handling
    */
-  requestDetailedPermissions(options?: PermissionRequestOptions): Promise<PermissionStatusResults>;
+  requestPermissions(
+    options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults>;
 
   /**
-   * Start recording audio from the device's microphone.
-   * @param options - Recording options
-   * @returns Promise that resolves when recording starts successfully
-   * @throws {Error} If recording is already in progress
-   * @throws {Error} If microphone permission is not granted
-   * @throws {Error} If audio session setup fails
-   * @platform web Uses MediaRecorder API
-   * @platform android Uses MediaRecorder
-   * @platform ios Uses AVAudioRecorder
+   * Request microphone permission only.
+   * @param options - Permission request options
+   * @returns Promise that resolves with microphone permission status
+   * @platform web Returns unsupported status
+   * @platform android Uses ActivityCompat.requestPermissions for RECORD_AUDIO
+   * @platform ios Uses AVAudioSession.requestRecordPermission
    */
-  startRecording(options?: RecordingOptions): Promise<void>;
+  requestPermissionMicrophone(
+    options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults>;
 
   /**
-   * Pause the current recording.
-   * @returns Promise that resolves when recording is paused successfully
-   * @throws {Error} If no active recording exists or if recording is already paused
-   * @platform web Uses MediaRecorder.pause()
-   * @platform android Uses MediaRecorder.pause() (Android N/API 24+ only)
-   * @platform ios Uses AVAudioRecorder.pause()
+   * Request notification permission only.
+   * @param options - Permission request options
+   * @returns Promise that resolves with notification permission status
+   * @platform web Returns unsupported status
+   * @platform android Uses ActivityCompat.requestPermissions for POST_NOTIFICATIONS (Android 13+)
+   * @platform ios Uses UNUserNotificationCenter.requestAuthorization
    */
-  pauseRecording(): Promise<void>;
+  requestPermissionNotifications(
+    options?: PermissionRequestOptions
+  ): Promise<PermissionStatusResults>;
+
+  // Recording APIs removed (recording-only)
 
   /**
-   * Resume the current recording if it was previously paused.
-   * @returns Promise that resolves when recording is resumed successfully
-   * @throws {Error} If no active recording exists or if recording is not paused
-   * @platform web Uses MediaRecorder.resume()
-   * @platform android Uses MediaRecorder.resume() (Android N/API 24+ only)
-   * @platform ios Uses AVAudioRecorder.record()
-   */
-  resumeRecording(): Promise<void>;
-
-  /**
-   * Reset the current recording session without finalizing a file.
+   * Reset the current live recording session without finalizing a file.
    * Behavior:
-   * - Discards the current recording (segments are cleared)
-   * - Discards current duration and waveform data
-   * - Keeps the previously configured recording settings for seamless resume
-   * - Leaves the session in paused state so resumeRecording() starts fresh
-   * @returns Promise that resolves when the session is reset
+   * - Discards the current recording output/file and internal writer state
+   * - Resets duration and waveform monitoring counters to 0
+   * - Keeps recording session resources configured but puts the recording in paused state
+   * - Allows `resumeRecording()` to continue recording fresh without re-calling `startRecording`
+   * @returns Promise that resolves when the recording is reset
    */
   resetRecording(): Promise<void>;
 
-  /**
-   * Stop the current recording and get the recorded file information.
-   * @returns Promise that resolves with the recorded audio file details
-   * @throws {Error} If no active recording exists
-   * @throws {Error} If file processing fails
-   */
-  stopRecording(): Promise<AudioFileInfo>;
+  // Recording file APIs removed (use getAudioInfo for existing files)
 
   /**
-   * Get the current recording duration.
-   * @returns Promise that resolves with the current duration in seconds
-   * @throws {Error} If no active recording exists
-   * @property {number} duration - Recording duration in seconds
-   * @platform web Not supported - returns 0
-   * @platform android Uses MediaRecorder.getMaxAmplitude()
-   * @platform ios Uses AVAudioRecorder.currentTime
+   * Get detailed audio file information for a given URI or file path.
+   * @param options - Object containing the file URI or path
+   * @returns Promise resolving with `AudioFileInfo`
    */
-  getDuration(): Promise<{ duration: number }>;
-
-  /**
-   * Get the current recording status.
-   * @returns Promise that resolves with the current recording status
-   * @property {RecordingStatus} status - The current state of the recorder
-   * @property {boolean} isRecording - True if the recording session is active
-   * @property {number} duration - The current recording duration in seconds
-   */
-  getStatus(): Promise<{
-    status: RecordingStatus;
-    isRecording: boolean;
-    duration: number;
-  }>;
-
-  /**
-   * Trim an audio file to the specified start and end times.
-   * @param options - Trim options
-   * @param options.uri - URI of the audio file to trim
-   * @param options.start - Start time in seconds
-   * @param options.end - End time in seconds
-   * @returns Promise that resolves with the trimmed audio file details
-   * @throws {Error} If file processing fails
-   * @platform web Not supported
-   * @platform android Uses MediaExtractor and MediaMuxer
-   * @platform ios Uses AVAssetExportSession
-   */
-  trimAudio(options: { uri: string; start: number; end: number }): Promise<AudioFileInfo>;
+  getAudioInfo(options: { uri: string }): Promise<AudioFileInfo>;
 
   /**
    * Add a listener for recording events
@@ -578,7 +433,7 @@ export interface CapacitorAudioEnginePlugin {
    */
   addListener<T extends AudioEventName>(
     eventName: T,
-    callback: (event: AudioEventMap[T]) => void,
+    callback: (event: AudioEventMap[T]) => void
   ): Promise<PluginListenerHandle>;
 
   /**
@@ -587,38 +442,7 @@ export interface CapacitorAudioEnginePlugin {
    */
   removeAllListeners(): Promise<void>;
 
-  /**
-   * Check if microphone is currently being used by another application.
-   * @returns Promise that resolves with microphone status
-   * @property {boolean} busy - Whether microphone is currently in use
-   * @platform web Not supported
-   * @platform android Uses AudioRecord to test microphone availability
-   * @platform ios Uses AVAudioSession to check audio state
-   */
-  isMicrophoneBusy(): Promise<MicrophoneStatusResult>;
-
-  /**
-   * Get list of available microphones (internal and external).
-   * @returns Promise that resolves with available microphones
-   * @property {MicrophoneInfo[]} microphones - Array of available microphones
-   * @platform web Not supported
-   * @platform android Uses AudioManager.getDevices() to enumerate audio inputs
-   * @platform ios Uses AVAudioSession.availableInputs to list audio inputs
-   */
-  getAvailableMicrophones(): Promise<AvailableMicrophonesResult>;
-
-  /**
-   * Switch between microphones while keeping recording active.
-   * @param options - Switch microphone options
-   * @param options.microphoneId - ID of the microphone to switch to
-   * @returns Promise that resolves with switch result
-   * @throws {Error} If microphone ID is invalid
-   * @throws {Error} If switching fails
-   * @platform web Not supported
-   * @platform android Uses AudioRecord.setPreferredDevice() to switch input
-   * @platform ios Uses AVAudioSession.setPreferredInput() to switch input
-   */
-  switchMicrophone(options: SwitchMicrophoneOptions): Promise<SwitchMicrophoneResult>;
+  // Microphone utilities removed
 
   /**
    * Configure wave level monitoring for real-time audio level emission.
@@ -662,7 +486,9 @@ export interface CapacitorAudioEnginePlugin {
    * await CapacitorAudioEngine.configureWaveform({ EmissionInterval: 200 });
    * ```
    */
-  configureWaveform(options?: { EmissionInterval?: number }): Promise<WaveLevelConfigurationResult>;
+  configureWaveform(options?: {
+    EmissionInterval?: number;
+  }): Promise<WaveLevelConfigurationResult>;
 
   /**
    * Destroy wave level configuration and clean up resources.
@@ -683,12 +509,12 @@ export interface CapacitorAudioEnginePlugin {
   // ==================== AUDIO PLAYBACK METHODS ====================
 
   /**
-   * Preload audio tracks from URLs and initialize playlist
-   * @param options - Preload options containing track URLs and preload settings
+   * Preload audio tracks from URLs for individual playback
+   * @param options - Preload options containing track URLs
    * @returns Promise that resolves with preload results for each track including load status, mimetype, duration, and file size
    * @platform web Uses HTML5 Audio API
-   * @platform android Uses ExoPlayer with ConcatenatingMediaSource
-   * @platform ios Uses AVQueuePlayer or AVPlayer with queue management
+   * @platform android Uses MediaPlayer for individual track management
+   * @platform ios Uses AVPlayer for individual track management
    */
   preloadTracks(options: PreloadTracksOptions): Promise<PreloadTracksResult>;
 
@@ -697,60 +523,99 @@ export interface CapacitorAudioEnginePlugin {
    * @param options - Optional playback options with URL to play specific preloaded track
    * @returns Promise that resolves when playback starts
    */
-  playAudio(options?: PlayAudioOptions): Promise<void>;
+  playTrack(options?: PlayTrackOptions): Promise<void>;
 
   /**
    * Pause audio playback for current track or specific preloaded track by URL
    * @param options - Optional pause options with URL to pause specific preloaded track
    * @returns Promise that resolves when playback is paused
    */
-  pauseAudio(options?: PauseAudioOptions): Promise<void>;
+  pauseTrack(options?: PauseTrackOptions): Promise<void>;
 
   /**
    * Resume audio playback from paused state for current track or specific preloaded track by URL
    * @param options - Optional resume options with URL to resume specific preloaded track
    * @returns Promise that resolves when playback resumes
    */
-  resumeAudio(options?: ResumeAudioOptions): Promise<void>;
+  resumeTrack(options?: ResumeTrackOptions): Promise<void>;
 
   /**
    * Stop audio playback and reset to beginning for current track or specific preloaded track by URL
    * @param options - Optional stop options with URL to stop specific preloaded track
    * @returns Promise that resolves when playback stops
    */
-  stopAudio(options?: StopAudioOptions): Promise<void>;
+  stopTrack(options?: StopTrackOptions): Promise<void>;
 
   /**
    * Seek to specific position in current track or specific preloaded track by URL
    * @param options - Seek options with time in seconds and optional URL for specific preloaded track
    * @returns Promise that resolves when seek completes
    */
-  seekAudio(options: SeekOptions): Promise<void>;
+  seekTrack(options: SeekTrackOptions): Promise<void>;
 
   /**
-   * Skip to next track in playlist
+   * Skip to next track in playlist (simplified - no-op for single track playback)
    * @returns Promise that resolves when skip completes
    */
   skipToNext(): Promise<void>;
 
   /**
-   * Skip to previous track in playlist
+   * Skip to previous track in playlist (simplified - no-op for single track playback)
    * @returns Promise that resolves when skip completes
    */
   skipToPrevious(): Promise<void>;
 
   /**
-   * Skip to specific track index in playlist
+   * Skip to specific track index in playlist (simplified - no-op for single track playback)
    * @param options - Options with target track index
    * @returns Promise that resolves when skip completes
    */
-  skipToIndex(options: SkipToIndexOptions): Promise<void>;
+  skipToIndex(options: SkipToIndexTrackOptions): Promise<void>;
 
   /**
    * Get current playback information
    * @returns Promise that resolves with current playback state
    */
   getPlaybackInfo(): Promise<PlaybackInfo>;
+
+  /**
+   * Destroy and reinitialize the playback manager
+   *
+   * **Use Case:** Call this method when switching away from the playback tab to completely
+   * clean up playback resources. This will:
+   * - Stop any active playback
+   * - Release all MediaPlayer instances
+   * - Clear all preloaded tracks
+   * - Abandon audio focus
+   * - Reinitialize a fresh PlaybackManager instance
+   *
+   * **Important:** After calling this method, you will need to:
+   * 1. Re-add event listeners for playback events
+   * 2. Re-preload tracks if needed
+   *
+   * @returns Promise that resolves when playback manager is destroyed and reinitialized
+   * @platform web No-op (browser handles cleanup automatically)
+   * @platform android Releases and recreates PlaybackManager
+   * @platform ios Releases and recreates AVPlayer instances
+   *
+   * @example
+   * ```typescript
+   * // When leaving playback tab
+   * async selectTab(tab: string) {
+   *   if (previousTab === 'playback' && tab !== 'playback') {
+   *     // Clean up playback resources
+   *     await CapacitorAudioEngine.destroyPlayback();
+   *   }
+   *
+   *   if (tab === 'playback') {
+   *     // Re-setup listeners and preload tracks
+   *     await this.setupPlaybackListeners();
+   *     await this.preloadTracks();
+   *   }
+   * }
+   * ```
+   */
+  destroyPlayback(): Promise<void>;
 
   /**
    * Navigate to the app's permission settings screen.
@@ -763,4 +628,84 @@ export interface CapacitorAudioEnginePlugin {
    * @platform ios Opens the app-specific settings page using UIApplication.openSettingsURLString, which navigates directly to Settings > [App Name] where users can manage app permissions and settings
    */
   openSettings(): Promise<void>;
+
+  /**
+   * Start live recording capture from microphone.
+   * @returns Promise that resolves with the recording URI
+   */
+  startRecording(options: { path: string }): Promise<{ uri: string }>;
+
+  /**
+   * Stop live recording capture and get file information.
+   * @returns Promise that resolves with complete audio file information
+   */
+  stopRecording(): Promise<AudioFileInfo>;
+
+  /**
+   * Manually pause live recording capture.
+   */
+  pauseRecording(): Promise<void>;
+
+  /**
+   * Manually resume live recording capture.
+   */
+  resumeRecording(): Promise<void>;
+
+  /**
+   * Get current recording status information including state, duration, and output path.
+   * @returns Promise that resolves with current recording status
+   */
+  getRecordingStatus(): Promise<RecordingStatusInfo>;
+
+  /**
+   * Trim an audio file to a specific time range.
+   * This method creates a new trimmed audio file from the original source file.
+   * The original file is not modified.
+   *
+   * @param options - Trim options containing file URI, start time, and end time in seconds
+   * @returns Promise that resolves with complete audio file information
+   * @throws {Error} If the file doesn't exist, times are invalid, or trimming fails
+   * @platform web Not fully supported - basic implementation using Web Audio API
+   * @platform android Uses MediaCodec and MediaMuxer for efficient audio trimming
+   * @platform ios Uses AVAssetExportSession for efficient audio trimming
+   *
+   * @example
+   * ```typescript
+   * // Trim audio file from 5 seconds to 30 seconds
+   * const result = await CapacitorAudioEngine.trimAudio({
+   *   uri: 'file:///path/to/audio.m4a',
+   *   startTime: 5.0,
+   *   endTime: 30.0
+   * });
+   * console.log('Trimmed file:', result.uri);
+   * console.log('Duration:', result.duration);
+   * ```
+   */
+  trimAudio(options: TrimTrackOptions): Promise<AudioFileInfo>;
+
+  /**
+   * Check if the microphone is available for recording.
+   * Returns whether the MIC audio source is ready to use
+   * (not currently in use by another app).
+   *
+   * @returns Promise that resolves with microphone availability information
+   * @platform web Not fully supported - basic implementation, cannot detect if mic is in use
+   * @platform android Android 10+: Uses getActiveRecordingConfigurations() to detect active recordings. Fallback: Tests AudioRecord by attempting to read audio data
+   * @platform ios Tests AVAudioEngine tap installation and checks for specific error codes (ResourceNotAvailable, InsufficientPriority)
+   *
+   * @example
+   * ```typescript
+   * const result = await CapacitorAudioEngine.micAvailable();
+   * console.log('MIC available:', result.isAvailable); // true if MIC exists and not in use by another app
+   *
+   * if (result.isAvailable) {
+   *   // MIC is ready to record
+   *   await CapacitorAudioEngine.startRecording({ path: 'recording.m4a' });
+   * } else {
+   *   // MIC is in use by another app
+   *   console.log('Microphone is busy');
+   * }
+   * ```
+   */
+  micAvailable(): Promise<MicAvailableResult>;
 }

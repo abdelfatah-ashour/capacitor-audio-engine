@@ -1,768 +1,997 @@
 import Foundation
-@preconcurrency import AVFoundation
-import Compression
+import AVFoundation
 
-/// Delegate protocol for RecordingManager events
 protocol RecordingManagerDelegate: AnyObject {
-    /// Called when recording duration updates (every second during recording)
-    /// - Parameter duration: Current recording duration in seconds
-    func recordingDidUpdateDuration(_ duration: Int)
-
-    /// Called when an error occurs during recording operations
-    /// - Parameter error: The error that occurred
+    func recordingDidChangeStatus(_ status: String)
     func recordingDidEncounterError(_ error: Error)
-
-    /// Called when recording finishes and file processing is complete
-    /// - Parameter info: Dictionary containing file information and metadata
-    func recordingDidFinish(_ info: [String: Any])
-
-    /// Called when recording state changes (recording, paused, stopped)
-    /// - Parameters:
-    ///   - state: The new recording state
-    ///   - data: Additional state information
-    func recordingDidChangeState(_ state: String, data: [String: Any])
+    func recordingDidUpdateDuration(_ duration: Double)
+    func recordingDidEmitWaveLevel(_ level: Double, timestamp: TimeInterval)
+    func recordingDidFinalize(_ path: String)
 }
 
-/**
- * RecordingManager handles audio recording operations with support for:
- * - Segment rolling for all recordings with automatic cleanup
- * - Asynchronous file processing to prevent UI blocking
- * - File processing and metadata generation
- * - Proper resource cleanup and error handling
- *
- * Performance characteristics:
- * - Non-blocking stopRecording() with async processing
- * - Automatic resource cleanup on deallocation
- * - Thread-safe operations using dedicated dispatch queue
- */
-class RecordingManager: NSObject {
-    /// Delegate for receiving recording events
-    weak var delegate: RecordingManagerDelegate?
+final class RecordingManager {
+    private let stateQueue = DispatchQueue(label: "audio-engine-recording-state", qos: .userInitiated)
 
-    // MARK: - Recording Properties
-
-    /// Audio session for recording configuration
-    private var recordingSession: AVAudioSession?
-
-    /// Current recording state
-    private var isRecording = false
-
-    /// Whether recording is currently paused
-    private var isPaused = false
-
-    /// Whether a reset operation is in progress (guards against race conditions)
-    private var isResetting = false
-
-    /// Last reported duration to avoid duplicate callbacks
-    private var lastReportedDuration: Double?
-
-    /// Current recording duration in seconds
-    private var currentDuration: Double = 0
-
-    /// Timer for duration monitoring during recording
-    private var durationDispatchSource: DispatchSourceTimer?
-
-    // MARK: - Segment Rolling Properties
-
-    /// Manager for segment rolling recordings
-    private var segmentRollingManager: SegmentRollingManager?
-
-    /// Maximum duration for segment rolling recordings
-    private var maxDuration: TimeInterval?
-
-    // MARK: - Configuration
-
-    /// Stored recording settings for consistent retrieval after recording stops
-    private var storedRecordingSettings: [String: Any] = [:]
-
-    /// Last recording settings used for resuming after reset
-    private var lastRecordingSettings: [String: Any]?
-
-    // MARK: - Thread Safety & Async Processing
-
-    /// Dedicated queue for thread-safe state operations
-    private let stateQueue = DispatchQueue(label: "audio-engine-state", qos: .userInteractive)
-
-    // MARK: - Initialization
-
-    override init() {
-        super.init()
+    private func performStateOperation<T>(_ operation: () throws -> T) rethrows -> T {
+        return try stateQueue.sync { try operation() }
     }
 
-    /// Current async processing task for cancellation support
-    private var processingTask: Task<Void, Never>?
+    private weak var delegate: RecordingManagerDelegate?
+    private var audioEngine: AVAudioEngine?
+    private var inputNodeTapInstalled: Bool = false
+    private var isRecording: Bool = false
+    private var isPaused: Bool = false
+    private var currentSampleRate: Double = 44100
+    private var currentChannels: AVAudioChannelCount = 1
 
-    /// Initialize with delegate for event callbacks
-    /// - Parameter delegate: Delegate to receive recording events
+    // Duration monitoring
+    private var durationTimer: Timer?
+    private var currentDuration: Double = 0.0
+    private var isDurationMonitoring: Bool = false
+    private var isDurationPaused: Bool = false
+
+    // Wave level monitoring
+    private var waveLevelTimer: Timer?
+    private var isWaveLevelMonitoring: Bool = false
+    private var isWaveLevelPaused: Bool = false
+    private var waveLevelEmissionInterval: TimeInterval = 1.0 // Default 1 second
+
+    // Encoding
+    private var desiredBitrate: Int = 128_000
+    private var aacFormat: AVAudioFormat?
+    private var converter: AVAudioConverter?
+
+    // Asset Writer (native .m4a)
+    private var assetWriter: AVAssetWriter?
+    private var writerInput: AVAssetWriterInput?
+    private var fileURL: URL?
+    private var writerStarted: Bool = false
+    private var audioSessionObserver: Any?
+    private var routeChangeObserver: Any?
+
+    // App lifecycle observers
+    private var appWillEnterForegroundObserver: Any?
+    private var appDidBecomeActiveObserver: Any?
+    private var mediaServicesResetObserver: Any?
+
+    // Health check timer
+    private var healthCheckTimer: Timer?
+
     init(delegate: RecordingManagerDelegate?) {
-        super.init()
         self.delegate = delegate
     }
 
-    deinit {
-        cleanup()
-    }
-
-    // MARK: - Thread Safety
-
-    private func performStateOperation<T>(_ operation: () throws -> T) rethrows -> T {
-        log("performStateOperation: About to enter stateQueue.sync")
-        let result = try stateQueue.sync {
-            log("performStateOperation: Inside stateQueue.sync, about to execute operation")
-            let operationResult = try operation()
-            log("performStateOperation: Operation completed successfully")
-            return operationResult
-        }
-        log("performStateOperation: stateQueue.sync completed, returning result")
-        return result
-    }
-
-    // MARK: - Recording Methods
-
-    /**
-     * Starts audio recording with the specified settings
-     *
-     * - Parameter settings: Recording configuration including:
-     *   - sampleRate: Audio sample rate (Hz) - default 22050
-     *   - channels: Number of audio channels - default 1 (mono)
-     *   - bitrate: Audio bitrate (bps) - default 64000
-     *   - maxDuration: Maximum recording duration for segment rolling (seconds) - optional
-     *
-     * Behavior:
-     * - Uses segment rolling mode for all recordings
-     * - If maxDuration is provided, enables automatic cleanup when buffer reaches capacity
-     * - Configures audio session for recording
-     * - Starts duration monitoring with 1-second intervals
-     *
-     * Thread Safety: All operations are performed on the state queue
-     *
-     * Delegate Callbacks:
-     * - recordingDidUpdateDuration: Called every second with current duration
-     * - recordingDidEncounterError: Called if recording fails to start
-     */
-    func startRecording(with settings: [String: Any]) {
-        performStateOperation {
-            // Store settings for potential resume after reset
-            self.lastRecordingSettings = settings
-
-            let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
-            let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-            let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
-
-            // Store the actual settings used for later retrieval
-            self.storedRecordingSettings = [
-                "sampleRate": sampleRate,
-                "channels": channels,
-                "bitrate": bitrate
-            ]
-
-            self.log("startRecording called with settings: \(settings)")
-            self.log("Stored actual settings: \(self.storedRecordingSettings)")
-
-            self.startRecordingInternal(settings: settings, sampleRate: sampleRate, channels: channels, bitrate: bitrate)
-        }
-    }
-
-    private func startRecordingInternal(settings: [String: Any], sampleRate: Int, channels: Int, bitrate: Int) {
-
-        // Check if maxDuration is provided to configure segment rolling behavior
-        // Try multiple ways to extract maxDuration (could be Int, Double, or TimeInterval)
-        var maxDurationValue: TimeInterval?
-
-        if let intValue = settings["maxDuration"] as? Int {
-            maxDurationValue = TimeInterval(intValue)
-            log("maxDuration extracted as Int: \(intValue)")
-        } else if let doubleValue = settings["maxDuration"] as? Double {
-            maxDurationValue = doubleValue
-            log("maxDuration extracted as Double: \(doubleValue)")
-        } else if let timeIntervalValue = settings["maxDuration"] as? TimeInterval {
-            maxDurationValue = timeIntervalValue
-            log("maxDuration extracted as TimeInterval: \(timeIntervalValue)")
-        } else {
-            log("maxDuration not found or not a valid number type. Value: \(settings["maxDuration"] ?? "nil")")
-        }
-
-        if let duration = maxDurationValue, duration > 0 {
-            maxDuration = duration
-        }
-
-        // Use segment rolling for all recordings
-        log("Starting segment rolling recording (maxDuration: \(maxDuration?.description ?? "unlimited"))")
-    startSegmentRollingRecording(with: settings)
-    }
-
-    private func startSegmentRollingRecording(with settings: [String: Any]) {
-        log("Starting segment rolling recording...")
-
-        do {
-            // Initialize segment rolling manager if needed
-            if self.segmentRollingManager == nil {
-                self.log("Creating new SegmentRollingManager")
-                self.log("About to call SegmentRollingManager() constructor")
-                // Allow configuration of segmentDuration via settings
-                let sd: TimeInterval? = {
-                    if let d = settings["segmentDuration"] as? Double { return d }
-                    if let i = settings["segmentDuration"] as? Int { return TimeInterval(i) }
-                    return nil
-                }()
-                if let sdVal = sd {
-                    self.segmentRollingManager = SegmentRollingManager(segmentDuration: sdVal)
+    func configureRecording(encoding: String?, bitrate: Int?, path: String? = nil) {
+        if let br = bitrate, br > 0 { desiredBitrate = br }
+        if let p = path, !p.isEmpty {
+            // Normalize provided path into app sandbox
+            if p.hasPrefix("file://") {
+                if let url = URL(string: p) {
+                    fileURL = url
                 } else {
-                    self.segmentRollingManager = SegmentRollingManager()
+                    let pathString = String(p.dropFirst(7))
+                    fileURL = URL(fileURLWithPath: pathString)
                 }
-                self.log("SegmentRollingManager() constructor completed")
-                self.log("SegmentRollingManager created successfully")
-            }
-
-            // Configure maxDuration for segment rolling
-            if let maxDurationValue = self.maxDuration {
-                self.log("Setting maxDuration to \(maxDurationValue) seconds in SegmentRollingManager (segment rolling mode)")
-                self.segmentRollingManager?.setMaxDuration(maxDurationValue)
+            } else if p.hasPrefix("/") {
+                let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+                let trimmed = String(p.dropFirst())
+                fileURL = base.appendingPathComponent(trimmed)
             } else {
-                self.log("No maxDuration set - using unlimited segment rolling mode")
-                self.segmentRollingManager?.setMaxDuration(nil)
+                let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+                fileURL = base.appendingPathComponent(p)
+            }
+        } else {
+            // Use same directory as Capacitor Filesystem Directory.Data
+            // On iOS, this maps to the app's data directory (Library/Application Support)
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+            fileURL = base.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970 * 1000)).m4a")
+        }
+
+        // Ensure directory exists for the output file
+        if let url = fileURL {
+            let dir = url.deletingLastPathComponent()
+            if !FileManager.default.fileExists(atPath: dir.path) {
+                do {
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                } catch {
+                    delegate?.recordingDidEncounterError(NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create output directory: \(error.localizedDescription)"]))
+                }
+            }
+        }
+    }
+
+    func getFormatInfo() -> (sampleRate: Int, channels: Int, encoding: String, mimeType: String, bitrate: Int, path: String?) {
+        return (Int(currentSampleRate), Int(currentChannels), "aac", "audio/aac", desiredBitrate, fileURL?.path)
+    }
+
+    func startRecording() {
+        performStateOperation {
+            guard !isRecording else { return }
+            do {
+                try configureAudioSessionForRecording()
+                observeAudioSessionInterruptions()
+                observeAudioSessionRouteChanges()
+                observeAppLifecycle()
+                let engine = AVAudioEngine()
+                audioEngine = engine
+
+                let input = engine.inputNode
+                let inputFormat = input.outputFormat(forBus: 0)
+                currentSampleRate = inputFormat.sampleRate
+                currentChannels = inputFormat.channelCount
+
+                // Prepare AAC output format and converter for JS emission
+                let settings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVNumberOfChannelsKey: Int(currentChannels),
+                    AVSampleRateKey: currentSampleRate,
+                    AVEncoderBitRateKey: desiredBitrate
+                ]
+                guard let outFormat = AVAudioFormat(settings: settings) else {
+                    throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create AAC format"])
+                }
+                aacFormat = outFormat
+                converter = AVAudioConverter(from: inputFormat, to: outFormat)
+
+                // Prepare asset writer for native .m4a
+                try setupAssetWriter(inputFormat: inputFormat)
+
+                if !inputNodeTapInstalled {
+                    input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, time in
+                        guard let self = self else { return }
+                        // Respect pause without finalizing writer; skip processing while paused
+                        let shouldSkip: Bool = self.performStateOperation { self.isPaused || !self.isRecording }
+                        if shouldSkip { return }
+
+                        // Start writer session at first buffer
+                        if let writer = self.assetWriter, writer.status == .writing, !self.writerStarted {
+                            self.writerStarted = true
+                            let startTime = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
+                            writer.startSession(atSourceTime: startTime)
+                        }
+                        // Append PCM to writer (it will encode to AAC)
+                        self.appendToWriter(buffer: buffer, at: time)
+                        // Emit AAC to JS
+                        self.encodeAndEmit(buffer: buffer)
+                    }
+                    inputNodeTapInstalled = true
+                }
+
+                try engine.start()
+                isRecording = true
+                isPaused = false
+
+                // Start duration and wave level monitoring
+                startDurationMonitoring()
+                startWaveLevelMonitoring()
+                startRecordingHealthCheck()
+
+                delegate?.recordingDidChangeStatus("recording")
+            } catch {
+                delegate?.recordingDidEncounterError(error)
+            }
+        }
+    }
+
+    func stopRecording() {
+        performStateOperation {
+            guard isRecording else { return }
+            if let engine = audioEngine {
+                if inputNodeTapInstalled {
+                    engine.inputNode.removeTap(onBus: 0)
+                    inputNodeTapInstalled = false
+                }
+                engine.stop()
+            }
+            removeAudioSessionInterruptionsObserver()
+            removeAudioSessionRouteChangeObserver()
+            removeAppLifecycleObservers()
+            // Only finish writer if one exists (prevents "file not found" error after resetRecording)
+            if assetWriter != nil {
+                finishWriter()
+            }
+            audioEngine = nil
+            converter = nil
+            aacFormat = nil
+
+            // Stop duration and wave level monitoring
+            stopDurationMonitoring()
+            stopWaveLevelMonitoring()
+            stopRecordingHealthCheck()
+
+            isRecording = false
+            isPaused = false
+            delegate?.recordingDidChangeStatus("stopped")
+        }
+    }
+
+    /// Stop recording and wait for the file to be fully written to disk
+    /// Returns the file path asynchronously via completion handler
+    func stopRecordingAndWaitForFile(completion: @escaping (String?) -> Void) {
+        performStateOperation {
+            guard isRecording else {
+                completion(fileURL?.path)
+                return
             }
 
-            // Also configure per-segment duration if provided at runtime
-            if let sdVal = settings["segmentDuration"] as? Double {
-                self.segmentRollingManager?.setSegmentDuration(sdVal)
-            } else if let sdInt = settings["segmentDuration"] as? Int {
-                self.segmentRollingManager?.setSegmentDuration(TimeInterval(sdInt))
+            let filePath = fileURL?.path
+
+            if let engine = audioEngine {
+                if inputNodeTapInstalled {
+                    engine.inputNode.removeTap(onBus: 0)
+                    inputNodeTapInstalled = false
+                }
+                engine.stop()
             }
+            removeAudioSessionInterruptionsObserver()
+            removeAudioSessionRouteChangeObserver()
+            removeAppLifecycleObservers()
 
-            // Create recording settings for segment rolling
-            let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
-            let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-            let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
+            // Stop duration and wave level monitoring
+            stopDurationMonitoring()
+            stopWaveLevelMonitoring()
+            stopRecordingHealthCheck()
 
-            let recordingSettings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: Double(sampleRate),
-                AVNumberOfChannelsKey: channels,
-                AVEncoderBitRateKey: bitrate,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-            ]
+            // Finish writer and wait for completion
+            if assetWriter != nil {
+                finishWriterAndWait { [weak self] in
+                    guard let self = self else {
+                        completion(nil)
+                        return
+                    }
 
-            self.log("Starting segment rolling with settings: \(recordingSettings)")
-
-            // Start segment rolling
-            guard let segmentManager = self.segmentRollingManager else {
-                throw NSError(domain: "RecordingManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Segment rolling manager not initialized"])
+                    self.performStateOperation {
+                        self.audioEngine = nil
+                        self.converter = nil
+                        self.aacFormat = nil
+                        self.isRecording = false
+                        self.isPaused = false
+                        self.delegate?.recordingDidChangeStatus("stopped")
+                        completion(filePath)
+                    }
+                }
+            } else {
+                audioEngine = nil
+                converter = nil
+                aacFormat = nil
+                isRecording = false
+                isPaused = false
+                delegate?.recordingDidChangeStatus("stopped")
+                completion(filePath)
             }
-            try segmentManager.startSegmentRolling(with: recordingSettings)
-
-            self.isRecording = true
-            self.isPaused = false
-            self.currentDuration = 0
-
-            // Start duration monitoring for segment rolling
-            self.startDurationMonitoring()
-
-            // Notify delegate of state change to recording (consistent with Android)
-            DispatchQueue.main.async {
-                self.delegate?.recordingDidChangeState("recording", data: [
-                    "duration": 0,
-                    "isRecording": true,
-                    "status": "recording"
-                ])
-            }
-
-            self.log("Segment rolling recording started successfully")
-
-        } catch {
-            self.log("Failed to start segment rolling: \(error.localizedDescription)")
-            self.delegate?.recordingDidEncounterError(error)
         }
     }
 
     func pauseRecording() {
         performStateOperation {
-            guard self.isRecording else {
-                self.log("No active recording to pause")
-                return
-            }
+            guard isRecording && !isPaused else { return }
+            isPaused = true
 
-            // Pause segment rolling
-            self.segmentRollingManager?.pauseSegmentRolling()
+            // Pause duration and wave level monitoring
+            pauseDurationMonitoring()
+            pauseWaveLevelMonitoring()
 
-            self.isRecording = false
-            self.isPaused = true
-            self.stopDurationMonitoring()
-
-            // Notify delegate of state change to paused (consistent with Android)
-            DispatchQueue.main.async {
-                self.delegate?.recordingDidChangeState("paused", data: [
-                    "duration": self.currentDuration,
-                    "isRecording": false,
-                    "status": "paused"
-                ])
-            }
-
-            self.log("Recording paused")
+            delegate?.recordingDidChangeStatus("paused")
         }
     }
 
     func resumeRecording() {
         performStateOperation {
-            guard !self.isRecording else {
-                self.log("Recording is already active")
-                return
-            }
+            guard isRecording && isPaused else { return }
 
-            guard self.isPaused else {
-                self.log("No paused recording to resume")
-                return
-            }
+            // Check if we need to reinitialize after a reset (no writer + tap removed)
+            if assetWriter == nil && !inputNodeTapInstalled {
+                // Reinitialize recording session after reset
+                do {
+                    guard let engine = audioEngine else {
+                        throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Audio engine not initialized"])
+                    }
 
-            do {
-                // Resume segment rolling
-                if let segmentManager = self.segmentRollingManager {
-                    // Check if this is a reset state (duration = 0) - start fresh
-                    if self.currentDuration == 0 {
-                        self.log("Starting fresh segment rolling after reset")
+                    let input = engine.inputNode
+                    let inputFormat = input.outputFormat(forBus: 0)
 
-                        // Don't call cleanup() as it stops the microphone session
-                        // Instead, start fresh segment rolling which will handle the restart
-                        let settings = self.lastRecordingSettings ?? [:]
+                    // Setup new asset writer for the new file
+                    try setupAssetWriter(inputFormat: inputFormat)
 
-                        // Call the internal start method directly to avoid recursive calls
-                        let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
-                        let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-                        let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
+                    // Reinstall tap
+                    if !inputNodeTapInstalled {
+                        input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, time in
+                            guard let self = self else { return }
+                            let shouldSkip: Bool = self.performStateOperation { self.isPaused || !self.isRecording }
+                            if shouldSkip { return }
 
-                        // Set up recording settings
-                        let recordingSettings: [String: Any] = [
-                            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                            AVSampleRateKey: Double(sampleRate),
-                            AVNumberOfChannelsKey: channels,
-                            AVEncoderBitRateKey: bitrate,
-                            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-                        ]
-
-                        // Configure maxDuration for segment rolling
-                        if let maxDurationValue = self.maxDuration {
-                            segmentManager.setMaxDuration(maxDurationValue)
-                        } else {
-                            segmentManager.setMaxDuration(nil)
+                            if let writer = self.assetWriter, writer.status == .writing, !self.writerStarted {
+                                self.writerStarted = true
+                                let startTime = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
+                                writer.startSession(atSourceTime: startTime)
+                            }
+                            self.appendToWriter(buffer: buffer, at: time)
+                            self.encodeAndEmit(buffer: buffer)
                         }
-
-                        try segmentManager.startSegmentRolling(with: recordingSettings)
-                        self.log("Fresh segment rolling started after reset")
-                    } else {
-                        // Normal resume from pause
-                        try segmentManager.resumeSegmentRolling()
-                    }
-                } else {
-                    // If segment rolling manager is nil (e.g., after reset), recreate it
-                    self.log("Segment rolling manager not found, recreating for resume")
-                    // Don't call self.startSegmentRollingRecording() directly to avoid potential issues
-                    // Instead, recreate the segment rolling recording properly
-                    let settings = self.lastRecordingSettings ?? [:]
-                    let sampleRate = settings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate)
-                    let channels = settings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
-                    let bitrate = settings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
-
-                    // Initialize segment rolling manager if needed
-                    if self.segmentRollingManager == nil {
-                        self.log("Creating new SegmentRollingManager for resume")
-                        self.segmentRollingManager = SegmentRollingManager()
-                        self.log("New SegmentRollingManager created")
+                        inputNodeTapInstalled = true
                     }
 
-                    // Ensure the manager is ready for use
-                    guard let manager = self.segmentRollingManager else {
-                        throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create segment rolling manager"])
-                    }
-
-                    // Configure maxDuration for segment rolling
-                    if let maxDurationValue = self.maxDuration {
-                        manager.setMaxDuration(maxDurationValue)
-                    } else {
-                        manager.setMaxDuration(nil)
-                    }
-
-                    // Create recording settings for segment rolling
-                    let recordingSettings: [String: Any] = [
-                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                        AVSampleRateKey: Double(sampleRate),
-                        AVNumberOfChannelsKey: channels,
-                        AVEncoderBitRateKey: bitrate,
-                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-                    ]
-
-                    try manager.startSegmentRolling(with: recordingSettings)
-                    self.log("Segment rolling recording resumed with fresh session")
+                    // Restart engine
+                    try engine.start()
+                } catch {
+                    delegate?.recordingDidEncounterError(error)
+                    return
                 }
-
-                self.isRecording = true
-                self.isPaused = false
-                self.startDurationMonitoring()
-
-                // Notify delegate of state change to recording (consistent with Android)
-                DispatchQueue.main.async {
-                    self.delegate?.recordingDidChangeState("recording", data: [
-                        "duration": self.currentDuration,
-                        "isRecording": true,
-                        "status": "recording"
-                    ])
-                }
-
-                self.log("Recording resumed")
-
-            } catch {
-                let nsError = error as NSError
-                self.log("Failed to resume recording: \(nsError.localizedDescription)")
-                self.delegate?.recordingDidEncounterError(nsError)
             }
+
+            isPaused = false
+
+            // Resume duration and wave level monitoring
+            resumeDurationMonitoring()
+            resumeWaveLevelMonitoring()
+
+            delegate?.recordingDidChangeStatus("recording")
         }
     }
 
-    // MARK: - Reset Recording
-
-    /// Reset the current recording session without finalizing a file
+    /// Reset the current recording session without finalizing a file.
     /// Behavior:
-    /// - Discards current recording data (segments)
-    /// - Discards current duration and waves
-    /// - Keeps last configured recording settings for seamless resume
-    /// - Leaves the session in paused state so `resumeRecording()` can start fresh
+    /// - Keeps audio engine configured but removes active taps
+    /// - Finishes and discards current writer and file
+    /// - Resets duration and wave level monitoring counters to 0
+    /// - Leaves the recording in paused state so `resumeRecording()` can continue fresh
     func resetRecording() {
         performStateOperation {
-            // Guard against concurrent resets
-            if self.isResetting {
-                self.log("resetRecording ignored: already resetting")
-                return
-            }
-            self.isResetting = true
+            guard isRecording else { return }
 
-            self.log("resetRecording called - isRecording=\(self.isRecording), isPaused=\(self.isPaused)")
-
-            // Pause active recording if needed (no finalize)
-            if self.isRecording {
-                self.segmentRollingManager?.pauseSegmentRolling()
-                self.log("Paused active segment rolling before reset")
+            // Remove input tap and stop engine without tearing down configuration entirely
+            if let engine = audioEngine {
+                if inputNodeTapInstalled {
+                    engine.inputNode.removeTap(onBus: 0)
+                    inputNodeTapInstalled = false
+                }
+                engine.pause()
             }
 
-            // Stop duration monitoring and reset counters
-            self.stopDurationMonitoring()
-            self.currentDuration = 0
-            self.lastReportedDuration = nil
-
-            // Discard segments and internal waveform buffers safely
-            // Swap out the manager first to avoid other readers seeing a half-cleaned instance
-            let oldManager = self.segmentRollingManager
-            self.segmentRollingManager = nil
-            if let manager = oldManager {
-                manager.cleanup()
-                self.log("Cleaned up existing SegmentRollingManager (discarded segments/waves)")
+            // Finalize current writer so any existing partial file remains valid
+            // Do NOT delete the file; allow clients to query it if needed
+            finishWriter()
+            // Remove references so a new writer will be setup on resume
+            assetWriter = nil
+            writerInput = nil
+            writerStarted = false
+            // Rotate to a fresh target path for the next session
+            if let currentURL = fileURL {
+                let dir = currentURL.deletingLastPathComponent()
+                let newURL = dir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970 * 1000)).m4a")
+                fileURL = newURL
             }
 
-            // Recreate manager to keep session ready with same configuration
-            let newManager = SegmentRollingManager()
-            self.segmentRollingManager = newManager
+            // Reset monitoring counters and pause monitors (do not destroy timers)
+            pauseDurationMonitoring()
+            pauseWaveLevelMonitoring()
+            currentDuration = 0.0
 
-            // Re-apply maxDuration configuration if any
-            if let maxDurationValue = self.maxDuration {
-                self.segmentRollingManager?.setMaxDuration(maxDurationValue)
-            } else {
-                self.segmentRollingManager?.setMaxDuration(nil)
-            }
+            // Keep recording flag, but set paused so resumeRecording() can proceed
+            isPaused = true
 
-            // Keep lastRecordingSettings and storedRecordingSettings for resume
-            // Do NOT clear storedRecordingSettings here to preserve configured start recording
-
-            // Set paused state
-            self.isRecording = false
-            self.isPaused = true
-
-            // Notify delegate of paused state with duration 0
-            DispatchQueue.main.async {
-                self.delegate?.recordingDidChangeState("paused", data: [
-                    "duration": 0,
-                    "isRecording": false,
-                    "status": "paused"
-                ])
-            }
-
-            self.log("resetRecording completed: session is paused with duration reset to 0")
-
-            // Clear resetting flag
-            self.isResetting = false
+            // Notify paused status
+            delegate?.recordingDidChangeStatus("paused")
         }
     }
 
-    /**
-     * Stops the current recording and processes the audio file
-     *
-     * Performance Characteristics:
-     * - Returns immediately (non-blocking)
-     * - File processing happens asynchronously
-    * - File processing happens asynchronously
-     * - Supports cancellation of in-progress operations
-     *
-     * Processing Steps:
-     * 1. Stop recording (segment rolling or linear)
-     * 2. Merge segments if using segment rolling mode
-     * 3. Calculate actual duration from audio file
-     * 4. Create response with file info and metadata
-     *
-     * Thread Safety: State changes are synchronized on state queue
-     *
-     * Delegate Callbacks:
-     * - recordingDidFinish: Called when processing completes with file info
-     * - recordingDidEncounterError: Called if stop/processing fails
-     *
-     * Error Conditions:
-     * - No active recording
-     * - File processing failure
-     * - Memory pressure during processing
-     */
-    func stopRecording() {
-        performStateOperation {
-            guard self.isRecording || self.isPaused else {
-                self.log("No active recording to stop - already stopped or stopping")
-                // Don't treat this as an error - just ignore duplicate stops gracefully
-                return
+
+    private func setupAssetWriter(inputFormat: AVAudioFormat) throws {
+        guard let url = fileURL else { return }
+        assetWriter = try AVAssetWriter(outputURL: url, fileType: .m4a)
+        let outputSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVNumberOfChannelsKey: Int(currentChannels),
+            AVSampleRateKey: currentSampleRate,
+            AVEncoderBitRateKey: desiredBitrate
+        ]
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
+        input.expectsMediaDataInRealTime = true
+        if let writer = assetWriter, writer.canAdd(input) {
+            writer.add(input)
+            writerInput = input
+            writer.startWriting()
+            writerStarted = false
+        }
+    }
+
+    private func appendToWriter(buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        guard let input = writerInput, let writer = assetWriter, writer.status == .writing else { return }
+        if input.isReadyForMoreMediaData {
+            // Create CMBlockBuffer/ CMSampleBuffer from PCM
+            var asbd = buffer.format.streamDescription.pointee
+            var formatDesc: CMAudioFormatDescription?
+            CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &formatDesc)
+
+            guard let fmtDesc = formatDesc else { return }
+            let frames = CMItemCount(buffer.frameLength)
+            let pts = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
+
+            var blockBuffer: CMBlockBuffer?
+            let audioBuffer = buffer.audioBufferList.pointee.mBuffers
+            let data = audioBuffer.mData!
+            let dataLength = Int(audioBuffer.mDataByteSize)
+            let status = CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: data, blockLength: dataLength, blockAllocator: kCFAllocatorNull, customBlockSource: nil, offsetToData: 0, dataLength: dataLength, flags: 0, blockBufferOut: &blockBuffer)
+            if status != kCMBlockBufferNoErr { return }
+
+            var sampleBuffer: CMSampleBuffer?
+            let sampleStatus = CMAudioSampleBufferCreateWithPacketDescriptions(allocator: kCFAllocatorDefault, dataBuffer: blockBuffer, dataReady: true, makeDataReadyCallback: nil, refcon: nil, formatDescription: fmtDesc, sampleCount: frames, presentationTimeStamp: pts, packetDescriptions: nil, sampleBufferOut: &sampleBuffer)
+            if sampleStatus != noErr { return }
+
+            if let sbuf = sampleBuffer {
+                input.append(sbuf)
             }
+        }
+    }
 
-            // Stop monitoring immediately and set stopping state
-            self.stopDurationMonitoring()
-            self.isRecording = false
-            self.isPaused = false
-
-            self.log("Stopping segment rolling recording...")
-            // Stop segment rolling and merge segments asynchronously to avoid blocking UI
-            guard let segmentManager = self.segmentRollingManager else {
-                self.log("Error: segmentRollingManager is nil")
-                DispatchQueue.main.async {
-                    let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Segment rolling manager not initialized"])
-                    self.delegate?.recordingDidEncounterError(error)
-                }
-                return
-            }
-
-            self.log("Calling stopSegmentRollingAsync on manager...")
-            segmentManager.stopSegmentRollingAsync { [weak self] result in
+    private func finishWriter() {
+        if let input = writerInput {
+            input.markAsFinished()
+        }
+        let finalizedPath = fileURL?.path
+        if let writer = assetWriter {
+            writer.finishWriting { [weak self] in
                 guard let self = self else { return }
+                if writer.status == .failed, let err = writer.error {
+                    self.delegate?.recordingDidEncounterError(err)
+                } else if let path = finalizedPath {
+                    self.delegate?.recordingDidFinalize(path)
+                }
+            }
+        }
+        writerInput = nil
+        assetWriter = nil
+        writerStarted = false
+    }
 
-                switch result {
-                case .success(let mergedFileURL):
-                    self.log("Segment rolling stopped successfully, processing file: \(mergedFileURL.path)")
-                    self.processRecordingFile(mergedFileURL)
+    /// Finish writer and wait for completion
+    private func finishWriterAndWait(completion: @escaping () -> Void) {
+        if let input = writerInput {
+            input.markAsFinished()
+        }
 
-                case .failure(let error):
-                    self.log("Error stopping segment rolling: \(error.localizedDescription)")
+        let finalizedPath = fileURL?.path
 
-                    // Check if this is a "no valid segments" error (very short recording)
-                    if error.localizedDescription.contains("No valid recording segments found") {
-                        self.log("Segment rolling failed due to short recording")
-                        DispatchQueue.main.async {
-                            let error = NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Recording was too short"])
-                            self.delegate?.recordingDidEncounterError(error)
+        if let writer = assetWriter {
+            print("[RecordingManager] Finishing asset writer...")
+            writer.finishWriting { [weak self] in
+                guard let self = self else {
+                    completion()
+                    return
+                }
+
+                if writer.status == .failed, let err = writer.error {
+                    print("[RecordingManager] Asset writer failed: \(err.localizedDescription)")
+                    self.delegate?.recordingDidEncounterError(err)
+                } else if let path = finalizedPath {
+                    // Verify the file exists and has content
+                    if FileManager.default.fileExists(atPath: path) {
+                        do {
+                            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+                            let fileSize = attributes[.size] as? Int64 ?? 0
+                            print("[RecordingManager] Recording file ready: \(fileSize) bytes at \(path)")
+                        } catch {
+                            print("[RecordingManager] Could not get file attributes: \(error.localizedDescription)")
                         }
                     } else {
-                        DispatchQueue.main.async {
+                        print("[RecordingManager] Warning: Recording file does not exist at \(path)")
+                    }
+                    self.delegate?.recordingDidFinalize(path)
+                }
+
+                completion()
+            }
+        } else {
+            completion()
+        }
+
+        writerInput = nil
+        assetWriter = nil
+        writerStarted = false
+    }
+
+    private func encodeAndEmit(buffer: AVAudioPCMBuffer) {
+        guard let converter = converter, let aacFormat = aacFormat else { return }
+
+        let maxPacketSize = converter.maximumOutputPacketSize
+        let packetCapacity = 1
+        guard let compressedBuffer = AVAudioCompressedBuffer(format: aacFormat, packetCapacity: AVAudioPacketCount(packetCapacity), maximumPacketSize: maxPacketSize) as AVAudioCompressedBuffer? else { return }
+
+        var sourceConsumed = false
+        var error: NSError?
+        _ = converter.convert(to: compressedBuffer, error: &error, withInputFrom: { _, outStatus in
+            if sourceConsumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            } else {
+                sourceConsumed = true
+                outStatus.pointee = .haveData
+                return buffer
+            }
+        })
+
+        if let err = error {
+            delegate?.recordingDidEncounterError(err)
+        }
+    }
+
+
+    private func configureAudioSessionForRecording() throws {
+        let session = AVAudioSession.sharedInstance()
+
+        try session.setCategory(.playAndRecord,
+                                mode: .voiceChat,
+                                options: [.defaultToSpeaker, .mixWithOthers])
+
+        try session.setPreferredSampleRate(currentSampleRate)
+        try session.setPreferredInput(nil)
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    private func observeAudioSessionInterruptions() {
+        guard audioSessionObserver == nil else { return }
+        audioSessionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            guard let userInfo = notification.userInfo,
+                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+                return
+            }
+
+            switch type {
+            case .began:
+                // Deactivate session to yield mic to other apps (e.g., phone call or another recorder)
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                self.performStateOperation {
+                    if self.isRecording {
+                        if let engine = self.audioEngine, engine.isRunning {
+                            engine.pause()
+                        }
+                        self.isPaused = true
+                        self.pauseDurationMonitoring()
+                        self.pauseWaveLevelMonitoring()
+                        self.delegate?.recordingDidChangeStatus("paused")
+                    }
+                }
+            case .ended:
+                // Check if we should resume - only if microphone is available
+                let session = AVAudioSession.sharedInstance()
+                let hasInput = session.availableInputs?.isEmpty == false
+                let isInputAvailable = session.isInputAvailable
+
+                // Try to reactivate session
+                do {
+                    try session.setActive(true)
+                } catch {
+                    // If activation fails, microphone might be unavailable (e.g., another app using it)
+                    self.performStateOperation {
+                        if self.isRecording {
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+                    return
+                }
+
+                // Only resume if microphone is actually available
+                guard hasInput && isInputAvailable else {
+                    // Microphone unavailable - likely another app is recording or phone call active
+                    self.performStateOperation {
+                        if self.isRecording {
+                            let error = NSError(
+                                domain: "AudioEngine",
+                                code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Microphone unavailable - may be in use by another app or phone call"]
+                            )
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+                    return
+                }
+
+                // Check if we should resume (user may have declined)
+                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                    if !options.contains(.shouldResume) {
+                        // User declined to resume (e.g., dismissed phone call)
+                        return
+                    }
+                }
+
+                self.performStateOperation {
+                    guard self.isRecording else { return }
+                    do {
+                        if let engine = self.audioEngine, !engine.isRunning {
+                            try engine.start()
+                        }
+                        self.isPaused = false
+                        self.resumeDurationMonitoring()
+                        self.resumeWaveLevelMonitoring()
+                        self.delegate?.recordingDidChangeStatus("recording")
+                    } catch {
+                        self.delegate?.recordingDidEncounterError(error)
+                    }
+                }
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private func removeAudioSessionInterruptionsObserver() {
+        if let obs = audioSessionObserver {
+            NotificationCenter.default.removeObserver(obs)
+            audioSessionObserver = nil
+        }
+    }
+
+    private func observeAudioSessionRouteChanges() {
+        guard routeChangeObserver == nil else { return }
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            guard let userInfo = notification.userInfo,
+                  let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+                return
+            }
+
+            let session = AVAudioSession.sharedInstance()
+            let isInputAvailable = session.isInputAvailable
+            let hasInput = session.availableInputs?.isEmpty == false
+
+            self.performStateOperation {
+                guard self.isRecording else { return }
+
+                switch reason {
+                case .newDeviceAvailable:
+                    // New input device available (e.g., headphones plugged in)
+                    // If we were paused and mic is now available, try to resume
+                    if self.isPaused && isInputAvailable && hasInput {
+                        do {
+                            if let engine = self.audioEngine, !engine.isRunning {
+                                try engine.start()
+                            }
+                            self.isPaused = false
+                            self.resumeDurationMonitoring()
+                            self.resumeWaveLevelMonitoring()
+                            self.delegate?.recordingDidChangeStatus("recording")
+                        } catch {
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+
+                case .oldDeviceUnavailable:
+                    // Input device removed (e.g., headphones unplugged)
+                    // Check if built-in mic is still available
+                    if !isInputAvailable || !hasInput {
+                        // No input available - pause recording
+                        if !self.isPaused {
+                            self.isPaused = true
+                            self.pauseDurationMonitoring()
+                            self.pauseWaveLevelMonitoring()
+                            let error = NSError(
+                                domain: "AudioEngine",
+                                code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Microphone input unavailable - device may have been disconnected"]
+                            )
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+
+                case .categoryChange:
+                    // Audio session category changed - check if we still have mic access
+                    if !isInputAvailable || !hasInput {
+                        if !self.isPaused {
+                            self.isPaused = true
+                            self.pauseDurationMonitoring()
+                            self.pauseWaveLevelMonitoring()
+                            let error = NSError(
+                                domain: "AudioEngine",
+                                code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Microphone access lost - another app may be recording"]
+                            )
+                            self.delegate?.recordingDidEncounterError(error)
+                        }
+                    }
+
+                case .override:
+                    // Route was overridden (e.g., phone call routing)
+                    if !isInputAvailable {
+                        if !self.isPaused {
+                            self.isPaused = true
+                            self.pauseDurationMonitoring()
+                            self.pauseWaveLevelMonitoring()
+                        }
+                    }
+
+                default:
+                    // Other route changes - check availability
+                    if !isInputAvailable || !hasInput {
+                        if !self.isPaused {
+                            self.isPaused = true
+                            self.pauseDurationMonitoring()
+                            self.pauseWaveLevelMonitoring()
+                        }
+                    } else if self.isPaused {
+                        // Mic became available again - try to resume
+                        do {
+                            if let engine = self.audioEngine, !engine.isRunning {
+                                try engine.start()
+                            }
+                            self.isPaused = false
+                            self.resumeDurationMonitoring()
+                            self.resumeWaveLevelMonitoring()
+                            self.delegate?.recordingDidChangeStatus("recording")
+                        } catch {
                             self.delegate?.recordingDidEncounterError(error)
                         }
                     }
                 }
             }
-
-            // Reset common state
-            self.resetRecordingState()
-            self.log("Recording stopped")
         }
     }
 
-    func getDuration() -> Int {
-        return Int(segmentRollingManager?.getElapsedRecordingTime() ?? currentDuration)
-    }
-
-    func getStatus() -> String {
-        if isRecording {
-            return "recording"
-        } else if isPaused {
-            return "paused"
-        } else {
-            return "idle"
+    private func removeAudioSessionRouteChangeObserver() {
+        if let obs = routeChangeObserver {
+            NotificationCenter.default.removeObserver(obs)
+            routeChangeObserver = nil
         }
     }
 
-    // MARK: - Audio Processing Methods
+    // MARK: - App Lifecycle Monitoring
 
-    func trimAudio(uri: String, start: Double, end: Double) async throws -> URL {
-        // Convert the URI to a URL
-        let sourceURL: URL
-        if uri.hasPrefix("file://") {
-            guard let url = URL(string: uri) else {
-                throw NSError(domain: "AudioEngine", code: -1,
-                             userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
+    private func observeAppLifecycle() {
+        // Observe when app returns from background
+        appWillEnterForegroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.validateRecordingStateOnForeground()
+        }
+
+        // Observe when app becomes active
+        appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.validateRecordingStateOnActive()
+        }
+
+        // Observe media services reset (critical for extended background)
+        mediaServicesResetObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            print("[RecordingManager] Media services were reset - attempting to recover")
+            self.handleMediaServicesReset()
+        }
+    }
+
+    private func removeAppLifecycleObservers() {
+        if let obs = appWillEnterForegroundObserver {
+            NotificationCenter.default.removeObserver(obs)
+            appWillEnterForegroundObserver = nil
+        }
+        if let obs = appDidBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(obs)
+            appDidBecomeActiveObserver = nil
+        }
+        if let obs = mediaServicesResetObserver {
+            NotificationCenter.default.removeObserver(obs)
+            mediaServicesResetObserver = nil
+        }
+    }
+
+    // Validate recording state when app enters foreground
+    private func validateRecordingStateOnForeground() {
+        performStateOperation {
+            // Only validate if we think we're recording
+            guard isRecording else { return }
+
+            print("[RecordingManager] App entering foreground - validating recording state")
+
+            // Check if audio engine is actually running
+            guard let engine = audioEngine else {
+                print("[RecordingManager] ERROR: Audio engine is nil but state says recording")
+                handleRecordingLost()
+                return
             }
-            sourceURL = url
-        } else {
-            sourceURL = URL(fileURLWithPath: uri)
+
+            if !engine.isRunning {
+                print("[RecordingManager] ERROR: Audio engine stopped but state says recording")
+                handleRecordingLost()
+                return
+            }
+
+            // Check audio session
+            let session = AVAudioSession.sharedInstance()
+            let isInputAvailable = session.isInputAvailable
+            let hasInput = session.availableInputs?.isEmpty == false
+
+            if !isInputAvailable || !hasInput {
+                print("[RecordingManager] ERROR: Microphone not available after foreground")
+                handleRecordingLost()
+                return
+            }
+
+            // Verify tap is still installed
+            if !inputNodeTapInstalled {
+                print("[RecordingManager] ERROR: Input tap removed but state says recording")
+                handleRecordingLost()
+                return
+            }
+
+            // Check if audio session is still active
+            do {
+                if !session.isOtherAudioPlaying {
+                    // Try to reactivate if needed
+                    try session.setActive(true)
+                }
+                print("[RecordingManager] Recording state validated successfully")
+            } catch {
+                print("[RecordingManager] ERROR: Cannot reactivate audio session: \(error)")
+                handleRecordingLost()
+            }
         }
+    }
 
-        // Check if file exists
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
-            throw NSError(domain: "AudioEngine", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "Source audio file does not exist"])
-        }
+    // Validate when app becomes active (after unlock)
+    private func validateRecordingStateOnActive() {
+        performStateOperation {
+            guard isRecording else { return }
 
-        // Validate time range
-        guard start >= 0 && end > start else {
-            throw NSError(domain: "AudioEngine", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "Invalid time range: start must be >= 0 and end must be > start"])
-        }
+            print("[RecordingManager] App became active - checking recording health")
 
-        let asset = AVAsset(url: sourceURL)
-        let assetDuration = asset.duration.seconds
-
-        // Clamp end time to actual duration if it exceeds
-        let actualEnd = min(end, assetDuration)
-
-        // Validate that start time doesn't exceed the asset duration
-        guard start < assetDuration else {
-            throw NSError(domain: "AudioEngine", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "Start time cannot exceed audio duration (\(assetDuration) seconds)"])
-        }
-
-        // Create output URL for trimmed file
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let trimmedURL = documentsPath.appendingPathComponent("trimmed_\(timestamp).m4a")
-
-        // Remove existing file if it exists
-        if FileManager.default.fileExists(atPath: trimmedURL.path) {
-            try FileManager.default.removeItem(at: trimmedURL)
-        }
-
-        // Create time range for trimming using clamped end time
-        let startTime = CMTime(seconds: start, preferredTimescale: 600)
-        let endTime = CMTime(seconds: actualEnd, preferredTimescale: 600)
-        let timeRange = CMTimeRange(start: startTime, end: endTime)
-
-        // Create export session
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            throw NSError(domain: "AudioEngine", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "Failed to create export session for trimming"])
-        }
-
-        exportSession.outputURL = trimmedURL
-        exportSession.outputFileType = .m4a
-        exportSession.timeRange = timeRange
-
-        // Wait for export completion using continuation
-        let finalURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
-            nonisolated(unsafe) let session = exportSession
-            session.exportAsynchronously {
-                if session.status == .failed {
-                    if let error = session.error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(throwing: NSError(domain: "AudioEngine", code: -1,
-                                                           userInfo: [NSLocalizedDescriptionKey: "Export failed with unknown error"]))
+            // Additional check: verify we're actually receiving audio data
+            // by checking if the asset writer is still writing
+            if let writer = assetWriter {
+                if writer.status == .failed {
+                    print("[RecordingManager] ERROR: Asset writer failed - status: \(writer.status.rawValue)")
+                    if let error = writer.error {
+                        print("[RecordingManager] Writer error: \(error.localizedDescription)")
                     }
-                } else if session.status == .completed {
-                    continuation.resume(returning: trimmedURL)
-                } else {
-                    continuation.resume(throwing: NSError(domain: "AudioEngine", code: -1,
-                                                       userInfo: [NSLocalizedDescriptionKey: "Audio trimming failed with status: \(session.status)"]))
+                    handleRecordingLost()
+                    return
+                } else if writer.status == .cancelled {
+                    print("[RecordingManager] ERROR: Asset writer cancelled")
+                    handleRecordingLost()
+                    return
                 }
             }
         }
-
-        log("Successfully trimmed audio from \(start)s to \(actualEnd)s, duration: \(actualEnd - start)s")
-        return finalURL
     }
 
-    /**
-     * Trim audio file to specified duration
-     * - parameters:
-     *   - sourceURL: URL of the source audio file
-     *   - maxDuration: Maximum duration in seconds
-     * - returns: URL of the trimmed audio file
-     */
-    @available(iOS 13.0, *)
-    private func trimAudioFile(_ sourceURL: URL, maxDuration: TimeInterval) async throws -> URL {
-        let asset = AVAsset(url: sourceURL)
-        let duration = asset.duration.seconds
+    // Handle media services reset (happens after crash or extended background)
+    private func handleMediaServicesReset() {
+        performStateOperation {
+            guard isRecording else { return }
 
-        // If the file is already shorter than maxDuration, no trimming needed
-        guard duration > maxDuration else {
-            return sourceURL
-        }
+            print("[RecordingManager] Attempting to recover from media services reset")
 
-        // Create output URL for trimmed file
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let trimmedURL = documentsPath.appendingPathComponent("trimmed_\(Int(Date().timeIntervalSince1970)).m4a")
+            // Media services reset means all audio objects are invalid
+            // We need to stop and notify the user
 
-        // Remove existing file if it exists
-        if FileManager.default.fileExists(atPath: trimmedURL.path) {
-            try FileManager.default.removeItem(at: trimmedURL)
-        }
-
-        // Create time range for trimming (last maxDuration seconds)
-        let startTime = CMTime(seconds: max(0, duration - maxDuration), preferredTimescale: 600)
-        let endTime = CMTime(seconds: duration, preferredTimescale: 600)
-        let timeRange = CMTimeRange(start: startTime, end: endTime)
-
-        // Create export session
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            throw NSError(domain: "AudioEngine", code: -1,
-                         userInfo: [NSLocalizedDescriptionKey: "Failed to create export session for trimming"])
-        }
-
-        exportSession.outputURL = trimmedURL
-        exportSession.outputFileType = .m4a
-        exportSession.timeRange = timeRange
-
-        // Wait for export completion using continuation
-        let finalURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
-            nonisolated(unsafe) let session = exportSession
-            session.exportAsynchronously {
-                if session.status == .failed {
-                    if let error = session.error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(throwing: NSError(domain: "AudioEngine", code: -1,
-                                                           userInfo: [NSLocalizedDescriptionKey: "Export failed with unknown error"]))
-                    }
-                } else if session.status == .completed {
-                    continuation.resume(returning: trimmedURL)
-                } else {
-                    continuation.resume(throwing: NSError(domain: "AudioEngine", code: -1,
-                                                       userInfo: [NSLocalizedDescriptionKey: "Audio trimming failed with status: \(session.status)"]))
+            // Clean up invalid objects
+            if let engine = audioEngine {
+                if inputNodeTapInstalled {
+                    engine.inputNode.removeTap(onBus: 0)
+                    inputNodeTapInstalled = false
                 }
+                engine.stop()
+            }
+
+            // Finish writer if exists
+            if assetWriter != nil {
+                finishWriter()
+            }
+
+            audioEngine = nil
+            converter = nil
+            aacFormat = nil
+            isRecording = false
+            isPaused = false
+
+            stopDurationMonitoring()
+            stopWaveLevelMonitoring()
+            stopRecordingHealthCheck()
+
+            // Notify delegate about the failure
+            let error = NSError(
+                domain: "AudioEngine",
+                code: -2001,
+                userInfo: [NSLocalizedDescriptionKey: "Recording lost due to system audio reset. Please start a new recording."]
+            )
+            delegate?.recordingDidEncounterError(error)
+            delegate?.recordingDidChangeStatus("stopped")
+        }
+    }
+
+    // Handle when recording was silently stopped
+    private func handleRecordingLost() {
+        print("[RecordingManager] Recording was lost - cleaning up and notifying UI")
+
+        // Clean up resources
+        if let engine = audioEngine {
+            if inputNodeTapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+                inputNodeTapInstalled = false
+            }
+            engine.stop()
+        }
+
+        if assetWriter != nil {
+            finishWriter()
+        }
+
+        audioEngine = nil
+        converter = nil
+        aacFormat = nil
+        isRecording = false
+        isPaused = false
+
+        stopDurationMonitoring()
+        stopWaveLevelMonitoring()
+        stopRecordingHealthCheck()
+
+        // Notify the UI with a clear error
+        let error = NSError(
+            domain: "AudioEngine",
+            code: -2000,
+            userInfo: [NSLocalizedDescriptionKey: "Recording was interrupted by the system. The microphone is no longer available. Please start a new recording."]
+        )
+        delegate?.recordingDidEncounterError(error)
+        delegate?.recordingDidChangeStatus("stopped")
+    }
+
+    // MARK: - Recording Health Check
+
+    private func startRecordingHealthCheck() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // Check every 30 seconds
+            self.healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+                self?.performRecordingHealthCheck()
             }
         }
-
-        log("Successfully trimmed audio from \(duration)s to \(maxDuration)s (last \(maxDuration) seconds)")
-
-        // Clean up original file
-        try FileManager.default.removeItem(at: sourceURL)
-
-        return finalURL
     }
 
-    func switchMicrophone(to id: Int) {
-        // Implementation for switching microphones
-        log("Microphone switching not yet implemented")
+    private func stopRecordingHealthCheck() {
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
     }
 
-    func isMicrophoneBusy() -> (isBusy: Bool, reason: String) {
-        return checkMicrophoneAvailabilityWithSystemAPIs()
-    }
+    private func performRecordingHealthCheck() {
+        performStateOperation {
+            guard isRecording && !isPaused else { return }
 
-    func getAvailableMicrophones() -> [[String: Any]] {
-        let audioSession = AVAudioSession.sharedInstance()
-        let availableInputs = audioSession.availableInputs ?? []
+            // Verify engine is still running
+            guard let engine = audioEngine, engine.isRunning else {
+                print("[RecordingManager] Health check FAILED: Engine not running")
+                handleRecordingLost()
+                return
+            }
 
-        return availableInputs.map { input in
-            return [
-                "id": input.uid,
-                "name": input.portName,
-                "type": input.portType.rawValue
-            ]
+            // Verify writer is healthy
+            if let writer = assetWriter, writer.status != .writing {
+                print("[RecordingManager] Health check FAILED: Writer status: \(writer.status.rawValue)")
+                handleRecordingLost()
+                return
+            }
+
+            print("[RecordingManager] Health check PASSED")
         }
     }
 
@@ -770,517 +999,120 @@ class RecordingManager: NSObject {
 
     private func startDurationMonitoring() {
         stopDurationMonitoring()
+        print("[RecordingManager] Starting duration monitoring for recording")
 
-        log("Starting duration monitoring")
+        isDurationMonitoring = true
+        isDurationPaused = false
+        currentDuration = 0.0
 
-        let dispatchQueue = DispatchQueue.global(qos: .userInteractive)
-        let dispatchSource = DispatchSource.makeTimerSource(queue: dispatchQueue)
-
-        dispatchSource.schedule(deadline: .now(), repeating: .seconds(Int(AudioEngineConstants.timerInterval)))
-        dispatchSource.setEventHandler { [weak self] in
-            guard let self = self else { return }
-
-            // Get duration from segment rolling manager
-            // Avoid reporting during reset to prevent races while manager is being cleaned/recreated
-            if self.isResetting { return }
-
-            let duration = self.segmentRollingManager?.getElapsedRecordingTime() ?? 0
-            self.currentDuration = duration
-
-            self.lastReportedDuration = duration
-
-            // Note: No auto-stop when maxDuration is reached - recording continues until manually stopped
-            // This matches Android behavior where trimming happens during stopRecording()
-            if let maxDuration = self.maxDuration, duration >= maxDuration {
-                self.log("Duration (\(duration)s) has reached maxDuration (\(maxDuration)s) - recording continues, will trim on stop")
-            }
-
-            DispatchQueue.main.async {
-                let integerDuration = Int(duration)
-                self.delegate?.recordingDidUpdateDuration(integerDuration)
+        // Schedule on main run loop to ensure timer fires
+        DispatchQueue.main.async { [weak self] in
+            guard let strongSelf = self else { return }
+            strongSelf.durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                if !self.isDurationPaused && self.isDurationMonitoring {
+                    self.currentDuration += 1.0
+                    self.delegate?.recordingDidUpdateDuration(self.currentDuration)
+                }
             }
         }
-
-        self.durationDispatchSource = dispatchSource
-        dispatchSource.resume()
-
-        log("Duration monitoring started with dispatch source timer")
     }
 
     private func stopDurationMonitoring() {
-        log("Stopping duration monitoring")
-
-        if let dispatchSource = durationDispatchSource {
-            dispatchSource.cancel()
-            durationDispatchSource = nil
-        }
-
-        lastReportedDuration = nil
+        durationTimer?.invalidate()
+        durationTimer = nil
+        isDurationMonitoring = false
+        isDurationPaused = false
+        print("[RecordingManager] Duration monitoring stopped")
     }
 
-    // MARK: - Helper Methods
+    private func pauseDurationMonitoring() {
+        isDurationPaused = true
+        print("[RecordingManager] Duration monitoring paused")
+    }
 
-        private func processRecordingFile(_ fileToReturn: URL) {
-        log("Starting processRecordingFile for: \(fileToReturn.path)")
+    private func resumeDurationMonitoring() {
+        isDurationPaused = false
+        print("[RecordingManager] Duration monitoring resumed")
+    }
 
-        // Cancel any existing processing task
-        processingTask?.cancel()
+    // MARK: - Wave Level Monitoring
 
-        // Start new async processing task
-        processingTask = Task {
-            do {
-                // Get basic file info
-                let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileToReturn.path)
-                let fileSize = fileAttributes[.size] as? Int64 ?? 0
-                let modificationDate = fileAttributes[.modificationDate] as? Date ?? Date()
+    private func startWaveLevelMonitoring() {
+        stopWaveLevelMonitoring()
+        print("[RecordingManager] Starting wave level monitoring for recording")
 
-                self.log("File attributes - size: \(fileSize), modified: \(modificationDate)")
+        isWaveLevelMonitoring = true
+        isWaveLevelPaused = false
 
-                // Check if task was cancelled
-                try Task.checkCancellation()
-
-                // Calculate duration asynchronously
-                let asset = AVAsset(url: fileToReturn)
-                let durationInSeconds = await asset.loadDurationAsync()
-
-                self.log("Recording duration calculated: \(durationInSeconds) seconds")
-
-                // Check if task was cancelled before expensive operation
-                try Task.checkCancellation()
-
-
-                // Check if task was cancelled before creating response
-                try Task.checkCancellation()
-
-                // Create response with actual duration
-                let response = self.createRecordingResponseWithDuration(
-                    fileToReturn: fileToReturn,
-                    fileSize: fileSize,
-                    modificationDate: modificationDate,
-                    durationInSeconds: durationInSeconds
-                )
-
-                self.log("Created response with duration: \(durationInSeconds)s")
-
-                // Return to main actor for delegate callback
-                await MainActor.run {
-                    self.log("Calling delegate recordingDidFinish")
-                    self.delegate?.recordingDidFinish(response)
-                }
-
-            } catch is CancellationError {
-                self.log("Recording processing was cancelled")
-            } catch {
-                self.log("Error in processRecordingFile: \(error.localizedDescription)")
-                await MainActor.run {
-                    self.delegate?.recordingDidEncounterError(error.asNSError)
+        // Schedule on main run loop to ensure timer fires
+        DispatchQueue.main.async { [weak self] in
+            guard let strongSelf = self else { return }
+            strongSelf.waveLevelTimer = Timer.scheduledTimer(withTimeInterval: strongSelf.waveLevelEmissionInterval, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                if !self.isWaveLevelPaused && self.isWaveLevelMonitoring {
+                    // Calculate wave level from audio engine
+                    let level = self.calculateWaveLevel()
+                    let timestamp = Date().timeIntervalSince1970
+                    self.delegate?.recordingDidEmitWaveLevel(level, timestamp: timestamp)
                 }
             }
         }
     }
 
-    private func createRecordingResponse(fileToReturn: URL, fileSize: Int64, modificationDate: Date, durationInSeconds: Double) -> [String: Any] {
-        let sampleRate = getSampleRate()
-        let channels = getChannels()
-        let bitrate = getBitrate()
-
-        let roundedDuration = round(durationInSeconds * AudioEngineConstants.durationRoundingFactor) / AudioEngineConstants.durationRoundingFactor
-
-        return [
-            "path": fileToReturn.path,
-            "uri": fileToReturn.absoluteString,
-            "webPath": "capacitor://localhost/_capacitor_file_" + fileToReturn.path,
-            "mimeType": AudioEngineConstants.mimeTypeM4A,
-            "size": fileSize,
-            "duration": roundedDuration,
-            "sampleRate": Int(sampleRate),
-            "channels": channels,
-            "bitrate": bitrate,
-            "createdAt": Int(modificationDate.timeIntervalSince1970 * AudioEngineConstants.timestampMultiplier),
-            "filename": fileToReturn.lastPathComponent
-        ]
+    private func stopWaveLevelMonitoring() {
+        waveLevelTimer?.invalidate()
+        waveLevelTimer = nil
+        isWaveLevelMonitoring = false
+        isWaveLevelPaused = false
+        print("[RecordingManager] Wave level monitoring stopped")
     }
 
-    private func createRecordingResponseWithDuration(
-        fileToReturn: URL,
-        fileSize: Int64,
-        modificationDate: Date,
-        durationInSeconds: Double
-    ) -> [String: Any] {
-        let sampleRate = getSampleRate()
-        let channels = getChannels()
-        let bitrate = getBitrate()
-
-        let roundedDuration = round(durationInSeconds * AudioEngineConstants.durationRoundingFactor) / AudioEngineConstants.durationRoundingFactor
-
-        return [
-            "path": fileToReturn.path,
-            "uri": fileToReturn.absoluteString,
-            "webPath": "capacitor://localhost/_capacitor_file_" + fileToReturn.path,
-            "mimeType": AudioEngineConstants.mimeTypeM4A,
-            "size": fileSize,
-            "duration": roundedDuration,
-            "sampleRate": Int(sampleRate),
-            "channels": channels,
-            "bitrate": bitrate,
-            "createdAt": Int(modificationDate.timeIntervalSince1970 * AudioEngineConstants.timestampMultiplier),
-            "filename": fileToReturn.lastPathComponent
-        ]
+    private func pauseWaveLevelMonitoring() {
+        isWaveLevelPaused = true
+        print("[RecordingManager] Wave level monitoring paused")
     }
 
-
-
-    private func getRecorderSettings() -> [String: Any] {
-        // Use stored settings instead of trying to read from segment rolling manager
-        return storedRecordingSettings.isEmpty ? getDefaultSettings() : storedRecordingSettings
+    private func resumeWaveLevelMonitoring() {
+        isWaveLevelPaused = false
+        print("[RecordingManager] Wave level monitoring resumed")
     }
 
-    private func getDefaultSettings() -> [String: Any] {
-        return [
-            "sampleRate": Int(AudioEngineConstants.defaultSampleRate),
-            "channels": AudioEngineConstants.defaultChannels,
-            "bitrate": AudioEngineConstants.defaultBitrate
-        ]
+    private func calculateWaveLevel() -> Double {
+        // For now, return a simple calculated value based on audio engine state
+        // In a real implementation, this would calculate RMS from the audio buffer
+        guard let audioEngine = audioEngine, audioEngine.isRunning else {
+            return 0.0
+        }
+
+        // Simple wave level calculation - in practice, this would use the audio tap buffer
+        // For now, return a random value between 0.0 and 1.0 to simulate audio levels
+        return Double.random(in: 0.0...1.0)
     }
 
-    private func getSampleRate() -> Double {
-        return Double(storedRecordingSettings["sampleRate"] as? Int ?? Int(AudioEngineConstants.defaultSampleRate))
+    // MARK: - Public Methods
+
+    func setWaveLevelEmissionInterval(_ intervalMs: Int) {
+        let clampedInterval = max(50, min(500, intervalMs))
+        waveLevelEmissionInterval = TimeInterval(clampedInterval) / 1000.0
+        print("[RecordingManager] Wave level emission interval set to: \(clampedInterval)ms")
     }
 
-    private func getChannels() -> Int {
-        return storedRecordingSettings["channels"] as? Int ?? AudioEngineConstants.defaultChannels
+    func getCurrentDuration() -> Double {
+        return currentDuration
     }
 
-    private func getBitrate() -> Int {
-        return storedRecordingSettings["bitrate"] as? Int ?? AudioEngineConstants.defaultBitrate
-    }
-
-    /// Comprehensive cleanup of all recording resources
-    private func cleanup() {
-        log("Starting comprehensive cleanup")
-
-
-
-        // Cancel any running processing tasks
-        processingTask?.cancel()
-        processingTask = nil
-
-        // Stop duration monitoring
-        stopDurationMonitoring()
-
-        // Clean up segment rolling manager
-        segmentRollingManager?.cleanup()
-        segmentRollingManager = nil
-
-        // Remove interruption handling observers
-        removeAudioInterruptionHandling()
-
-        // Reset audio session
-        if let session = recordingSession {
-            do {
-                try session.setActive(false, options: .notifyOthersOnDeactivation)
-                recordingSession = nil
-                log("Audio session deactivated")
-            } catch {
-                log("Warning: Failed to deactivate audio session: \(error.localizedDescription)")
+    func getStatus() -> (status: String, duration: Double, path: String?) {
+        return performStateOperation {
+            let statusString: String
+            if !isRecording {
+                statusString = "idle"
+            } else if isPaused {
+                statusString = "paused"
+            } else {
+                statusString = "recording"
             }
+            return (status: statusString, duration: currentDuration, path: fileURL?.path)
         }
-
-        // Clear all state
-        isRecording = false
-        currentDuration = 0
-        lastReportedDuration = nil
-        storedRecordingSettings.removeAll()
-        maxDuration = nil
-
-        log("Cleanup completed")
-    }
-
-    private func resetRecordingState() {
-        log("Resetting recording state")
-
-        // Reset recording state
-        currentDuration = 0
-        lastReportedDuration = nil
-        storedRecordingSettings.removeAll()
-
-        // Stop duration monitoring
-        stopDurationMonitoring()
-
-        // Keep audio session active and configured for potential immediate playback
-        // Don't reset to .playback with .mixWithOthers as it reduces volume
-        if let session = recordingSession {
-            do {
-                // Maintain .playAndRecord configuration for seamless recording-to-playback transition
-                try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
-                // Keep session active for immediate playback capability
-                try session.setActive(true)
-                log("Audio session maintained for seamless playback transition")
-            } catch {
-                log("Warning: Failed to maintain audio session: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    // MARK: - Microphone Availability
-
-    private func checkMicrophoneAvailabilityWithSystemAPIs() -> (isBusy: Bool, reason: String) {
-        let audioSession = AVAudioSession.sharedInstance()
-
-        guard audioSession.recordPermission == .granted else {
-            return (true, "Microphone permission not granted")
-        }
-
-        if #available(iOS 14.0, *) {
-            do {
-                try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
-                try audioSession.setActive(true)
-
-                let availableInputs = audioSession.availableInputs ?? []
-                let _ = audioSession.preferredInput
-
-                if availableInputs.isEmpty {
-                    return (true, "No microphone inputs available")
-                }
-
-                for input in availableInputs {
-                    if input.portType == .builtInMic {
-                        do {
-                            try audioSession.setPreferredInput(input)
-                            return (false, "Microphone is available")
-                        } catch {
-                            return (true, "Cannot set preferred microphone input - may be in use")
-                        }
-                    }
-                }
-
-                return (false, "Microphone appears available")
-
-            } catch {
-                return (true, "Failed to configure audio session for microphone check")
-            }
-        } else {
-            return checkMicrophoneAvailabilityLegacy()
-        }
-    }
-
-    private func checkMicrophoneAvailabilityLegacy() -> (isBusy: Bool, reason: String) {
-        let audioSession = AVAudioSession.sharedInstance()
-
-        if audioSession.isOtherAudioPlaying {
-            return (true, "Another app is playing audio")
-        }
-
-        let currentRoute = audioSession.currentRoute
-        let inputs = currentRoute.inputs
-
-        if inputs.isEmpty {
-            return (true, "No audio inputs available")
-        }
-
-        for input in inputs {
-            if input.portType == .builtInMic || input.portType == .headsetMic {
-                let dataSources = input.dataSources ?? []
-                if dataSources.isEmpty && input.selectedDataSource == nil {
-                    return (true, "Microphone input may be in use by another app")
-                }
-            }
-        }
-
-        return (false, "Microphone appears available")
-    }
-
-    // MARK: - Audio Interruption Handling
-
-    /**
-     * Set up audio session interruption handling
-     */
-    private func setupAudioInterruptionHandling() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleAudioSessionInterruption(_:)),
-            name: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance()
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleAudioSessionRouteChange(_:)),
-            name: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance()
-        )
-
-        log("Audio interruption handling set up")
-    }
-
-    /**
-     * Remove audio session interruption observers
-     */
-    private func removeAudioInterruptionHandling() {
-        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
-        NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
-        log("Audio interruption handling removed")
-    }
-
-    /**
-     * Handle AVAudioSession interruptions (phone calls, Siri, etc.)
-     */
-    @objc private func handleAudioSessionInterruption(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-            return
-        }
-
-        log("Audio session interruption: \(type == .began ? "began" : "ended")")
-
-        switch type {
-        case .began:
-            let interruptionReason = determineInterruptionReason(userInfo)
-            log("Interruption reason: \(interruptionReason)")
-
-            // Pause duration monitoring for ALL interruptions to ensure accurate timing
-            stopDurationMonitoring()
-
-            switch interruptionReason {
-            case .phoneCall, .siri:
-                log("Critical interruption (\(interruptionReason)) - pausing recording and duration")
-                pauseRecording()
-
-            case .systemNotification, .audioFocusLoss, .unknown:
-                log("Non-critical interruption (\(interruptionReason)) - continuing recording but pausing duration")
-                // Continue recording for non-critical interruptions, but duration is already paused above
-
-                // Ensure audio session remains active for minor interruptions
-                do {
-                    let audioSession = AVAudioSession.sharedInstance()
-                    if !audioSession.isOtherAudioPlaying {
-                        try audioSession.setActive(true)
-                        log("Reactivated audio session during non-critical interruption")
-                    }
-                } catch {
-                    log("Warning: Could not reactivate audio session: \(error.localizedDescription)")
-                }
-            }
-
-        case .ended:
-            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
-                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                if options.contains(.shouldResume) {
-                    log("Resuming recording after interruption")
-                    do {
-                        // Reactivate audio session
-                        try AVAudioSession.sharedInstance().setActive(true)
-
-                        // Resume recording if it was paused (critical interruptions)
-                        if !isRecording && isPaused {
-                            resumeRecording()
-                        } else if isRecording {
-                            // For non-critical interruptions, just restart duration monitoring
-                            log("Restarting duration monitoring after non-critical interruption")
-                            startDurationMonitoring()
-                        }
-                    } catch {
-                        log("Failed to resume recording after interruption: \(error.localizedDescription)")
-                        delegate?.recordingDidEncounterError(error)
-                    }
-                } else {
-                    // Even if we shouldn't resume recording, restart duration monitoring if recording is active
-                    if isRecording {
-                        log("Restarting duration monitoring after interruption (no resume)")
-                        startDurationMonitoring()
-                    }
-                }
-            }
-
-        @unknown default:
-            log("Unknown audio session interruption type: \(typeValue)")
-        }
-    }
-
-    /**
-     * Handle AVAudioSession route changes (headphone connect/disconnect, etc.)
-     */
-    @objc private func handleAudioSessionRouteChange(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
-            return
-        }
-
-        log("Audio route changed: \(reason.rawValue)")
-
-        switch reason {
-        case .oldDeviceUnavailable:
-            log("Old audio device unavailable (e.g., headphones disconnected)")
-            // Continue recording on built-in microphone
-
-        case .newDeviceAvailable:
-            log("New audio device available (e.g., headphones connected)")
-
-        default:
-            log("Other audio route change: \(reason.rawValue)")
-        }
-    }
-
-    /**
-     * Determine interruption reason - enhanced phone call detection
-     */
-    private func determineInterruptionReason(_ userInfo: [AnyHashable: Any]) -> InterruptionReason {
-        log("Determining interruption reason from userInfo: \(userInfo)")
-
-        // Enhanced phone call detection
-        let audioSession = AVAudioSession.sharedInstance()
-
-        // Method 1: Check if other audio is playing (phone call audio)
-        if audioSession.isOtherAudioPlaying {
-            log("Other audio is playing during interruption - likely phone call")
-            return .phoneCall
-        }
-
-        // Method 2: Check current route for phone call indicators
-        let currentRoute = audioSession.currentRoute
-        log("Current audio route outputs: \(currentRoute.outputs.map { $0.portType.rawValue })")
-
-        for output in currentRoute.outputs {
-            if output.portType == .builtInReceiver {
-                log("Audio route using built-in receiver port - indicating phone call")
-                return .phoneCall
-            }
-        }
-
-        // For safety, default to phone call to prevent file corruption
-        // Better to pause unnecessarily than to corrupt the recording
-        log("Defaulting to phone call for safety (prevents file corruption)")
-        return .phoneCall
-    }
-
-    /**
-     * Interruption reason categories
-     */
-    private enum InterruptionReason {
-        case phoneCall
-        case siri
-        case systemNotification
-        case audioFocusLoss
-        case unknown
-
-        var description: String {
-            switch self {
-            case .phoneCall: return "Phone Call"
-            case .siri: return "Siri"
-            case .systemNotification: return "System Notification"
-            case .audioFocusLoss: return "Audio Focus Loss"
-            case .unknown: return "Unknown"
-            }
-        }
-    }
-
-    // MARK: - Utility Methods
-
-    private func log(_ message: String) {
-        #if DEBUG
-        print("[RecordingManager] \(message)")
-        #endif
     }
 }

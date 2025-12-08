@@ -2,17 +2,6 @@ import Foundation
 import AVFoundation
 import UserNotifications
 
-/**
- * Standalone Permission Manager Service for iOS that handles audio recording permissions
- * with detailed status information and granular control.
- *
- * Provides comprehensive permission status mapping for iOS:
- * - GRANTED: Permission is granted permanently
- * - DENIED: Permission was denied permanently
- * - NOT_DETERMINED: Permission has never been requested
- * - LIMITED: Permission granted only for current session (iOS 14+)
- * - RESTRICTED: Permission restricted by device policy/parental controls
- */
 @objc public class PermissionManagerService: NSObject {
 
     // MARK: - Types
@@ -58,48 +47,64 @@ import UserNotifications
     // MARK: - Public Methods
 
     /**
-     * Check detailed permission status for all audio-related permissions
+     * Check simplified permission status for all audio-related permissions
      */
     @objc public func checkPermissions() async -> [String: Any] {
         // Check microphone permission
-        let microphoneResult = await checkSinglePermissionStatus(.microphone)
+        let microphoneStatus = await getMicrophonePermissionStatus()
 
         // Check notification permission
-        let notificationResult = await checkSinglePermissionStatus(.notifications)
+        let notificationStatus = await getNotificationPermissionStatus()
 
         // Determine overall granted status
-        let microphoneGranted = (microphoneResult["status"] as? String) == "granted"
-        let notificationGranted = (notificationResult["status"] as? String) == "granted" ||
-                                  (notificationResult["status"] as? String) == "unsupported"
+        let microphoneGranted = microphoneStatus == .granted
+        let notificationGranted = notificationStatus == .granted || notificationStatus == .unsupported
         let overallGranted = microphoneGranted && notificationGranted
 
-        var result: [String: Any] = [
+        // Determine overall status - prioritize the most restrictive status
+        let overallStatus: PermissionStatus
+        if overallGranted {
+            overallStatus = .granted
+        } else if microphoneStatus == .deniedPermanently || notificationStatus == .deniedPermanently {
+            overallStatus = .deniedPermanently
+        } else if microphoneStatus == .denied || notificationStatus == .denied {
+            overallStatus = .denied
+        } else if microphoneStatus == .restricted || notificationStatus == .restricted {
+            overallStatus = .restricted
+        } else if microphoneStatus == .notDetermined || notificationStatus == .notDetermined {
+            overallStatus = .notDetermined
+        } else {
+            overallStatus = .denied
+        }
+
+        return [
             "granted": overallGranted,
-            "microphone": microphoneResult,
-            "notifications": notificationResult
+            "status": overallStatus.stringValue
         ]
-
-        // Add platform info
-        let platformInfo: [String: Any] = [
-            "canPromptAgain": canPromptForPermissions()
-        ]
-        result["platformInfo"] = platformInfo
-
-        return result
     }
 
     /**
-     * Check microphone permission status with detailed information
+     * Check microphone permission status with simplified information
      */
     @objc public func checkPermissionMicrophone() async -> [String: Any] {
-        return await checkSinglePermissionStatus(.microphone)
+        let status = await getMicrophonePermissionStatus()
+        let granted = status == .granted
+        return [
+            "granted": granted,
+            "status": status.stringValue
+        ]
     }
 
     /**
-     * Check notification permission status with detailed information
+     * Check notification permission status with simplified information
      */
     @objc public func checkPermissionNotifications() async -> [String: Any] {
-        return await checkSinglePermissionStatus(.notifications)
+        let status = await getNotificationPermissionStatus()
+        let granted = status == .granted || status == .unsupported
+        return [
+            "granted": granted,
+            "status": status.stringValue
+        ]
     }
 
     /**
@@ -211,7 +216,7 @@ import UserNotifications
     /**
      * Request detailed permissions with options
      */
-    @objc public func requestDetailedPermissions(options: [String: Any]?) async -> [String: Any] {
+    @objc public func requestPermissions(options: [String: Any]?) async -> [String: Any] {
         // Check current status
         let currentStatus = await checkPermissions()
         let alreadyGranted = currentStatus["granted"] as? Bool ?? false
@@ -296,6 +301,63 @@ import UserNotifications
             print("Error requesting notification permission: \(error)")
             return false
         }
+    }
+
+    /**
+     * Request microphone permission only
+     */
+    @objc public func requestPermissionMicrophone(options: [String: Any]?) async -> [String: Any] {
+        // Check current status
+        let currentStatus = await checkPermissionMicrophone()
+        let alreadyGranted = currentStatus["granted"] as? Bool ?? false
+
+        if alreadyGranted {
+            return currentStatus
+        }
+
+        let micStatus = await getMicrophonePermissionStatus()
+
+        if micStatus == .notDetermined {
+            // Request microphone permission
+            markPermissionAsRequested(.microphone)
+            let granted = await requestMicrophonePermission()
+
+            if !granted {
+                // Permission denied, return current status
+                return await checkPermissionMicrophone()
+            }
+        }
+
+        // Return final status
+        return await checkPermissionMicrophone()
+    }
+
+    /**
+     * Request notification permission only
+     */
+    @objc public func requestPermissionNotifications(options: [String: Any]?) async -> [String: Any] {
+        // Check current status
+        let currentStatus = await checkPermissionNotifications()
+        let alreadyGranted = currentStatus["granted"] as? Bool ?? false
+
+        if alreadyGranted {
+            return currentStatus
+        }
+
+        if #available(iOS 10.0, *) {
+            let notificationStatus = await getNotificationPermissionStatus()
+
+            if notificationStatus != .granted && notificationStatus != .unsupported {
+                if notificationStatus == .notDetermined {
+                    // Request notification permission
+                    markPermissionAsRequested(.notifications)
+                    let _ = await requestNotificationPermission()
+                }
+            }
+        }
+
+        // Return final status
+        return await checkPermissionNotifications()
     }
 
     /**

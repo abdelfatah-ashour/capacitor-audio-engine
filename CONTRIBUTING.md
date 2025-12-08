@@ -9,15 +9,15 @@ This guide provides instructions for contributing to this Capacitor plugin.
 1. Fork and clone the repo.
 1. Install the dependencies.
 
-    ```shell
-    npm install
-    ```
+   ```shell
+   npm install
+   ```
 
 1. Install SwiftLint if you're on macOS.
 
-    ```shell
-    brew install swiftlint
-    ```
+   ```shell
+   brew install swiftlint
+   ```
 
 ### Scripts
 
@@ -40,6 +40,38 @@ This is useful to run in CI to verify that the plugin builds for all platforms.
 Check formatting and code quality, autoformat/autofix if possible.
 
 This template is integrated with ESLint, Prettier, and SwiftLint. Using these tools is completely optional, but the [Capacitor Community](https://github.com/capacitor-community/) strives to have consistent code style and structure for easier cooperation.
+
+## Android Dependency Management
+
+### AAR Dependencies
+
+When adding AAR dependencies to the plugin, use the modern Maven-based approach instead of the legacy `flatDir` method:
+
+**❌ Old approach (deprecated):**
+
+```gradle
+repositories {
+    flatDir {
+        dirs 'libs'
+    }
+}
+dependencies {
+    implementation(name: 'myplugin', ext: 'aar')
+}
+```
+
+**✅ New approach (recommended):**
+
+```gradle
+repositories {
+    maven { url uri("$rootDir/android/local-maven-repo") }
+}
+dependencies {
+    implementation 'local.plugins:myplugin:1.0.0'
+}
+```
+
+The project includes a `publishAarsToLocalMaven` task in `android/build.gradle` that automatically publishes AAR files from `libs` directories to a local Maven repository with the group ID `local.plugins` and version `1.0.0`.
 
 ## Publishing
 

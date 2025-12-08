@@ -1,1030 +1,422 @@
 import Foundation
-@preconcurrency import AVFoundation
-@preconcurrency import MediaPlayer
+import AVFoundation
 
+/**
+ * Delegate protocol for playback events
+ */
 protocol PlaybackManagerDelegate: AnyObject {
-    func playbackManager(_ manager: PlaybackManager, trackDidChange track: AudioTrack, at index: Int)
-    func playbackManager(_ manager: PlaybackManager, trackDidEnd track: AudioTrack, at index: Int)
-    func playbackManager(_ manager: PlaybackManager, playbackDidStart track: AudioTrack, at index: Int)
-    func playbackManager(_ manager: PlaybackManager, playbackDidPause track: AudioTrack, at index: Int)
-    func playbackManager(_ manager: PlaybackManager, playbackDidFail error: Error)
-    func playbackManager(_ manager: PlaybackManager, playbackProgress track: AudioTrack, at index: Int, currentPosition: Double, duration: Double, isPlaying: Bool)
-    func playbackManager(_ manager: PlaybackManager, statusChanged track: AudioTrack?, at index: Int, status: PlaybackStatus, currentPosition: Double, duration: Double, isPlaying: Bool)
+    func playbackDidChangeStatus(_ status: String, url: String, position: Int)
+    func playbackDidEncounterError(_ trackId: String, message: String)
+    func playbackDidUpdateProgress(_ trackId: String, url: String, currentPosition: Int, duration: Int, isPlaying: Bool)
+    func playbackDidComplete(_ trackId: String, url: String)
 }
 
-class PlaybackManager: NSObject {
-    weak var delegate: PlaybackManagerDelegate?
+/**
+ * Manages audio playback for multiple tracks with AVPlayer
+ * Follows clean architecture and separation of concerns
+ */
+final class PlaybackManager: NSObject {
 
     // MARK: - Properties
-    private var player: AVPlayer?
-    private var playerItems: [AVPlayerItem] = []
-    private var playlist: [AudioTrack] = []
-    private var currentIndex: Int = 0
-    private var _status: PlaybackStatus = .idle
-    private var preloadNext: Bool = true
 
-    // Thread-safe status access
-    private var status: PlaybackStatus {
-        get {
-            return performQueueOperation { _status }
-        }
-        set {
-            performQueueOperation { _status = newValue }
-        }
-    }
+    private let stateQueue = DispatchQueue(label: "audio-engine-playback-state", qos: .userInitiated)
+    private weak var delegate: PlaybackManagerDelegate?
 
-    // MARK: - Caching
-    private var artworkCache: [String: UIImage] = [:]
+    // Track management
+    private var preloadedTracks: [String: TrackInfo] = [:]
 
-    // MARK: - Observers
-    private var timeObserver: Any?
-    private var playerItemObservers: [NSKeyValueObservation] = []
+    // Current playback state
+    private var currentTrackUrl: String?
+    private var currentTrackId: String?
+    private var currentStatus: PlaybackStatus = .idle
 
-    // MARK: - Queue for thread safety
-    private let playbackQueue = DispatchQueue(label: "playback-manager", qos: .userInteractive)
-    private let playbackQueueKey = DispatchSpecificKey<String>()
-    private let playbackQueueValue = "playback-manager-queue"
+    // Progress monitoring
+    private var progressTimer: Timer?
+    private var isProgressMonitoring: Bool = false
 
-    // MARK: - Event debouncing
-    private var lastStatusChangeTime: TimeInterval = 0
-    private let statusChangeDebounceInterval: TimeInterval = 0.1 // 100ms debounce
+    // Audio session observation
+    private var audioSessionObserver: NSObjectProtocol?
 
-    // MARK: - Helper Methods
+    // MARK: - Supporting Types
 
-    /// Thread-safe queue operation wrapper
-    private func performQueueOperation<T>(_ operation: () throws -> T) rethrows -> T {
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            return try operation()
-        } else {
-            return try playbackQueue.sync { try operation() }
+    private enum PlaybackStatus {
+        case idle
+        case loading
+        case playing
+        case paused
+
+        var stringValue: String {
+            switch self {
+            case .idle: return "idle"
+            case .loading: return "loading"
+            case .playing: return "playing"
+            case .paused: return "paused"
+            }
         }
     }
 
-    /// Execute operation with error handling
-    private func executeWithErrorHandling<T>(_ operation: () throws -> T) -> Result<T, Error> {
-        do {
-            let result = try operation()
-            return .success(result)
-        } catch {
-            return .failure(error)
+    private class TrackInfo {
+        let url: String
+        let trackId: String
+        var player: AVPlayer?
+        var playerItem: AVPlayerItem?
+        var isLoaded: Bool = false
+        var mimeType: String = ""
+        var duration: Int = 0
+        var size: Int64 = 0
+
+        // KVO observations
+        var statusObserver: NSKeyValueObservation?
+        var durationObserver: NSKeyValueObservation?
+
+        init(url: String, trackId: String) {
+            self.url = url
+            self.trackId = trackId
+        }
+
+        deinit {
+            statusObserver?.invalidate()
+            durationObserver?.invalidate()
         }
     }
 
-    override init() {
+    struct PlaybackInfo {
+        let trackId: String?
+        let url: String?
+        let currentIndex: Int
+        let currentPosition: Int
+        let duration: Int
+        let isPlaying: Bool
+    }
+
+    // MARK: - Initialization
+
+    init(delegate: PlaybackManagerDelegate?) {
+        self.delegate = delegate
         super.init()
-        playbackQueue.setSpecific(key: playbackQueueKey, value: playbackQueueValue)
         setupAudioSession()
-        setupRemoteCommandCenter()
-        setupNotifications()
+        observeAudioSessionInterruptions()
     }
 
     deinit {
-        cleanup()
+        if let observer = audioSessionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        destroy()
     }
 
     // MARK: - Public Methods
 
-    func preloadTracks(trackUrls: [String], preloadNext: Bool = true) throws -> [[String: Any]] {
-        guard !trackUrls.isEmpty else {
-            throw PlaybackError.emptyPlaylist
-        }
-
-        // Convert URLs to AudioTrack objects
-        let tracks = trackUrls.enumerated().map { index, url in
-            AudioTrack(id: "track_\(index)", url: url, title: nil, artist: nil, artworkUrl: nil)
-        }
-
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            return try preloadTracksInternal(tracks, preloadNext: preloadNext)
-        } else {
-            var thrownError: Error?
-            var result: [[String: Any]] = []
-
-            playbackQueue.sync {
-                do {
-                    result = try self.preloadTracksInternal(tracks, preloadNext: preloadNext)
-                } catch {
-                    thrownError = error
-                }
-            }
-
-            if let error = thrownError {
-                throw error
-            }
-
-            return result
-        }
-    }
-
-    private func preloadTracksInternal(_ tracks: [AudioTrack], preloadNext: Bool) throws -> [[String: Any]] {
-        cleanup()
-
-        self.playlist = tracks
-        self.preloadNext = preloadNext
-        self.currentIndex = 0
-        self.status = .loading
-
-        // Track results for each URL
-        var trackResults: [[String: Any]] = []
-        var validPlayerItems: [AVPlayerItem] = []
-
-        for track in tracks {
-            var trackInfo: [String: Any] = ["url": track.url]
-
-            let url: URL?
-
-            // Handle different URL formats (remote URLs, file URIs, and local paths)
-            if track.url.hasPrefix("http://") || track.url.hasPrefix("https://") {
-                // Remote URL
-                if let remoteUrl = URL(string: track.url) {
-                    url = remoteUrl
-                } else {
-                    print("Invalid remote URL for track: \(track.title ?? track.id)")
-                    url = nil
-                }
-            } else if track.url.hasPrefix("file://") {
-                // File URI
-                if let fileUrl = URL(string: track.url) {
-                    url = fileUrl
-                } else {
-                    print("Invalid file URI for track: \(track.title ?? track.id)")
-                    url = nil
-                }
-            } else {
-                // Assume it's a local file path
-                let fileUrl = URL(fileURLWithPath: track.url)
-
-                // Verify that the file exists for local paths
-                if FileManager.default.fileExists(atPath: fileUrl.path) {
-                    url = fileUrl
-                } else {
-                    print("File does not exist for track: \(track.title ?? track.id) at path: \(track.url)")
-                    url = nil
-                }
-            }
-
-            if let validUrl = url {
-                // Create player item and extract metadata
-                let playerItem = AVPlayerItem(url: validUrl)
-                let asset = playerItem.asset
-
-                // For preloading, we'll do minimal synchronous checks and defer heavy loading
-                // This avoids priority inversion while still providing useful information
-
-                // Get basic file information synchronously (fast operations)
-                // Get MIME type from file extension or asset
-                if let mimeType = getMimeType(for: validUrl) {
-                    trackInfo["mimeType"] = mimeType
-                }
-
-                // Get file size for local files (fast for local files)
-                if validUrl.isFileURL {
-                    do {
-                        let attributes = try FileManager.default.attributesOfItem(atPath: validUrl.path)
-                        if let fileSize = attributes[.size] as? NSNumber {
-                            trackInfo["size"] = fileSize.intValue
-                        }
-                    } catch {
-                        print("Failed to get file size for: \(track.url)")
-                    }
-                }
-
-                // For duration, we'll try synchronous access first (works for many formats)
-                let duration = CMTimeGetSeconds(asset.duration)
-                if !duration.isNaN && duration.isFinite && duration > 0 {
-                    trackInfo["duration"] = duration
-                } else {
-                    // Duration not immediately available - will be loaded asynchronously later
-                    // Mark as unknown for now
-                    trackInfo["duration"] = 0.0
-                }
-
-                validPlayerItems.append(playerItem)
-                trackInfo["loaded"] = true
-            } else {
-                trackInfo["loaded"] = false
-            }
-
-            trackResults.append(trackInfo)
-        }
-
-        self.playerItems = validPlayerItems
-
-        // Initialize player with first valid item if any exist
-        if let firstItem = self.playerItems.first {
-            self.player = AVPlayer(playerItem: firstItem)
-            self.setupPlayerObservers()
-            self.status = .idle
-
-            // Preload next track if enabled
-            if self.preloadNext && self.playerItems.count > 1 {
-                self.preloadTrack(at: 1)
-            }
-        } else {
-            self.status = .idle
-        }
-
-        // Load complete metadata asynchronously in the background
-        // This avoids blocking the initial preload response
-        self.loadCompleteMetadata()
-
-        return trackResults
-    }
-
-    private func getMimeType(for url: URL) -> String? {
-        let pathExtension = url.pathExtension.lowercased()
-
-        switch pathExtension {
-        case "mp3":
-            return "audio/mpeg"
-        case "m4a":
-            return "audio/mp4"
-        case "aac":
-            return "audio/aac"
-        case "wav":
-            return "audio/wav"
-        case "flac":
-            return "audio/flac"
-        case "ogg":
-            return "audio/ogg"
-        default:
-            return "audio/mp4" // Default for iOS
-        }
-    }
-
-    /// Asynchronously load complete metadata for tracks that need it
-    /// This is called after the initial fast preload to fill in missing information
-    private func loadCompleteMetadata() {
-        // Load metadata for tracks asynchronously in the background
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+    /**
+     * Preload a track from URL (supports HTTP/HTTPS URLs and local file URIs)
+     */
+    func preloadTrack(url: String, completion: @escaping (Result<(url: String, mimeType: String, duration: Int, size: Int64), Error>) -> Void) {
+        stateQueue.async { [weak self] in
             guard let self = self else { return }
 
-            for (index, playerItem) in self.playerItems.enumerated() {
-                let asset = playerItem.asset
-
-                // Only load if duration is not already available
-                let currentDuration = CMTimeGetSeconds(asset.duration)
-                if currentDuration.isNaN || currentDuration <= 0 {
-                    // Load duration asynchronously
-                    asset.loadValuesAsynchronously(forKeys: ["duration"]) {
-                        let duration = CMTimeGetSeconds(asset.duration)
-                        if !duration.isNaN && duration.isFinite && duration > 0 {
-                            print("Loaded duration for track \(index): \(duration) seconds")
-                        }
-                    }
+            guard !url.isEmpty else {
+                DispatchQueue.main.async {
+                    completion(.failure(NSError(domain: "PlaybackManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
                 }
-            }
-        }
-    }
-
-    func play() throws {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            try playInternal()
-        } else {
-            var thrownError: Error?
-
-            playbackQueue.sync {
-                do {
-                    try self.playInternal()
-                } catch {
-                    thrownError = error
-                }
-            }
-
-            if let error = thrownError {
-                throw error
-            }
-        }
-    }
-
-    private func playInternal() throws {
-        print("PlaybackManager: Starting playInternal()")
-
-        guard let player = self.player else {
-            print("PlaybackManager: No player initialized")
-            throw PlaybackError.playbackFailed("No player initialized")
-        }
-        print("PlaybackManager: Player available")
-
-        guard let currentItem = player.currentItem else {
-            print("PlaybackManager: No current item to play")
-            throw PlaybackError.playbackFailed("No current item to play")
-        }
-        print("PlaybackManager: Current item available")
-        print("PlaybackManager: Current item URL: \(String(describing: (currentItem.asset as? AVURLAsset)?.url))")
-
-        // Check if the current item is ready to play
-        print("PlaybackManager: Current item status: \(currentItem.status.rawValue)")
-        if currentItem.status == .failed {
-            print("PlaybackManager: Current item failed")
-            if let error = currentItem.error as NSError? {
-                print("PlaybackManager: Player item error details:")
-                print("  Domain: \(error.domain)")
-                print("  Code: \(error.code)")
-                print("  Description: \(error.localizedDescription)")
-                print("  UserInfo: \(error.userInfo)")
-                throw PlaybackError.playbackFailed("Player item failed: \(error.localizedDescription)")
-            } else {
-                throw PlaybackError.playbackFailed("Player item failed with unknown error")
-            }
-        }
-
-        guard self.status == .idle || self.status == .paused || self.status == .stopped else {
-            print("PlaybackManager: Already in playing state, returning")
-            return // Already playing
-        }
-        print("PlaybackManager: Status check passed, current status: \(self.status)")
-
-        // Setup audio session for playback
-        print("PlaybackManager: Setting up audio session for playback")
-        do {
-            try self.setupAudioSessionForPlayback()
-            print("PlaybackManager: Audio session setup completed successfully")
-        } catch {
-            print("PlaybackManager: Audio session setup failed: \(error)")
-            throw error
-        }
-
-        print("PlaybackManager: Calling player.play()")
-        player.play()
-        print("PlaybackManager: player.play() completed")
-
-        self.status = .playing
-        print("PlaybackManager: Status set to playing")
-
-        if let currentTrack = self.getCurrentTrack() {
-            print("PlaybackManager: Notifying delegate of playback start")
-            self.delegate?.playbackManager(self, playbackDidStart: currentTrack, at: self.currentIndex)
-            self.updateNowPlayingInfo()
-        }
-
-        self.emitStatusChange()
-        print("PlaybackManager: playInternal() completed successfully")
-    }
-
-    func pause() {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            pauseInternal()
-        } else {
-            playbackQueue.sync {
-                self.pauseInternal()
-            }
-        }
-    }
-
-    private func pauseInternal() {
-        guard let player = self.player else { return }
-
-        player.pause()
-        self.status = .paused
-
-        if let currentTrack = self.getCurrentTrack() {
-            self.delegate?.playbackManager(self, playbackDidPause: currentTrack, at: self.currentIndex)
-        }
-
-        self.emitStatusChange()
-    }
-
-    func resume() {
-        do {
-            try play()
-        } catch {
-            print("Failed to resume playback: \(error)")
-            delegate?.playbackManager(self, playbackDidFail: error)
-        }
-    }
-
-    func stop() {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            stopInternal()
-        } else {
-            playbackQueue.sync {
-                self.stopInternal()
-            }
-        }
-    }
-
-    private func stopInternal() {
-        guard let player = self.player else { return }
-
-        player.pause()
-        player.seek(to: .zero)
-        self.status = .stopped
-
-        self.emitStatusChange()
-    }
-
-    func seek(to seconds: Double) {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            seekInternal(to: seconds)
-        } else {
-            playbackQueue.sync {
-                self.seekInternal(to: seconds)
-            }
-        }
-    }
-
-    private func seekInternal(to seconds: Double) {
-        guard let player = self.player else { return }
-
-        let time = CMTime(seconds: seconds, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-        player.seek(to: time)
-    }
-
-    func skipToNext() {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            skipToNextInternal()
-        } else {
-            playbackQueue.sync {
-                self.skipToNextInternal()
-            }
-        }
-    }
-
-    private func skipToNextInternal() {
-        guard self.currentIndex < self.playlist.count - 1 else { return }
-
-        self.currentIndex += 1
-        self.switchToCurrentTrack()
-    }
-
-    func skipToPrevious() {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            skipToPreviousInternal()
-        } else {
-            playbackQueue.sync {
-                self.skipToPreviousInternal()
-            }
-        }
-    }
-
-    private func skipToPreviousInternal() {
-        guard self.currentIndex > 0 else { return }
-
-        self.currentIndex -= 1
-        self.switchToCurrentTrack()
-    }
-
-    func skipToIndex(_ index: Int) {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            skipToIndexInternal(index)
-        } else {
-            playbackQueue.sync {
-                self.skipToIndexInternal(index)
-            }
-        }
-    }
-
-    private func skipToIndexInternal(_ index: Int) {
-        guard index >= 0 && index < self.playlist.count else { return }
-
-        self.currentIndex = index
-        self.switchToCurrentTrack()
-    }
-
-    func getCurrentTrack() -> AudioTrack? {
-        guard currentIndex >= 0 && currentIndex < playlist.count else { return nil }
-        return playlist[currentIndex]
-    }
-
-    func getCurrentIndex() -> Int {
-        return currentIndex
-    }
-
-    func getCurrentPosition() -> Double {
-        guard let player = player else { return 0.0 }
-        return player.currentTime().seconds
-    }
-
-    func getDuration() -> Double {
-        guard let player = player,
-              let duration = player.currentItem?.duration,
-              !duration.isIndefinite else { return 0.0 }
-        return duration.seconds
-    }
-
-    func isPlaying() -> Bool {
-        return status == .playing
-    }
-
-    func getStatus() -> PlaybackStatus {
-        return performQueueOperation { _status }
-    }
-
-    // MARK: - Per-URL Playback Methods
-
-    func playByUrl(_ url: String) throws {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            try playByUrlInternal(url)
-        } else {
-            var thrownError: Error?
-
-            playbackQueue.sync {
-                do {
-                    try self.playByUrlInternal(url)
-                } catch {
-                    thrownError = error
-                }
-            }
-
-            if let error = thrownError {
-                throw error
-            }
-        }
-    }
-
-    private func playByUrlInternal(_ url: String) throws {
-        guard let trackIndex = findTrackIndex(by: url) else {
-            throw PlaybackError.playbackFailed("Track with URL '\(url)' not found in preloaded tracks")
-        }
-
-        // Switch to the track and play
-        self.currentIndex = trackIndex
-        self.switchToCurrentTrack()
-        try self.playInternal()
-    }
-
-    func pauseByUrl(_ url: String) {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            pauseByUrlInternal(url)
-        } else {
-            playbackQueue.sync {
-                self.pauseByUrlInternal(url)
-            }
-        }
-    }
-
-    private func pauseByUrlInternal(_ url: String) {
-        guard let trackIndex = findTrackIndex(by: url) else {
-            print("Track with URL '\(url)' not found in preloaded tracks")
-            return
-        }
-
-        // Only pause if this is the currently playing track
-        if trackIndex == self.currentIndex {
-            self.pauseInternal()
-        }
-    }
-
-    func resumeByUrl(_ url: String) {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            resumeByUrlInternal(url)
-        } else {
-            playbackQueue.sync {
-                self.resumeByUrlInternal(url)
-            }
-        }
-    }
-
-    private func resumeByUrlInternal(_ url: String) {
-        let result = executeWithErrorHandling {
-            guard let trackIndex = findTrackIndex(by: url) else {
-                throw PlaybackError.invalidTrackUrl("Track with URL '\(url)' not found in preloaded tracks")
-            }
-
-            // Switch to the track and resume/play
-            self.currentIndex = trackIndex
-            self.switchToCurrentTrack()
-            try self.playInternal()
-        }
-
-        switch result {
-        case .success:
-            print("Successfully resumed playback for URL: \(url)")
-        case .failure(let error):
-            print("Failed to resume playback for URL '\(url)': \(error)")
-            self.delegate?.playbackManager(self, playbackDidFail: error)
-        }
-    }
-
-    func stopByUrl(_ url: String) {
-        // Check if we're already on the playback queue to avoid deadlock
-        if DispatchQueue.getSpecific(key: playbackQueueKey) == playbackQueueValue {
-            stopByUrlInternal(url)
-        } else {
-            playbackQueue.sync {
-                self.stopByUrlInternal(url)
-            }
-        }
-    }
-
-    private func stopByUrlInternal(_ url: String) {
-        guard let trackIndex = findTrackIndex(by: url) else {
-            print("Track with URL '\(url)' not found in preloaded tracks")
-            return
-        }
-
-        // Only stop if this is the currently playing track
-        if trackIndex == self.currentIndex {
-            self.stopInternal()
-        }
-    }
-
-    func seekByUrl(_ url: String, to seconds: Double) {
-        playbackQueue.sync {
-            guard let trackIndex = findTrackIndex(by: url) else {
-                print("Track with URL '\(url)' not found in preloaded tracks")
                 return
             }
 
-            // Switch to the track and seek
-            self.currentIndex = trackIndex
-            self.switchToCurrentTrack()
+            let trackId = self.generateTrackId(from: url)
 
-            guard let player = self.player else { return }
-            let time = CMTime(seconds: seconds, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-            player.seek(to: time)
-        }
-    }
-
-    // MARK: - Helper Methods
-
-    /// Find track index with URL normalization to handle encoding inconsistencies and different URL formats
-    private func findTrackIndex(by url: String) -> Int? {
-        let normalizedUrl = normalizeUrl(url)
-        return playlist.firstIndex { track in
-            let normalizedTrackUrl = normalizeUrl(track.url)
-            // Check direct match first
-            if normalizedTrackUrl == normalizedUrl {
-                return true
-            }
-
-            // For local files, also check if the path components match
-            // This handles cases where one is a file:// URI and the other is a path
-            if !url.hasPrefix("http") && !track.url.hasPrefix("http") {
-                let urlPath = extractFilePath(from: normalizedUrl)
-                let trackPath = extractFilePath(from: normalizedTrackUrl)
-                return urlPath == trackPath
-            }
-
-            return false
-        }
-    }
-
-    /// Extract file path from URL string (handles both file:// URIs and direct paths)
-    private func extractFilePath(from urlString: String) -> String {
-        if urlString.hasPrefix("file://") {
-            return URL(string: urlString)?.path ?? urlString
-        } else {
-            return urlString
-        }
-    }
-
-    /// Normalize URL to handle encoding inconsistencies
-    private func normalizeUrl(_ url: String) -> String {
-        guard let decodedUrl = url.removingPercentEncoding else { return url }
-        return decodedUrl.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - Private Methods
-
-        private func setupAudioSession() {
-        // Don't configure audio session here - let the main plugin handle it
-        print("PlaybackManager: Using shared audio session configuration")
-    }
-
-    private func setupAudioSessionForPlayback() throws {
-        let audioSession = AVAudioSession.sharedInstance()
-
-        // Don't change the category - use the existing .playAndRecord category from the main plugin
-        // This prevents conflicts between recording and playback sessions
-        // Just ensure the session is active for playback
-        do {
-            // Check if session is already active and compatible
-            if !audioSession.isOtherAudioPlaying {
-                try audioSession.setActive(true)
-                print("PlaybackManager: Audio session activated for playback")
-            } else {
-                print("PlaybackManager: Other audio is playing, trying to activate with mix option")
-                // Try to activate with mixing if other audio is playing
-                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            }
-        } catch let error as NSError {
-            // Provide detailed error information for debugging
-            print("PlaybackManager: Failed to activate audio session for playback")
-            print("Error domain: \(error.domain), code: \(error.code)")
-            print("Error description: \(error.localizedDescription)")
-            if let underlyingError = error.userInfo[NSUnderlyingErrorKey] as? NSError {
-                print("Underlying error: \(underlyingError.localizedDescription)")
-            }
-            throw error
-        }
-    }
-
-    private func setupRemoteCommandCenter() {
-        let commandCenter = MPRemoteCommandCenter.shared()
-
-        commandCenter.playCommand.addTarget { [weak self] _ in
-            do {
-                try self?.play()
-                return .success
-            } catch {
-                print("Remote play command failed: \(error)")
-                return .commandFailed
-            }
-        }
-
-        commandCenter.pauseCommand.addTarget { [weak self] _ in
-            self?.pause()
-            return .success
-        }
-
-        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
-            self?.skipToNext()
-            return .success
-        }
-
-        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
-            self?.skipToPrevious()
-            return .success
-        }
-
-        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
-            if let event = event as? MPChangePlaybackPositionCommandEvent {
-                self?.seek(to: event.positionTime)
-                return .success
-            }
-            return .commandFailed
-        }
-    }
-
-    private func setupNotifications() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(playerDidFinishPlaying),
-            name: .AVPlayerItemDidPlayToEndTime,
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(playerDidFailToPlay),
-            name: .AVPlayerItemFailedToPlayToEndTime,
-            object: nil
-        )
-
-        // Handle audio session interruptions (phone calls, AirPods disconnect, etc.)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(audioSessionInterupted),
-            name: AVAudioSession.interruptionNotification,
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(audioSessionRouteChanged),
-            name: AVAudioSession.routeChangeNotification,
-            object: nil
-        )
-    }
-
-    private func setupPlayerObservers() {
-        guard let player = player else { return }
-
-        // Clean up existing observers first
-        cleanupObservers()
-
-        // Add time observer for progress updates - reduced frequency for better performance
-        let interval = CMTime(seconds: 1.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: playbackQueue) { [weak self] _ in
-            guard let self = self else { return }
-
-            // Only emit progress if we're actually playing to reduce unnecessary events
-            guard self.status == .playing else { return }
-
-            // Emit progress updates on main queue to ensure thread safety
-            DispatchQueue.main.async {
-                if let currentTrack = self.getCurrentTrack() {
-                    let currentPosition = self.getCurrentPosition()
-                    let duration = self.getDuration()
-                    let isPlaying = self.isPlaying()
-
-                    self.delegate?.playbackManager(
-                        self,
-                        playbackProgress: currentTrack,
-                        at: self.currentIndex,
-                        currentPosition: currentPosition,
-                        duration: duration,
-                        isPlaying: isPlaying
-                    )
+            // Check if already preloaded
+            if let existing = self.preloadedTracks[url], existing.isLoaded {
+                DispatchQueue.main.async {
+                    completion(.success((url: existing.url, mimeType: existing.mimeType, duration: existing.duration, size: existing.size)))
                 }
+                return
             }
-        }
 
-        // Add KVO observers for player item status
-        setupPlayerItemObservers()
-    }
+            let trackInfo = TrackInfo(url: url, trackId: trackId)
 
-    private func setupPlayerItemObservers() {
-        guard let currentItem = player?.currentItem else { return }
+            // Normalize the URL/URI to handle different formats
+            let normalizedUrl = self.normalizeAudioUrl(url)
+            print("[PlaybackManager] Normalized URL: \(normalizedUrl) (original: \(url))")
 
-        // Observe player item status for readiness detection
-        let statusObserver = currentItem.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
-            DispatchQueue.main.async {
-                self?.handlePlayerItemStatusChange(item)
+            // Create URL based on whether it's a remote or local file
+            let audioUrl: URL
+            if self.isRemoteUrl(url) {
+                // For HTTP/HTTPS URLs
+                guard let remoteUrl = URL(string: normalizedUrl) else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "PlaybackManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid remote URL format"])))
+                    }
+                    return
+                }
+                audioUrl = remoteUrl
+            } else if url.hasPrefix("file://") {
+                if let fileUrl = URL(string: url) {
+                    audioUrl = fileUrl
+                } else {
+                    let pathString = String(url.dropFirst(7))
+                    audioUrl = URL(fileURLWithPath: pathString)
+                }
+            } else {
+                // For direct file paths or Capacitor URIs (already normalized)
+                audioUrl = URL(fileURLWithPath: normalizedUrl)
             }
-        }
-        playerItemObservers.append(statusObserver)
 
-        // Observe duration for better progress reporting
-        let durationObserver = currentItem.observe(\.duration, options: [.new]) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                self?.updateNowPlayingInfo()
-            }
-        }
-        playerItemObservers.append(durationObserver)
-    }
+            let playerItem = AVPlayerItem(url: audioUrl)
+            let player = AVPlayer(playerItem: playerItem)
 
-    private func handlePlayerItemStatusChange(_ item: AVPlayerItem) {
-        switch item.status {
-        case .readyToPlay:
-            print("Player item ready to play")
-        case .failed:
-            if let error = item.error {
-                let playbackError = PlaybackError.playbackFailed("Player item failed: \(error.localizedDescription)")
-                delegate?.playbackManager(self, playbackDidFail: playbackError)
-            }
-        case .unknown:
-            print("Player item status unknown")
-        @unknown default:
-            print("Unknown player item status")
-        }
-    }
+            trackInfo.player = player
+            trackInfo.playerItem = playerItem
 
-    /// Clean up observers to prevent memory leaks and duplicate observers
-    private func cleanupObservers() {
-        // Remove time observer
-        if let timeObserver = timeObserver {
-            player?.removeTimeObserver(timeObserver)
-            self.timeObserver = nil
-        }
+            // Observe player item status
+            trackInfo.statusObserver = playerItem.observe(\.status, options: [.new]) { [weak self, weak trackInfo] item, _ in
+                guard let self = self, let trackInfo = trackInfo else { return }
 
-        // Remove KVO observers
-        playerItemObservers.forEach { $0.invalidate() }
-        playerItemObservers.removeAll()
-    }
+                switch item.status {
+                case .readyToPlay:
+                    trackInfo.isLoaded = true
+                    trackInfo.duration = Int(CMTimeGetSeconds(item.duration))
 
-    private func switchToCurrentTrack() {
-        guard currentIndex >= 0 && currentIndex < playerItems.count else { return }
+                    // Detect MIME type from file extension or URL
+                    trackInfo.mimeType = self.detectMimeType(from: url)
 
-        let wasPlaying = (status == .playing)
-        let newItem = playerItems[currentIndex]
-
-        // Reset status to allow proper playback control after track switch
-        if status == .playing {
-            status = .paused
-        }
-
-        // Clean up observers before switching
-        cleanupObservers()
-
-        player?.replaceCurrentItem(with: newItem)
-
-        // Restore observers after switching
-        setupPlayerObservers()
-
-        if let currentTrack = getCurrentTrack() {
-            delegate?.playbackManager(self, trackDidChange: currentTrack, at: currentIndex)
-
-            if wasPlaying {
-                // Wait for item to be ready before playing
-                waitForPlayerItemReady(newItem) { [weak self] success in
-                    if success {
+                    // Try to get file size
+                    if let asset = item.asset as? AVURLAsset {
                         do {
-                            try self?.playInternal()
+                            let resourceValues = try asset.url.resourceValues(forKeys: [.fileSizeKey])
+                            trackInfo.size = Int64(resourceValues.fileSize ?? 0)
                         } catch {
-                            print("Failed to play after track switch: \(error)")
-                            self?.delegate?.playbackManager(self!, playbackDidFail: error)
+                            trackInfo.size = 0
                         }
                     }
-                }
-            }
 
-            updateNowPlayingInfo()
-        }
-
-        // Preload next track if enabled
-        if preloadNext && currentIndex + 1 < playerItems.count {
-            preloadTrack(at: currentIndex + 1)
-        }
-    }
-
-    /// Wait for player item to be ready before attempting playback
-    private func waitForPlayerItemReady(_ item: AVPlayerItem, completion: @escaping (Bool) -> Void) {
-        if item.status == .readyToPlay {
-            completion(true)
-            return
-        }
-
-        // Set a timeout for readiness check
-        let timeoutTime = DispatchTime.now() + .seconds(5)
-        let observer = item.observe(\.status) { item, _ in
-            if item.status == .readyToPlay {
-                completion(true)
-            } else if item.status == .failed {
-                completion(false)
-            }
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: timeoutTime) {
-            observer.invalidate()
-            if item.status != .readyToPlay {
-                completion(false)
-            }
-        }
-    }
-
-    private func preloadTrack(at index: Int) {
-        guard index >= 0 && index < playerItems.count else { return }
-
-        let playerItem = playerItems[index]
-
-        // Check if item is already sufficiently buffered
-        if playerItem.status == .readyToPlay {
-            print("Track at index \(index) already preloaded")
-            return
-        }
-
-        // Force buffering by accessing duration and other properties
-        _ = playerItem.duration
-        _ = playerItem.asset.duration
-
-        // Optional: trigger buffering by seeking to start
-        if playerItem.status == .unknown {
-            print("Preloading track at index \(index)")
-            // The item will start loading automatically
-        }
-    }
-
-    private func updateNowPlayingInfo() {
-        guard let track = getCurrentTrack() else { return }
-
-        var nowPlayingInfo: [String: Any] = [:]
-
-        nowPlayingInfo[MPMediaItemPropertyTitle] = track.title ?? "Unknown Title"
-        nowPlayingInfo[MPMediaItemPropertyArtist] = track.artist ?? "Unknown Artist"
-        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = getCurrentPosition()
-        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = getDuration()
-        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying() ? 1.0 : 0.0
-
-        // Check cache first for artwork to avoid redundant network loads
-        if let artworkUrl = track.artworkUrl {
-            if let cachedImage = artworkCache[track.id] {
-                // Use cached artwork
-                nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: cachedImage.size) { _ in cachedImage }
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-            } else if let url = URL(string: artworkUrl) {
-                // Load and cache artwork
-                loadArtwork(from: url, trackId: track.id) { image in
-                    if let image = image {
-                        nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    print("[PlaybackManager] Track preloaded successfully: \(url) (mimeType: \(trackInfo.mimeType), size: \(trackInfo.size))")
+                    DispatchQueue.main.async {
+                        completion(.success((url: trackInfo.url, mimeType: trackInfo.mimeType, duration: trackInfo.duration, size: trackInfo.size)))
                     }
-                    MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+
+                case .failed:
+                    let error = item.error ?? NSError(domain: "PlaybackManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unknown error"])
+                    print("[PlaybackManager] Error preloading track: \(url), error: \(error)")
+                    self.stateQueue.async {
+                        self.preloadedTracks.removeValue(forKey: url)
+                    }
+                    DispatchQueue.main.async {
+                        completion(.failure(error))
+                    }
+
+                case .unknown:
+                    break
+
+                @unknown default:
+                    break
                 }
-            } else {
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
             }
-        } else {
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+
+            // Observe when track completes
+            NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: playerItem,
+                queue: .main
+            ) { [weak self, weak trackInfo] _ in
+                guard let self = self, let trackInfo = trackInfo else { return }
+                print("[PlaybackManager] Track completed: \(url)")
+                self.handleTrackCompletion(trackInfo)
+            }
+
+            self.preloadedTracks[url] = trackInfo
         }
     }
 
-    private func emitStatusChange() {
-        let now = CACurrentMediaTime()
-
-        // Debounce rapid status changes to prevent excessive delegate calls
-        guard now - lastStatusChangeTime >= statusChangeDebounceInterval else {
-            return
-        }
-
-        lastStatusChangeTime = now
-
-        // Ensure delegate calls are made on main thread for UI consistency
-        DispatchQueue.main.async { [weak self] in
+    /**
+     * Play a track (or resume current track if no URL specified)
+     */
+    func playTrack(url: String?) {
+        stateQueue.async { [weak self] in
             guard let self = self else { return }
 
-            let currentTrack = self.getCurrentTrack()
-            let currentPosition = self.getCurrentPosition()
-            let duration = self.getDuration()
-            let isPlaying = self.isPlaying()
+            // If no URL specified, resume current track
+            guard let targetUrl = url, !targetUrl.isEmpty else {
+                if let currentUrl = self.currentTrackUrl {
+                    self.resumeTrack(url: currentUrl)
+                } else {
+                    DispatchQueue.main.async {
+                        self.delegate?.playbackDidEncounterError("", message: "No track specified and no current track")
+                    }
+                }
+                return
+            }
 
-            self.delegate?.playbackManager(
-                self,
-                statusChanged: currentTrack,
-                at: self.currentIndex,
-                status: self.status,
+            // Check if track is preloaded
+            guard let trackInfo = self.preloadedTracks[targetUrl], trackInfo.isLoaded else {
+                DispatchQueue.main.async {
+                    self.delegate?.playbackDidEncounterError(self.generateTrackId(from: targetUrl), message: "Track not preloaded: \(targetUrl)")
+                }
+                return
+            }
+
+            // If different track is playing, pause it first
+            if let currentUrl = self.currentTrackUrl, currentUrl != targetUrl {
+                self.pauseCurrentTrack()
+            }
+
+            guard let player = trackInfo.player else {
+                DispatchQueue.main.async {
+                    self.delegate?.playbackDidEncounterError(trackInfo.trackId, message: "Player is nil")
+                }
+                return
+            }
+
+            // Start playback
+            player.play()
+            self.currentTrackUrl = targetUrl
+            self.currentTrackId = trackInfo.trackId
+            self.updateStatus(.playing)
+            self.startProgressMonitoring(for: trackInfo)
+
+            print("[PlaybackManager] Started playing track: \(targetUrl)")
+        }
+    }
+
+    /**
+     * Pause current track or specific track
+     */
+    func pauseTrack(url: String?) {
+        stateQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            let targetUrl = url ?? self.currentTrackUrl
+
+            guard let url = targetUrl else {
+                print("[PlaybackManager] No track to pause")
+                return
+            }
+
+            guard let trackInfo = self.preloadedTracks[url], let player = trackInfo.player else {
+                print("[PlaybackManager] Track not found or player is nil: \(url)")
+                return
+            }
+
+            player.pause()
+            self.updateStatus(.paused)
+            self.stopProgressMonitoring()
+
+            print("[PlaybackManager] Paused track: \(url)")
+        }
+    }
+
+    /**
+     * Resume current track or specific track
+     */
+    func resumeTrack(url: String?) {
+        stateQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            let targetUrl = url ?? self.currentTrackUrl
+
+            guard let url = targetUrl else {
+                print("[PlaybackManager] No track to resume")
+                return
+            }
+
+            guard let trackInfo = self.preloadedTracks[url], let player = trackInfo.player else {
+                print("[PlaybackManager] Track not found or player is nil: \(url)")
+                return
+            }
+
+            player.play()
+            self.currentTrackUrl = url
+            self.currentTrackId = trackInfo.trackId
+            self.updateStatus(.playing)
+            self.startProgressMonitoring(for: trackInfo)
+
+            print("[PlaybackManager] Resumed track: \(url)")
+        }
+    }
+
+    /**
+     * Stop current track or specific track
+     */
+    func stopTrack(url: String?) {
+        stateQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            let targetUrl = url ?? self.currentTrackUrl
+
+            guard let url = targetUrl else {
+                print("[PlaybackManager] No track to stop")
+                return
+            }
+
+            guard let trackInfo = self.preloadedTracks[url], let player = trackInfo.player else {
+                print("[PlaybackManager] Track not found or player is nil: \(url)")
+                return
+            }
+
+            player.pause()
+            player.seek(to: .zero)
+
+            if self.currentTrackUrl == url {
+                self.currentTrackUrl = nil
+                self.currentTrackId = nil
+                self.updateStatus(.idle)
+                self.stopProgressMonitoring()
+            }
+
+            print("[PlaybackManager] Stopped track: \(url)")
+        }
+    }
+
+    /**
+     * Seek to position in track
+     */
+    func seekTrack(seconds: Int, url: String?) {
+        stateQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            let targetUrl = url ?? self.currentTrackUrl
+
+            guard let url = targetUrl else {
+                print("[PlaybackManager] No track to seek")
+                return
+            }
+
+            guard let trackInfo = self.preloadedTracks[url], let player = trackInfo.player else {
+                print("[PlaybackManager] Track not found or player is nil: \(url)")
+                return
+            }
+
+            let time = CMTime(seconds: Double(seconds), preferredTimescale: 1)
+            player.seek(to: time)
+
+            print("[PlaybackManager] Seeked track to \(seconds) seconds: \(url)")
+        }
+    }
+
+    /**
+     * Get current playback info
+     */
+    func getPlaybackInfo() -> PlaybackInfo {
+        return stateQueue.sync {
+            guard let url = currentTrackUrl,
+                  let trackInfo = preloadedTracks[url],
+                  let player = trackInfo.player else {
+                return PlaybackInfo(
+                    trackId: nil,
+                    url: nil,
+                    currentIndex: 0,
+                    currentPosition: 0,
+                    duration: 0,
+                    isPlaying: false
+                )
+            }
+
+            let currentPosition = Int(CMTimeGetSeconds(player.currentTime()))
+            let duration = trackInfo.duration
+            let isPlaying = player.rate > 0
+
+            return PlaybackInfo(
+                trackId: trackInfo.trackId,
+                url: trackInfo.url,
+                currentIndex: 0,
                 currentPosition: currentPosition,
                 duration: duration,
                 isPlaying: isPlaying
@@ -1032,148 +424,260 @@ class PlaybackManager: NSObject {
         }
     }
 
-    private func loadArtwork(from url: URL, trackId: String, completion: @escaping (UIImage?) -> Void) {
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
-            DispatchQueue.main.async {
-                if let data = data, let image = UIImage(data: data) {
-                    // Cache the artwork for future use
-                    self?.artworkCache[trackId] = image
-                    completion(image)
-                } else {
-                    if let error = error {
-                        print("Failed to load artwork: \(error.localizedDescription)")
-                    }
-                    completion(nil)
-                }
+    /**
+     * Destroy all playback resources and reinitialize
+     */
+    func destroy() {
+        print("[PlaybackManager] Destroying playback manager")
+
+        stateQueue.sync {
+            // Stop progress monitoring
+            stopProgressMonitoring()
+
+            // Release all AVPlayer instances
+            for trackInfo in preloadedTracks.values {
+                trackInfo.player?.pause()
+                trackInfo.player = nil
+                trackInfo.playerItem = nil
+                trackInfo.statusObserver?.invalidate()
+                trackInfo.durationObserver?.invalidate()
             }
-        }.resume()
+
+            // Clear all tracks
+            preloadedTracks.removeAll()
+
+            // Reset state
+            currentTrackUrl = nil
+            currentTrackId = nil
+            currentStatus = .idle
+        }
+
+        print("[PlaybackManager] Playback manager destroyed and reinitialized")
     }
 
-    private func cleanup() {
-        // Clean up observers
-        cleanupObservers()
+    // MARK: - Private Methods
 
-        // Remove notification observers
-        NotificationCenter.default.removeObserver(self)
-
-        // Stop player
-        player?.pause()
-        player = nil
-        playerItems.removeAll()
-        playlist.removeAll()
-
-        // Clear artwork cache
-        artworkCache.removeAll()
-
-        // Reset status
-        performQueueOperation {
-            _status = .idle
+    private func setupAudioSession() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .default, options: [])
+            try audioSession.setActive(true)
+            print("[PlaybackManager] Audio session configured for playback")
+        } catch {
+            print("[PlaybackManager] Failed to configure audio session: \(error)")
         }
     }
 
-    // MARK: - Notification Handlers
+    private func observeAudioSessionInterruptions() {
+        audioSessionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            guard let userInfo = notification.userInfo,
+                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+                return
+            }
 
-    @objc private func playerDidFinishPlaying(notification: Notification) {
-        guard let playerItem = notification.object as? AVPlayerItem,
-              playerItem == player?.currentItem else { return }
+            switch type {
+            case .began:
+                // Interruption began - pause playback
+                print("[PlaybackManager] Audio session interrupted - pausing playback")
+                self.pauseCurrentTrack()
 
-        if let currentTrack = getCurrentTrack() {
-            delegate?.playbackManager(self, trackDidEnd: currentTrack, at: currentIndex)
+            case .ended:
+                // Interruption ended - optionally resume
+                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                    if options.contains(.shouldResume) {
+                        print("[PlaybackManager] Audio session interruption ended - resuming playback")
+                        if let currentUrl = self.currentTrackUrl {
+                            self.resumeTrack(url: currentUrl)
+                        }
+                    }
+                }
+
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private func pauseCurrentTrack() {
+        stateQueue.async { [weak self] in
+            guard let self = self, let url = self.currentTrackUrl else { return }
+            self.pauseTrack(url: url)
+        }
+    }
+
+    private func updateStatus(_ newStatus: PlaybackStatus) {
+        guard currentStatus != newStatus else { return }
+
+        currentStatus = newStatus
+
+        let statusString = newStatus.stringValue
+        var position = 0
+
+        if let url = currentTrackUrl,
+           let trackInfo = preloadedTracks[url],
+           let player = trackInfo.player {
+            position = Int(CMTimeGetSeconds(player.currentTime()))
         }
 
-        // Auto-advance to next track
-        if currentIndex < playlist.count - 1 {
-            skipToNext()
+        DispatchQueue.main.async { [weak self] in
+            self?.delegate?.playbackDidChangeStatus(
+                statusString,
+                url: self?.currentTrackUrl ?? "",
+                position: position
+            )
+        }
+    }
+
+    private func generateTrackId(from url: String) -> String {
+        return "track_\(abs(url.hashValue))"
+    }
+
+    /**
+     * Normalize audio URL/URI to handle different formats:
+     * - HTTP/HTTPS URLs (CDN) - returned as-is
+     * - Capacitor file URIs (capacitor://localhost/_capacitor_file_) - converted to file path
+     * - file:// URIs - converted to file path
+     * - Direct file paths - returned as-is
+     */
+    private func normalizeAudioUrl(_ url: String) -> String {
+        // Handle HTTP/HTTPS URLs - return as-is
+        if url.hasPrefix("http://") || url.hasPrefix("https://") {
+            return url
+        }
+
+        // Handle Capacitor file URI format
+        if url.contains("capacitor://localhost/_capacitor_file_") {
+            return url.replacingOccurrences(of: "capacitor://localhost/_capacitor_file_", with: "")
+        }
+
+        // Handle file:// URI format
+        if url.hasPrefix("file://") {
+            return String(url.dropFirst(7)) // Remove "file://" prefix
+        }
+
+        // Return as-is for direct file paths
+        return url
+    }
+
+    /**
+     * Check if the URL is a remote URL (HTTP/HTTPS)
+     */
+    private func isRemoteUrl(_ url: String) -> Bool {
+        return url.hasPrefix("http://") || url.hasPrefix("https://")
+    }
+
+    /**
+     * Detect MIME type from file extension
+     */
+    private func detectMimeType(from url: String) -> String {
+        // Extract file extension
+        let urlString = url.lowercased()
+
+        if urlString.hasSuffix(".m4a") {
+            return "audio/m4a"
+        } else if urlString.hasSuffix(".mp3") {
+            return "audio/mpeg"
+        } else if urlString.hasSuffix(".wav") {
+            return "audio/wav"
+        } else if urlString.hasSuffix(".aac") {
+            return "audio/aac"
+        } else if urlString.hasSuffix(".ogg") {
+            return "audio/ogg"
+        } else if urlString.hasSuffix(".flac") {
+            return "audio/flac"
+        } else if urlString.hasSuffix(".mp4") {
+            return "audio/mp4"
         } else {
-            status = .stopped
+            return "audio/*"
         }
     }
 
-    @objc private func playerDidFailToPlay(notification: Notification) {
-        let error = PlaybackError.playbackFailed("Failed to play audio item")
-        delegate?.playbackManager(self, playbackDidFail: error)
-    }
+    private func handleTrackCompletion(_ trackInfo: TrackInfo) {
+        stateQueue.async { [weak self] in
+            guard let self = self else { return }
 
-    @objc private func audioSessionInterupted(notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-            return
-        }
-
-        switch type {
-        case .began:
-            // Interruption began - pause playback and preserve state
-            if status == .playing {
-                pause()
-                print("Audio session interrupted - playback paused")
+            // Only emit events if this track is actually the current playing track
+            guard self.currentTrackUrl == trackInfo.url else {
+                return
             }
-        case .ended:
-            // Interruption ended - optionally resume playback
-            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
 
-            if options.contains(.shouldResume) {
-                // Reactivate audio session
-                do {
-                    try setupAudioSessionForPlayback()
-                    // Resume playback if it was playing before interruption
-                    if status == .paused {
-                        try play()
-                        print("Audio session interruption ended - playback resumed")
-                    }
-                } catch {
-                    print("Failed to resume after interruption: \(error)")
-                    delegate?.playbackManager(self, playbackDidFail: error)
+            // Stop the track completely (reset to beginning)
+            if let player = trackInfo.player {
+                player.pause()
+                player.seek(to: .zero)
+            }
+
+            // Clear current track state
+            self.currentTrackUrl = nil
+            self.currentTrackId = nil
+
+            // Update status to idle and stop monitoring
+            self.updateStatus(.idle)
+            self.stopProgressMonitoring()
+
+            // Emit completion event
+            DispatchQueue.main.async {
+                self.delegate?.playbackDidComplete(trackInfo.trackId, url: trackInfo.url)
+            }
+
+            print("[PlaybackManager] Track completed and automatically stopped: \(trackInfo.url)")
+        }
+    }
+
+    // MARK: - Progress Monitoring
+
+    private func startProgressMonitoring(for trackInfo: TrackInfo) {
+        stopProgressMonitoring()
+
+        isProgressMonitoring = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            self.progressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self, weak trackInfo] _ in
+                guard let self = self,
+                      let trackInfo = trackInfo,
+                      self.isProgressMonitoring,
+                      let player = trackInfo.player else {
+                    return
                 }
+
+                // Only emit progress events when player is actually playing
+                guard player.rate > 0 else {
+                    return
+                }
+
+                let currentPosition = Int(CMTimeGetSeconds(player.currentTime()))
+                let duration = trackInfo.duration
+
+                self.delegate?.playbackDidUpdateProgress(
+                    trackInfo.trackId,
+                    url: trackInfo.url,
+                    currentPosition: currentPosition,
+                    duration: duration,
+                    isPlaying: true // Always true here since we checked rate > 0 above
+                )
             }
-        @unknown default:
-            break
         }
     }
 
-    @objc private func audioSessionRouteChanged(notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
-            return
+    private func stopProgressMonitoring() {
+        isProgressMonitoring = false
+
+        // Capture the timer to avoid forming weak reference during deallocation
+        let timerToInvalidate = progressTimer
+        progressTimer = nil
+
+        DispatchQueue.main.async {
+            timerToInvalidate?.invalidate()
         }
-
-        switch reason {
-        case .oldDeviceUnavailable:
-            // Headphones or external device was disconnected
-            if status == .playing {
-                pause()
-                print("Audio route changed - external device disconnected, playback paused")
-            }
-        case .newDeviceAvailable:
-            // New audio device connected
-            print("Audio route changed - new device available")
-        default:
-            break
-        }
-    }
-}
-
-// MARK: - Supporting Types
-
-enum PlaybackStatus {
-    case idle
-    case loading
-    case playing
-    case paused
-    case stopped
-}
-
-struct AudioTrack: Equatable, Codable {
-    let id: String
-    let url: String
-    let title: String?
-    let artist: String?
-    let artworkUrl: String?
-
-    static func == (lhs: AudioTrack, rhs: AudioTrack) -> Bool {
-        return lhs.id == rhs.id && lhs.url == rhs.url
     }
 }
 

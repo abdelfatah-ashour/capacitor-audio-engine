@@ -1,11 +1,14 @@
 package com.capacitor.audioengine;
 
+import android.Manifest;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+
+import androidx.annotation.RequiresPermission;
 
 import com.getcapacitor.JSObject;
 
@@ -15,11 +18,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * WaveLevelEmitter handles real-time audio level monitoring during recording
  * Simplified implementation focused on emitting normalized wave levels (0.0-1.0)
  * at configurable intervals for UI visualization and speaker activity detection.
- *
  * Features:
  * - Real-time RMS-based audio level calculation
  * - Configurable emission frequency (50-500ms, default 1000ms)
  * - Normalized amplitude values between 0.0 and 1.0
+ * - Optimized for human speech detection (-50dB to -10dB range)
+ * - Gentle compression curve for better visual representation
  * - Cross-platform consistency with iOS implementation
  * - Low CPU overhead with efficient background processing
  */
@@ -30,14 +34,12 @@ public class WaveLevelEmitter {
     private static final int DEFAULT_EMISSION_INTERVAL_MS = 1000; // Default 1000ms as per SRS
     private static final int MIN_EMISSION_INTERVAL_MS = 50; // Minimum 50ms as per SRS
     private static final int MAX_EMISSION_INTERVAL_MS = 500; // Maximum 500ms as per SRS
-    private static final int DEFAULT_SAMPLE_RATE = 44100;
+    private static final int DEFAULT_SAMPLE_RATE = AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
     private static final int BUFFER_SIZE_FACTOR = 2;
 
-    // Normalization constants
-    private static final float NORMALIZATION_FACTOR = 1.0f / Short.MAX_VALUE;
-    private static final float SILENCE_THRESHOLD = 0.001f; // Very small threshold for silence detection
+    private static final float SILENCE_THRESHOLD = 0.001f; // Match iOS silence threshold
 
     // Recording components
     private AudioRecord audioRecord;
@@ -106,6 +108,7 @@ public class WaveLevelEmitter {
      * Start wave level monitoring
      * This should be called when recording starts
      */
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     public void startMonitoring() {
         if (isActive.get()) {
             Log.w(TAG, "Monitoring already active");
@@ -160,7 +163,7 @@ public class WaveLevelEmitter {
 
         Log.d(TAG, "Stopping wave level monitoring");
 
-        emitDestroy("stop_recording");
+        emitDestroy();
 
         isActive.set(false);
         isRecording.set(false);
@@ -267,31 +270,34 @@ public class WaveLevelEmitter {
 
         lastEmissionTime = currentTime;
 
-        // Calculate RMS (Root Mean Square)
-        double sum = 0.0;
+        // Calculate RMS in normalized float domain [-1.0, 1.0] to match iOS
+        double sumSquares = 0.0;
         for (int i = 0; i < samplesRead; i++) {
-            double sample = buffer[i];
-            sum += sample * sample;
+            // 32768.0f to ensure 32767 maps within [-1,1)
+            float sample = buffer[i] / 32768.0f;
+            sumSquares += sample * sample;
         }
+        float rms = (float) Math.sqrt(sumSquares / Math.max(1, samplesRead));
 
-        double rms = Math.sqrt(sum / samplesRead);
+        // Convert RMS to dB - optimized for human speech
+        // Human speech typically ranges from -40dB to -10dB
+        // Using -50dB to -10dB provides better sensitivity for normal conversation
+        final float minDb = -50.0f;  // Adjusted for human speech (was -60dB)
+        final float maxDb = -10.0f;  // Adjusted for human speech (was 0dB)
+        float rmsDb = 20.0f * (float) Math.log10(rms + 1e-8f); // avoid log(0)
 
-        // Convert RMS to dB (logarithmic scale)
-        final float minDb = -50.0f; // Realistic silence threshold (dB)
-        final float maxDb = 0.0f;   // Max (full scale)
-        float rmsDb = (float) (20.0 * Math.log10(rms / Short.MAX_VALUE + 1e-8)); // Avoid log(0)
+        // Normalize to 0..1 range (minDb -> 0, maxDb -> 1)
+        float normalized = (rmsDb - minDb) / (maxDb - minDb);
+        normalized = Math.max(0.0f, Math.min(1.0f, normalized));
 
-        float normalized;
-        if (rmsDb < minDb) {
+        // Apply silence threshold after normalization
+        if (normalized < SILENCE_THRESHOLD) {
             normalized = 0.0f;
-        } else {
-            // Normalize dB to 0.0–1.0 (minDb maps to 0, maxDb to 1)
-            normalized = (rmsDb - minDb) / (maxDb - minDb);
-            normalized = Math.max(0.0f, Math.min(1.0f, normalized));
-            if (normalized < SILENCE_THRESHOLD) {
-                normalized = 0.0f;
-            }
         }
+
+        // Apply gentle compression curve for better visual representation
+        // This makes lower levels more visible while preserving dynamic range
+        normalized = (float) Math.pow(normalized, 0.7);
 
         // Emit the level on main thread
         final float finalLevel = normalized;
@@ -332,15 +338,14 @@ public class WaveLevelEmitter {
 
     /**
      * Emit destroy event
-     * @param reason Reason for destruction
      */
-    private void emitDestroy(String reason) {
+    private void emitDestroy() {
         try {
             JSObject data = new JSObject();
             data.put("status", "destroyed");
-            data.put("reason", reason);
+            data.put("reason", "stop_recording");
             eventCallback.notifyListeners("waveLevelDestroy", data);
-            Log.d(TAG, "Wave level monitoring destroyed: " + reason);
+            Log.d(TAG, "Wave level monitoring destroyed: " + "stop_recording");
         } catch (Exception e) {
             Log.e(TAG, "Error emitting destroy event", e);
         }

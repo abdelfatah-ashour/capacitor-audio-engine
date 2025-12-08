@@ -3,10 +3,10 @@ import Foundation
 
 internal struct AudioEngineConstants {
     // MARK: - Audio Configuration
-    // Defaults tuned for 48kHz mono AAC at 128 kbps as per rolling recording checklist
-    static let defaultSampleRate: Double = 48000.0
-    static let defaultChannels = 1
-    static let defaultBitrate = 128000
+    // Defaults tuned for 44.1kHz mono AAC at 128 kbps per repo guidelines
+    static let defaultSampleRate: Double = 44100.0
+    static let defaultChannels: Int = 1
+    static let defaultBitrate: Int = 64000
     static let defaultFileExtension = ".m4a"
     static let mimeTypeM4A = "audio/m4a"
     static let bufferSize: AVAudioFrameCount = 512 // tiny buffer to smooth transitions
@@ -21,13 +21,6 @@ internal struct AudioEngineConstants {
     static let networkTimeout: TimeInterval = 60.0
     static let resourceTimeout: TimeInterval = 120.0
     static let networkCheckTimeout: TimeInterval = 2.0
-
-    // MARK: - Segment Rolling Constants
-    // Default per-segment duration. Set small (1s) to allow precise, fast rolling windows
-    // and quick trimming/export when maxDuration is small (e.g., 5-60s).
-    static let segmentDuration: TimeInterval = 1.0
-    static let maxRetentionDuration: TimeInterval = 600.0  // default 10 minutes total retention when used
-    static let maxSegments = Int(maxRetentionDuration / segmentDuration)  // default fallback only
 
     // MARK: - Performance Constants
     static let minValidFileSize: Int64 = 100  // Minimum file size to consider valid
@@ -44,10 +37,6 @@ internal struct AudioEngineConstants {
     struct ErrorDomains {
         static let audioEngine = "AudioEngine"
         static let compression = "CompressionError"
-        static let segmentRolling = "SegmentRollingManager"
-        static let recording = "RecordingManager"
         static let playback = "PlaybackManager"
     }
-
-
 }
