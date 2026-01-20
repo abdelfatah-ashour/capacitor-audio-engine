@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 
 protocol RecordingManagerDelegate: AnyObject {
     func recordingDidChangeStatus(_ status: String)
@@ -544,6 +545,27 @@ final class RecordingManager {
 
             switch type {
             case .began:
+                // Log interruption reason for debugging (iOS 14.5+)
+                var interruptionReason = "unknown"
+                if #available(iOS 14.5, *) {
+                    if let reasonValue = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt,
+                       let reason = AVAudioSession.InterruptionReason(rawValue: reasonValue) {
+                        switch reason {
+                        case .default:
+                            interruptionReason = "default (likely phone call)"
+                        case .builtInMicMuted:
+                            interruptionReason = "builtInMicMuted"
+                        case .appWasSuspended:
+                            interruptionReason = "appWasSuspended"
+                        case .routeDisconnected:
+                            interruptionReason = "routeDisconnected"
+                        @unknown default:
+                            interruptionReason = "unknown(\(reasonValue))"
+                        }
+                    }
+                }
+                print("[RecordingManager] Interruption began - reason: \(interruptionReason)")
+
                 // Deactivate session to yield mic to other apps (e.g., phone call or another recorder)
                 try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
                 self.performStateOperation {
@@ -555,66 +577,42 @@ final class RecordingManager {
                         self.pauseDurationMonitoring()
                         self.pauseWaveLevelMonitoring()
                         self.delegate?.recordingDidChangeStatus("paused")
+                        print("[RecordingManager] Recording paused due to interruption - will attempt auto-resume when interruption ends")
                     }
                 }
             case .ended:
-                // Check if we should resume - only if microphone is available
+                print("[RecordingManager] Interruption ended - attempting to resume recording")
+
+                // Log interruption options for debugging (but don't use it to prevent resume)
+                // Note: For recording (unlike playback), we ALWAYS attempt to auto-resume
+                // because the user explicitly started a recording session and expects it to continue.
+                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                    print("[RecordingManager] Interruption options - shouldResume: \(options.contains(.shouldResume))")
+                }
+
+                // Verify we're still in a recording + paused state
+                guard self.performStateOperation({ self.isRecording && self.isPaused }) else {
+                    print("[RecordingManager] Skip resume - not in recording+paused state")
+                    return
+                }
+
+                // Check if microphone is immediately available
                 let session = AVAudioSession.sharedInstance()
                 let hasInput = session.availableInputs?.isEmpty == false
                 let isInputAvailable = session.isInputAvailable
 
-                // Try to reactivate session
-                do {
-                    try session.setActive(true)
-                } catch {
-                    // If activation fails, microphone might be unavailable (e.g., another app using it)
-                    self.performStateOperation {
-                        if self.isRecording {
-                            self.delegate?.recordingDidEncounterError(error)
-                        }
+                if !hasInput || !isInputAvailable {
+                    print("[RecordingManager] Microphone not immediately available - scheduling delayed retry")
+                    // Schedule a delayed retry - the phone may still be releasing resources
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                        self?.attemptRecoveryFromInterruption()
                     }
                     return
                 }
 
-                // Only resume if microphone is actually available
-                guard hasInput && isInputAvailable else {
-                    // Microphone unavailable - likely another app is recording or phone call active
-                    self.performStateOperation {
-                        if self.isRecording {
-                            let error = NSError(
-                                domain: "AudioEngine",
-                                code: -1,
-                                userInfo: [NSLocalizedDescriptionKey: "Microphone unavailable - may be in use by another app or phone call"]
-                            )
-                            self.delegate?.recordingDidEncounterError(error)
-                        }
-                    }
-                    return
-                }
-
-                // Check if we should resume (user may have declined)
-                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
-                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                    if !options.contains(.shouldResume) {
-                        // User declined to resume (e.g., dismissed phone call)
-                        return
-                    }
-                }
-
-                self.performStateOperation {
-                    guard self.isRecording else { return }
-                    do {
-                        if let engine = self.audioEngine, !engine.isRunning {
-                            try engine.start()
-                        }
-                        self.isPaused = false
-                        self.resumeDurationMonitoring()
-                        self.resumeWaveLevelMonitoring()
-                        self.delegate?.recordingDidChangeStatus("recording")
-                    } catch {
-                        self.delegate?.recordingDidEncounterError(error)
-                    }
-                }
+                // Attempt session reactivation with retry mechanism
+                self.attemptSessionReactivationWithRetry()
             @unknown default:
                 break
             }
@@ -626,6 +624,110 @@ final class RecordingManager {
             NotificationCenter.default.removeObserver(obs)
             audioSessionObserver = nil
         }
+    }
+
+    // MARK: - Interruption Recovery Methods
+
+    /// Attempts session reactivation with exponential backoff retry mechanism
+    private func attemptSessionReactivationWithRetry() {
+        let session = AVAudioSession.sharedInstance()
+        let maxRetries = 3
+        let retryDelays: [TimeInterval] = [0.3, 0.5, 1.0]
+
+        func attemptActivation(attempt: Int) {
+            do {
+                try session.setActive(true)
+                print("[RecordingManager] Session reactivated on attempt \(attempt + 1)")
+
+                // Add stabilization delay before engine restart
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    self?.resumeEngineAfterInterruption()
+                }
+            } catch {
+                if attempt < maxRetries - 1 {
+                    let delay = retryDelays[attempt]
+                    print("[RecordingManager] Session activation failed (attempt \(attempt + 1)/\(maxRetries)), retrying in \(delay)s: \(error.localizedDescription)")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        attemptActivation(attempt: attempt + 1)
+                    }
+                } else {
+                    print("[RecordingManager] Session activation failed after \(maxRetries) attempts: \(error.localizedDescription)")
+                    self.performStateOperation {
+                        if self.isRecording {
+                            self.delegate?.recordingDidEncounterError(error)
+                            // Keep paused state - don't stop recording completely
+                            // User can manually retry or the route change observer might recover
+                        }
+                    }
+                }
+            }
+        }
+
+        attemptActivation(attempt: 0)
+    }
+
+    /// Resumes the audio engine after an interruption with proper state validation
+    private func resumeEngineAfterInterruption() {
+        performStateOperation {
+            // Validate we're still in a recording + paused state
+            guard self.isRecording && self.isPaused else {
+                print("[RecordingManager] Skip engine resume - state changed (isRecording: \(self.isRecording), isPaused: \(self.isPaused))")
+                return
+            }
+
+            // Re-verify microphone availability
+            let session = AVAudioSession.sharedInstance()
+            guard session.isInputAvailable, session.availableInputs?.isEmpty == false else {
+                print("[RecordingManager] Cannot resume - microphone not available")
+                let error = NSError(
+                    domain: "AudioEngine",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Microphone unavailable after interruption ended"]
+                )
+                self.delegate?.recordingDidEncounterError(error)
+                return
+            }
+
+            // Attempt to restart engine
+            do {
+                if let engine = self.audioEngine, !engine.isRunning {
+                    try engine.start()
+                    print("[RecordingManager] Audio engine restarted successfully after interruption")
+                }
+                self.isPaused = false
+                self.resumeDurationMonitoring()
+                self.resumeWaveLevelMonitoring()
+                self.delegate?.recordingDidChangeStatus("recording")
+            } catch {
+                print("[RecordingManager] Failed to restart engine after interruption: \(error.localizedDescription)")
+                self.delegate?.recordingDidEncounterError(error)
+                // Keep in paused state for potential manual retry or route change recovery
+            }
+        }
+    }
+
+    /// Attempts recovery when initial resume fails (e.g., mic was not immediately available)
+    private func attemptRecoveryFromInterruption() {
+        let session = AVAudioSession.sharedInstance()
+
+        // Re-check microphone availability
+        guard session.isInputAvailable, session.availableInputs?.isEmpty == false else {
+            print("[RecordingManager] Recovery failed - microphone still unavailable")
+            performStateOperation {
+                if self.isRecording {
+                    let error = NSError(
+                        domain: "AudioEngine",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Unable to resume recording - microphone unavailable"]
+                    )
+                    self.delegate?.recordingDidEncounterError(error)
+                }
+            }
+            return
+        }
+
+        print("[RecordingManager] Attempting recovery - microphone now available")
+        attemptSessionReactivationWithRetry()
     }
 
     private func observeAudioSessionRouteChanges() {
