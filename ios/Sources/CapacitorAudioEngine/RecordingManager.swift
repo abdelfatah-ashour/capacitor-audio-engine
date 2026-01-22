@@ -905,6 +905,33 @@ final class RecordingManager {
 
             print("[RecordingManager] App entering foreground - validating recording state")
 
+            // If recording is paused (e.g., due to interruption), don't treat stopped engine as an error.
+            // The engine was intentionally paused and we're waiting for the interruption to end.
+            if isPaused {
+                print("[RecordingManager] Recording is paused (likely due to interruption) - skipping aggressive validation")
+
+                // Just verify we still have the audio engine instance
+                if audioEngine == nil {
+                    print("[RecordingManager] ERROR: Audio engine is nil while paused - cannot recover")
+                    handleRecordingLost()
+                    return
+                }
+
+                // Check if microphone will be available when we try to resume
+                let session = AVAudioSession.sharedInstance()
+                let isInputAvailable = session.isInputAvailable
+                let hasInput = session.availableInputs?.isEmpty == false
+
+                if !isInputAvailable && !hasInput {
+                    print("[RecordingManager] Warning: Microphone not currently available - will check again when interruption ends")
+                }
+
+                print("[RecordingManager] Paused recording state validated - waiting for interruption to end")
+                return
+            }
+
+            // For active (non-paused) recording, perform full validation
+
             // Check if audio engine is actually running
             guard let engine = audioEngine else {
                 print("[RecordingManager] ERROR: Audio engine is nil but state says recording")
@@ -913,7 +940,7 @@ final class RecordingManager {
             }
 
             if !engine.isRunning {
-                print("[RecordingManager] ERROR: Audio engine stopped but state says recording")
+                print("[RecordingManager] ERROR: Audio engine stopped but state says active recording")
                 handleRecordingLost()
                 return
             }
@@ -956,6 +983,13 @@ final class RecordingManager {
             guard isRecording else { return }
 
             print("[RecordingManager] App became active - checking recording health")
+
+            // If recording is paused (e.g., due to interruption), skip writer status check
+            // as the writer may be in an intermediate state while waiting for resume
+            if isPaused {
+                print("[RecordingManager] Recording is paused - skipping active state validation")
+                return
+            }
 
             // Additional check: verify we're actually receiving audio data
             // by checking if the asset writer is still writing
