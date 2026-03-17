@@ -1121,8 +1121,15 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
     }
 
     // MARK: - RecordingManagerDelegate
-    func recordingDidChangeStatus(_ status: String) {
-        notifyListeners("recordingStatusChanged", data: ["status": status])
+    func recordingDidChangeStatus(_ status: String, reason: String, message: String?, recoverable: Bool?) {
+        var data: [String: Any] = ["status": status, "reason": reason]
+        if let message = message {
+            data["message"] = message
+        }
+        if let recoverable = recoverable {
+            data["recoverable"] = recoverable
+        }
+        notifyListeners("recordingStatusChanged", data: data)
     }
 
     func recordingDidEncounterError(_ error: Error) {

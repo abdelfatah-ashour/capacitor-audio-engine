@@ -77,9 +77,16 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
         // Initialize recording manager
         recordingManager = new RecordingManager(getContext(), new RecordingManager.RecordingCallback() {
             @Override
-            public void onStatusChanged(String status) {
+            public void onStatusChanged(String status, String reason, String message, Boolean recoverable) {
                 JSObject data = new JSObject();
                 data.put("status", status);
+                data.put("reason", reason);
+                if (message != null) {
+                    data.put("message", message);
+                }
+                if (recoverable != null) {
+                    data.put("recoverable", recoverable);
+                }
                 notifyListeners("recordingStatusChanged", data);
             }
 
