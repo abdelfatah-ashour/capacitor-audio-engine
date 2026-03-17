@@ -31,7 +31,6 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
 
     // Core managers
     private PermissionManagerService permissionService; // Standalone permission service
-    private PermissionManagerService permissionService; // Standalone permission service
     private EventManager eventManager;
 
     private FileDirectoryManager fileManager;
