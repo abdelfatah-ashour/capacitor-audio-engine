@@ -291,8 +291,20 @@ export interface PermissionRequestOptions {
 
 export type RecordingStatus = "recording" | "paused" | "stopped" | "idle";
 
+export type RecordingStatusReason =
+  | "user"
+  | "interruption"
+  | "routeChange"
+  | "mediaReset"
+  | "error";
+
 export interface RecordingStatusChangedData {
   status: RecordingStatus;
+  reason: RecordingStatusReason;
+  /** Human-readable description when the status change was not user-initiated */
+  message?: string;
+  /** Whether the recording can be resumed from this state */
+  recoverable?: boolean;
 }
 
 export interface RecordingStatusInfo {

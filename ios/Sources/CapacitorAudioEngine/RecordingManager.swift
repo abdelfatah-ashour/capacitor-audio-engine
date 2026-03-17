@@ -3,7 +3,7 @@ import AVFoundation
 import UIKit
 
 protocol RecordingManagerDelegate: AnyObject {
-    func recordingDidChangeStatus(_ status: String)
+    func recordingDidChangeStatus(_ status: String, reason: String, message: String?, recoverable: Bool?)
     func recordingDidEncounterError(_ error: Error)
     func recordingDidUpdateDuration(_ duration: Double)
     func recordingDidEmitWaveLevel(_ level: Double, timestamp: TimeInterval)
@@ -167,7 +167,7 @@ final class RecordingManager {
                 startWaveLevelMonitoring()
                 startRecordingHealthCheck()
 
-                delegate?.recordingDidChangeStatus("recording")
+                delegate?.recordingDidChangeStatus("recording", reason: "user", message: nil, recoverable: nil)
             } catch {
                 delegate?.recordingDidEncounterError(error)
             }
@@ -200,9 +200,13 @@ final class RecordingManager {
             stopWaveLevelMonitoring()
             stopRecordingHealthCheck()
 
+            // Deactivate audio session now that recording is fully stopped,
+            // allowing other apps to resume their audio.
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+
             isRecording = false
             isPaused = false
-            delegate?.recordingDidChangeStatus("stopped")
+            delegate?.recordingDidChangeStatus("stopped", reason: "user", message: nil, recoverable: nil)
         }
     }
 
@@ -245,9 +249,12 @@ final class RecordingManager {
                         self.audioEngine = nil
                         self.converter = nil
                         self.aacFormat = nil
+
+                        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+
                         self.isRecording = false
                         self.isPaused = false
-                        self.delegate?.recordingDidChangeStatus("stopped")
+                        self.delegate?.recordingDidChangeStatus("stopped", reason: "user", message: nil, recoverable: nil)
                         completion(filePath)
                     }
                 }
@@ -255,9 +262,12 @@ final class RecordingManager {
                 audioEngine = nil
                 converter = nil
                 aacFormat = nil
+
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+
                 isRecording = false
                 isPaused = false
-                delegate?.recordingDidChangeStatus("stopped")
+                delegate?.recordingDidChangeStatus("stopped", reason: "user", message: nil, recoverable: nil)
                 completion(filePath)
             }
         }
@@ -272,7 +282,7 @@ final class RecordingManager {
             pauseDurationMonitoring()
             pauseWaveLevelMonitoring()
 
-            delegate?.recordingDidChangeStatus("paused")
+            delegate?.recordingDidChangeStatus("paused", reason: "user", message: nil, recoverable: nil)
         }
     }
 
@@ -326,7 +336,7 @@ final class RecordingManager {
             resumeDurationMonitoring()
             resumeWaveLevelMonitoring()
 
-            delegate?.recordingDidChangeStatus("recording")
+            delegate?.recordingDidChangeStatus("recording", reason: "user", message: nil, recoverable: nil)
         }
     }
 
@@ -372,7 +382,7 @@ final class RecordingManager {
             isPaused = true
 
             // Notify paused status
-            delegate?.recordingDidChangeStatus("paused")
+            delegate?.recordingDidChangeStatus("paused", reason: "user", message: nil, recoverable: nil)
         }
     }
 
@@ -526,7 +536,7 @@ final class RecordingManager {
 
         try session.setPreferredSampleRate(currentSampleRate)
         try session.setPreferredInput(nil)
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        try session.setActive(true)
     }
 
     private func observeAudioSessionInterruptions() {
@@ -566,8 +576,9 @@ final class RecordingManager {
                 }
                 print("[RecordingManager] Interruption began - reason: \(interruptionReason)")
 
-                // Deactivate session to yield mic to other apps (e.g., phone call or another recorder)
-                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                // Keep session active during interruptions; iOS already pauses our engine.
+                // Deactivating here would signal iOS that we no longer need audio,
+                // risking app suspension in the background.
                 self.performStateOperation {
                     if self.isRecording {
                         if let engine = self.audioEngine, engine.isRunning {
@@ -576,7 +587,7 @@ final class RecordingManager {
                         self.isPaused = true
                         self.pauseDurationMonitoring()
                         self.pauseWaveLevelMonitoring()
-                        self.delegate?.recordingDidChangeStatus("paused")
+                        self.delegate?.recordingDidChangeStatus("paused", reason: "interruption", message: "Recording paused due to audio interruption (\(interruptionReason))", recoverable: true)
                         print("[RecordingManager] Recording paused due to interruption - will attempt auto-resume when interruption ends")
                     }
                 }
@@ -654,9 +665,7 @@ final class RecordingManager {
                     print("[RecordingManager] Session activation failed after \(maxRetries) attempts: \(error.localizedDescription)")
                     self.performStateOperation {
                         if self.isRecording {
-                            self.delegate?.recordingDidEncounterError(error)
-                            // Keep paused state - don't stop recording completely
-                            // User can manually retry or the route change observer might recover
+                            self.delegate?.recordingDidChangeStatus("paused", reason: "error", message: "Could not reactivate audio session after interruption: \(error.localizedDescription)", recoverable: false)
                         }
                     }
                 }
@@ -679,12 +688,7 @@ final class RecordingManager {
             let session = AVAudioSession.sharedInstance()
             guard session.isInputAvailable, session.availableInputs?.isEmpty == false else {
                 print("[RecordingManager] Cannot resume - microphone not available")
-                let error = NSError(
-                    domain: "AudioEngine",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Microphone unavailable after interruption ended"]
-                )
-                self.delegate?.recordingDidEncounterError(error)
+                self.delegate?.recordingDidChangeStatus("paused", reason: "error", message: "Microphone unavailable after interruption ended", recoverable: false)
                 return
             }
 
@@ -697,11 +701,10 @@ final class RecordingManager {
                 self.isPaused = false
                 self.resumeDurationMonitoring()
                 self.resumeWaveLevelMonitoring()
-                self.delegate?.recordingDidChangeStatus("recording")
+                self.delegate?.recordingDidChangeStatus("recording", reason: "interruption", message: nil, recoverable: nil)
             } catch {
                 print("[RecordingManager] Failed to restart engine after interruption: \(error.localizedDescription)")
-                self.delegate?.recordingDidEncounterError(error)
-                // Keep in paused state for potential manual retry or route change recovery
+                self.delegate?.recordingDidChangeStatus("paused", reason: "error", message: "Failed to restart recording after interruption: \(error.localizedDescription)", recoverable: false)
             }
         }
     }
@@ -715,12 +718,7 @@ final class RecordingManager {
             print("[RecordingManager] Recovery failed - microphone still unavailable")
             performStateOperation {
                 if self.isRecording {
-                    let error = NSError(
-                        domain: "AudioEngine",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Unable to resume recording - microphone unavailable"]
-                    )
-                    self.delegate?.recordingDidEncounterError(error)
+                    self.delegate?.recordingDidChangeStatus("paused", reason: "error", message: "Unable to resume recording — microphone unavailable", recoverable: false)
                 }
             }
             return
@@ -763,9 +761,9 @@ final class RecordingManager {
                             self.isPaused = false
                             self.resumeDurationMonitoring()
                             self.resumeWaveLevelMonitoring()
-                            self.delegate?.recordingDidChangeStatus("recording")
+                            self.delegate?.recordingDidChangeStatus("recording", reason: "routeChange", message: nil, recoverable: nil)
                         } catch {
-                            self.delegate?.recordingDidEncounterError(error)
+                            self.delegate?.recordingDidChangeStatus("paused", reason: "error", message: "Failed to resume after new device connected: \(error.localizedDescription)", recoverable: false)
                         }
                     }
 
@@ -773,17 +771,11 @@ final class RecordingManager {
                     // Input device removed (e.g., headphones unplugged)
                     // Check if built-in mic is still available
                     if !isInputAvailable || !hasInput {
-                        // No input available - pause recording
                         if !self.isPaused {
                             self.isPaused = true
                             self.pauseDurationMonitoring()
                             self.pauseWaveLevelMonitoring()
-                            let error = NSError(
-                                domain: "AudioEngine",
-                                code: -1,
-                                userInfo: [NSLocalizedDescriptionKey: "Microphone input unavailable - device may have been disconnected"]
-                            )
-                            self.delegate?.recordingDidEncounterError(error)
+                            self.delegate?.recordingDidChangeStatus("paused", reason: "routeChange", message: "Microphone input unavailable — device may have been disconnected", recoverable: true)
                         }
                     }
 
@@ -794,12 +786,7 @@ final class RecordingManager {
                             self.isPaused = true
                             self.pauseDurationMonitoring()
                             self.pauseWaveLevelMonitoring()
-                            let error = NSError(
-                                domain: "AudioEngine",
-                                code: -1,
-                                userInfo: [NSLocalizedDescriptionKey: "Microphone access lost - another app may be recording"]
-                            )
-                            self.delegate?.recordingDidEncounterError(error)
+                            self.delegate?.recordingDidChangeStatus("paused", reason: "routeChange", message: "Microphone access lost — another app may be recording", recoverable: true)
                         }
                     }
 
@@ -810,6 +797,7 @@ final class RecordingManager {
                             self.isPaused = true
                             self.pauseDurationMonitoring()
                             self.pauseWaveLevelMonitoring()
+                            self.delegate?.recordingDidChangeStatus("paused", reason: "routeChange", message: "Audio route was overridden", recoverable: true)
                         }
                     }
 
@@ -820,6 +808,7 @@ final class RecordingManager {
                             self.isPaused = true
                             self.pauseDurationMonitoring()
                             self.pauseWaveLevelMonitoring()
+                            self.delegate?.recordingDidChangeStatus("paused", reason: "routeChange", message: "Microphone unavailable due to audio route change", recoverable: true)
                         }
                     } else if self.isPaused {
                         // Mic became available again - try to resume
@@ -830,9 +819,9 @@ final class RecordingManager {
                             self.isPaused = false
                             self.resumeDurationMonitoring()
                             self.resumeWaveLevelMonitoring()
-                            self.delegate?.recordingDidChangeStatus("recording")
+                            self.delegate?.recordingDidChangeStatus("recording", reason: "routeChange", message: nil, recoverable: nil)
                         } catch {
-                            self.delegate?.recordingDidEncounterError(error)
+                            self.delegate?.recordingDidChangeStatus("paused", reason: "error", message: "Failed to resume after route change: \(error.localizedDescription)", recoverable: false)
                         }
                     }
                 }
@@ -1045,13 +1034,7 @@ final class RecordingManager {
             stopRecordingHealthCheck()
 
             // Notify delegate about the failure
-            let error = NSError(
-                domain: "AudioEngine",
-                code: -2001,
-                userInfo: [NSLocalizedDescriptionKey: "Recording lost due to system audio reset. Please start a new recording."]
-            )
-            delegate?.recordingDidEncounterError(error)
-            delegate?.recordingDidChangeStatus("stopped")
+            delegate?.recordingDidChangeStatus("stopped", reason: "mediaReset", message: "Recording lost due to system audio reset. Please start a new recording.", recoverable: false)
         }
     }
 
@@ -1082,14 +1065,8 @@ final class RecordingManager {
         stopWaveLevelMonitoring()
         stopRecordingHealthCheck()
 
-        // Notify the UI with a clear error
-        let error = NSError(
-            domain: "AudioEngine",
-            code: -2000,
-            userInfo: [NSLocalizedDescriptionKey: "Recording was interrupted by the system. The microphone is no longer available. Please start a new recording."]
-        )
-        delegate?.recordingDidEncounterError(error)
-        delegate?.recordingDidChangeStatus("stopped")
+        // Notify the UI
+        delegate?.recordingDidChangeStatus("stopped", reason: "error", message: "Recording was interrupted by the system. The microphone is no longer available. Please start a new recording.", recoverable: false)
     }
 
     // MARK: - Recording Health Check

@@ -20,7 +20,7 @@ import java.util.TimerTask;
 
 class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     interface RecordingCallback {
-        void onStatusChanged(String status);
+        void onStatusChanged(String status, String reason, String message, Boolean recoverable);
         void onError(String message);
         void onDurationChanged(double duration);
     }
@@ -169,7 +169,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
                 startDurationMonitoring();
 
                 if (callback != null) {
-                    callback.onStatusChanged("recording");
+                    callback.onStatusChanged("recording", "user", null, null);
                 }
             } catch (Exception monitoringError) {
                 Log.e(TAG, "Failed to start monitoring after recording start", monitoringError);
@@ -230,7 +230,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
 
         isRecording = false;
         isPaused = false;
-        if (callback != null) callback.onStatusChanged("idle");
+        if (callback != null) callback.onStatusChanged("stopped", "user", null, null);
     }
 
     /**
@@ -270,7 +270,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
 
         isRecording = false;
         isPaused = false;
-        if (callback != null) callback.onStatusChanged("idle");
+        if (callback != null) callback.onStatusChanged("stopped", "user", null, null);
 
         return filePath;
     }
@@ -291,7 +291,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
             // Pause duration monitoring
             pauseDurationMonitoring();
 
-            if (callback != null) callback.onStatusChanged("paused");
+            if (callback != null) callback.onStatusChanged("paused", "user", null, null);
         } catch (Exception e) {
             Log.w(TAG, "Error pausing recording", e);
             if (callback != null) callback.onError(e.getMessage());
@@ -336,7 +336,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
             // Resume duration monitoring
             resumeDurationMonitoring();
 
-            if (callback != null) callback.onStatusChanged("recording");
+            if (callback != null) callback.onStatusChanged("recording", "user", null, null);
         } catch (Exception e) {
             Log.w(TAG, "Error resuming recording", e);
             if (callback != null) callback.onError(e.getMessage());
@@ -362,7 +362,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
             // Create a fresh recorder configured for the same path, but remain paused until resume
             prepareMediaRecorderForCurrentPath();
 
-            if (callback != null) callback.onStatusChanged("paused");
+            if (callback != null) callback.onStatusChanged("paused", "user", null, null);
         } catch (Exception e) {
             Log.w(TAG, "Error resetting recording", e);
             if (callback != null) callback.onError(e.getMessage());
