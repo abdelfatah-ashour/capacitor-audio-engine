@@ -6,6 +6,7 @@ import type {
   AudioEventName,
   AudioFileInfo,
   AudioEventMap,
+  PausedRecordingPreviewInfo,
   PreloadTracksOptions,
   PreloadTracksResult,
   PlaybackInfo,
@@ -420,6 +421,11 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
   async resumeRecording(): Promise<void> {
     console.warn('resumeRecording is not supported on web platform.');
     throw new Error('resumeRecording is not supported on web platform');
+  }
+
+  async preparePausedRecordingPreview(): Promise<PausedRecordingPreviewInfo> {
+    console.warn('preparePausedRecordingPreview is not supported on web platform.');
+    throw new Error('preparePausedRecordingPreview is not supported on web platform');
   }
 
   async getRecordingStatus(): Promise<RecordingStatusInfo> {

@@ -399,6 +399,10 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     new Set(['paused', 'recording']).has(this.recordingStatus())
   );
   protected readonly canGetRecordingStatus = computed(() => this.recordingStatus() !== 'idle');
+  protected readonly canPlayPausedRecordingPreview = computed(
+    () => this.recordingStatus() === 'paused' && !this.pausedPlaybackActive()
+  );
+  protected readonly canStopPausedRecordingPreview = computed(() => this.pausedPlaybackActive());
 
   protected readonly recordingProgressPercent = computed(() => {
     if (!this.isSegmentRollingEnabled()) return 0;
@@ -533,6 +537,12 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
   // Last recorded audio file info
   protected readonly lastRecordedAudioFile = signal<AudioFileInfo | null>(null);
   protected readonly showRecordedFileActions = signal(false);
+
+  // Paused-recording playback state (preview of the audio captured so far,
+  // playable while the recording is paused)
+  protected readonly pausedPlaybackActive = signal(false);
+  protected readonly pausedPlaybackUri = signal<string | null>(null);
+  protected readonly pausedPlaybackDuration = signal(0);
 
   // Recording duration and wave level signals
   protected readonly recordingDuration = signal(0);
@@ -1356,6 +1366,9 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     try {
       await CapacitorAudioEngine.resumeRecording();
       this.recordingStatus.set('recording');
+      // The plugin auto-stops any paused-recording playback on resume; mirror
+      // that in our local UI state.
+      this.clearPausedPlaybackState();
       await this.showToast('Recording resumed', 'success');
     } catch (error) {
       console.error('Failed to resume recording:', error);
@@ -1363,10 +1376,86 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
     }
   }
 
+  /**
+   * Generate a preview file from the audio captured so far, preload it via
+   * the standard playback engine, and start playback. Once started, the user
+   * can drive playback with the regular playback methods (`pauseTrack`,
+   * `resumeTrack`, `seekTrack`, `stopTrack`, `getPlaybackInfo`) using
+   * `pausedPlaybackUri()` as the URL.
+   */
+  async playPausedRecordingPreview(): Promise<void> {
+    try {
+      const info = await CapacitorAudioEngine.preparePausedRecordingPreview();
+
+      // Hand the preview off to the standard playback pipeline.
+      const preload = await CapacitorAudioEngine.preloadTracks({ tracks: [info.uri] });
+      const loaded = preload.tracks.find(t => t.url === info.uri);
+      if (!loaded?.loaded) {
+        throw new Error('Failed to preload preview track');
+      }
+
+      await CapacitorAudioEngine.playTrack({ url: info.uri });
+      await CapacitorAudioEngine.seekTrack({ url: info.uri, seconds: 3 });
+
+      this.pausedPlaybackActive.set(true);
+      this.pausedPlaybackUri.set(info.uri);
+      this.pausedPlaybackDuration.set(info.duration);
+      await this.showToast(`Playing recording so far (${info.duration.toFixed(1)}s)`, 'success');
+    } catch (error) {
+      console.error('Failed to play paused recording preview:', error);
+      this.clearPausedPlaybackState();
+      await this.showToast('Failed to play paused recording', 'danger');
+    }
+  }
+
+  async pausePausedRecordingPreview(): Promise<void> {
+    const url = this.pausedPlaybackUri();
+    if (!url) return;
+    try {
+      await CapacitorAudioEngine.pauseTrack({ url });
+    } catch (error) {
+      console.error('Failed to pause preview playback:', error);
+      await this.showToast('Failed to pause preview playback', 'danger');
+    }
+  }
+
+  async resumePausedRecordingPreview(): Promise<void> {
+    const url = this.pausedPlaybackUri();
+    if (!url) return;
+    try {
+      await CapacitorAudioEngine.resumeTrack({ url });
+    } catch (error) {
+      console.error('Failed to resume preview playback:', error);
+      await this.showToast('Failed to resume preview playback', 'danger');
+    }
+  }
+
+  async stopPausedRecordingPreview(): Promise<void> {
+    const url = this.pausedPlaybackUri();
+    if (!url) {
+      this.clearPausedPlaybackState();
+      return;
+    }
+    try {
+      await CapacitorAudioEngine.stopTrack({ url });
+    } catch (error) {
+      console.error('Failed to stop preview playback:', error);
+    }
+    this.clearPausedPlaybackState();
+    await this.showToast('Stopped preview playback', 'warning');
+  }
+
+  private clearPausedPlaybackState(): void {
+    this.pausedPlaybackActive.set(false);
+    this.pausedPlaybackUri.set(null);
+    this.pausedPlaybackDuration.set(0);
+  }
+
   async stopRecording(): Promise<void> {
     try {
       const audioFileInfo = await CapacitorAudioEngine.stopRecording();
       this.recordingStatus.set('stopped');
+      this.clearPausedPlaybackState();
       const ended = Date.now();
       this.recordingEndedAt.set(ended);
       this.recordingDetails.update(d => ({
@@ -1512,6 +1601,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       this.recordingWaveLevel.set(0);
       this.recordingWaveLevelHistory.set([]);
       this.recordingMaxWaveLevel.set(0);
+      this.clearPausedPlaybackState();
       await this.showToast('Recording reset - ready to resume', 'success');
     } catch (error) {
       console.error('Failed to reset recording:', error);

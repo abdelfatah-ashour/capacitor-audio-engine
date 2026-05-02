@@ -392,6 +392,68 @@
                 </ion-button>
               </ion-col>
             </ion-row>
+            <ion-row>
+              <ion-col size="12">
+                <small style="color: var(--ion-color-medium)">
+                  Preview the audio captured so far. Generates a preview file from the
+                  finalized segments and plays it through the standard playback engine —
+                  you can keep using <code>pauseTrack</code>, <code>resumeTrack</code>,
+                  <code>seekTrack</code>, <code>stopTrack</code> on the returned URL.
+                </small>
+              </ion-col>
+            </ion-row>
+            <ion-row>
+              <ion-col size="6">
+                <ion-button
+                  expand="block"
+                  fill="solid"
+                  color="tertiary"
+                  [disabled]="!canPlayPausedRecordingPreview()"
+                  (click)="playPausedRecordingPreview()"
+                >
+                  <ion-icon name="play-circle" slot="start"></ion-icon>
+                  Play Preview
+                </ion-button>
+              </ion-col>
+              <ion-col size="6">
+                <ion-button
+                  expand="block"
+                  fill="outline"
+                  color="warning"
+                  [disabled]="!canStopPausedRecordingPreview()"
+                  (click)="pausePausedRecordingPreview()"
+                >
+                  <ion-icon name="pause" slot="start"></ion-icon>
+                  Pause Preview
+                </ion-button>
+              </ion-col>
+            </ion-row>
+            <ion-row>
+              <ion-col size="6">
+                <ion-button
+                  expand="block"
+                  fill="outline"
+                  color="secondary"
+                  [disabled]="!canStopPausedRecordingPreview()"
+                  (click)="resumePausedRecordingPreview()"
+                >
+                  <ion-icon name="play" slot="start"></ion-icon>
+                  Resume Preview
+                </ion-button>
+              </ion-col>
+              <ion-col size="6">
+                <ion-button
+                  expand="block"
+                  fill="outline"
+                  color="danger"
+                  [disabled]="!canStopPausedRecordingPreview()"
+                  (click)="stopPausedRecordingPreview()"
+                >
+                  <ion-icon name="stop" slot="start"></ion-icon>
+                  Stop Preview
+                </ion-button>
+              </ion-col>
+            </ion-row>
           </ion-grid>
 
           <!-- Instructions -->

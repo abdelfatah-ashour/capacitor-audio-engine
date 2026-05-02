@@ -42,13 +42,22 @@ final class RecordingManager {
     private var aacFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
 
-    // Asset Writer (native .m4a)
+    // Asset Writer (native .m4a) — one writer per segment.
     private var assetWriter: AVAssetWriter?
     private var writerInput: AVAssetWriterInput?
     private var fileURL: URL?
     private var writerStarted: Bool = false
     private var audioSessionObserver: Any?
     private var routeChangeObserver: Any?
+
+    // Segment-based recording state. `segmentURLs` holds each finalized
+    // segment in capture order; on stop they are concatenated into
+    // `finalOutputURL`.
+    private var segmentURLs: [URL] = []
+    private var segmentDirectory: URL?
+    private var segmentIndex: Int = 0
+    private var finalOutputURL: URL?
+    private var previewURL: URL?
 
     // App lifecycle observers
     private var appWillEnterForegroundObserver: Any?
@@ -64,51 +73,107 @@ final class RecordingManager {
 
     func configureRecording(encoding: String?, bitrate: Int?, path: String? = nil) {
         if let br = bitrate, br > 0 { desiredBitrate = br }
+
+        let resolvedFinalURL: URL
         if let p = path, !p.isEmpty {
             // Normalize provided path into app sandbox
             if p.hasPrefix("file://") {
                 if let url = URL(string: p) {
-                    fileURL = url
+                    resolvedFinalURL = url
                 } else {
                     let pathString = String(p.dropFirst(7))
-                    fileURL = URL(fileURLWithPath: pathString)
+                    resolvedFinalURL = URL(fileURLWithPath: pathString)
                 }
             } else if p.hasPrefix("/") {
                 let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
                 let trimmed = String(p.dropFirst())
-                fileURL = base.appendingPathComponent(trimmed)
+                resolvedFinalURL = base.appendingPathComponent(trimmed)
             } else {
                 let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-                fileURL = base.appendingPathComponent(p)
+                resolvedFinalURL = base.appendingPathComponent(p)
             }
         } else {
             // Use same directory as Capacitor Filesystem Directory.Data
             // On iOS, this maps to the app's data directory (Library/Application Support)
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-            fileURL = base.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970 * 1000)).m4a")
+            resolvedFinalURL = base.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970 * 1000)).m4a")
         }
 
+        finalOutputURL = resolvedFinalURL
+
         // Ensure directory exists for the output file
-        if let url = fileURL {
-            let dir = url.deletingLastPathComponent()
-            if !FileManager.default.fileExists(atPath: dir.path) {
-                do {
-                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                } catch {
-                    delegate?.recordingDidEncounterError(NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create output directory: \(error.localizedDescription)"]))
-                }
+        let dir = resolvedFinalURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            } catch {
+                delegate?.recordingDidEncounterError(NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create output directory: \(error.localizedDescription)"]))
             }
         }
     }
 
     func getFormatInfo() -> (sampleRate: Int, channels: Int, encoding: String, mimeType: String, bitrate: Int, path: String?) {
-        return (Int(currentSampleRate), Int(currentChannels), "aac", "audio/aac", desiredBitrate, fileURL?.path)
+        return (Int(currentSampleRate), Int(currentChannels), "aac", "audio/aac", desiredBitrate, finalOutputURL?.path)
+    }
+
+    // MARK: - Segment helpers
+
+    private func ensureSegmentDirectory() -> URL {
+        if let dir = segmentDirectory { return dir }
+        let parentDir: URL
+        if let finalURL = finalOutputURL {
+            parentDir = finalURL.deletingLastPathComponent()
+        } else {
+            parentDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        }
+        let dir = parentDir.appendingPathComponent(".audio_engine_segments_\(Int(Date().timeIntervalSince1970 * 1000))")
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        segmentDirectory = dir
+        return dir
+    }
+
+    private func nextSegmentURL() -> URL {
+        let dir = ensureSegmentDirectory()
+        let name = String(format: "segment_%03d.m4a", segmentIndex)
+        segmentIndex += 1
+        return dir.appendingPathComponent(name)
+    }
+
+    private func cleanupSegments() {
+        for url in segmentURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
+        segmentURLs.removeAll()
+
+        if let url = fileURL, FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        fileURL = nil
+
+        if let dir = segmentDirectory {
+            // Best-effort: remove any leftover files plus the dir itself.
+            if let leftovers = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                for url in leftovers {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+            try? FileManager.default.removeItem(at: dir)
+        }
+        segmentDirectory = nil
+        segmentIndex = 0
     }
 
     func startRecording() {
         performStateOperation {
             guard !isRecording else { return }
             do {
+                // Drop any leftover segments / preview from a prior session.
+                cleanupSegments()
+                cleanupPausedPlaybackPreview()
+
                 try configureAudioSessionForRecording()
                 observeAudioSessionInterruptions()
                 observeAudioSessionRouteChanges()
@@ -134,7 +199,8 @@ final class RecordingManager {
                 aacFormat = outFormat
                 converter = AVAudioConverter(from: inputFormat, to: outFormat)
 
-                // Prepare asset writer for native .m4a
+                // Allocate the first segment file and point the writer at it.
+                fileURL = nextSegmentURL()
                 try setupAssetWriter(inputFormat: inputFormat)
 
                 if !inputNodeTapInstalled {
@@ -175,8 +241,24 @@ final class RecordingManager {
     }
 
     func stopRecording() {
+        stopRecordingAndWaitForFile { _ in }
+    }
+
+    /// Stop recording, finalize the active segment, concatenate every segment
+    /// captured during the session into the user-requested final output path,
+    /// and report that path via the completion handler.
+    func stopRecordingAndWaitForFile(completion: @escaping (String?) -> Void) {
+        let shouldProceed: Bool = performStateOperation {
+            guard isRecording else { return false }
+            return true
+        }
+
+        if !shouldProceed {
+            completion(finalOutputURL?.path)
+            return
+        }
+
         performStateOperation {
-            guard isRecording else { return }
             if let engine = audioEngine {
                 if inputNodeTapInstalled {
                     engine.inputNode.removeTap(onBus: 0)
@@ -187,102 +269,57 @@ final class RecordingManager {
             removeAudioSessionInterruptionsObserver()
             removeAudioSessionRouteChangeObserver()
             removeAppLifecycleObservers()
-            // Only finish writer if one exists (prevents "file not found" error after resetRecording)
-            if assetWriter != nil {
-                finishWriter()
-            }
-            audioEngine = nil
-            converter = nil
-            aacFormat = nil
 
-            // Stop duration and wave level monitoring
             stopDurationMonitoring()
             stopWaveLevelMonitoring()
             stopRecordingHealthCheck()
-
-            // Deactivate audio session now that recording is fully stopped,
-            // allowing other apps to resume their audio.
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-
-            isRecording = false
-            isPaused = false
-            delegate?.recordingDidChangeStatus("stopped", reason: "user", message: nil, recoverable: nil)
         }
-    }
 
-    /// Stop recording and wait for the file to be fully written to disk
-    /// Returns the file path asynchronously via completion handler
-    func stopRecordingAndWaitForFile(completion: @escaping (String?) -> Void) {
-        performStateOperation {
-            guard isRecording else {
-                completion(fileURL?.path)
+        finalizeActiveSegment { [weak self] in
+            guard let self = self else {
+                completion(nil)
                 return
             }
+            self.assembleFinalOutput { resultPath in
+                self.performStateOperation {
+                    self.audioEngine = nil
+                    self.converter = nil
+                    self.aacFormat = nil
 
-            let filePath = fileURL?.path
+                    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
-            if let engine = audioEngine {
-                if inputNodeTapInstalled {
-                    engine.inputNode.removeTap(onBus: 0)
-                    inputNodeTapInstalled = false
+                    self.cleanupSegments()
+                    self.cleanupPausedPlaybackPreview()
+
+                    self.isRecording = false
+                    self.isPaused = false
+                    self.delegate?.recordingDidChangeStatus("stopped", reason: "user", message: nil, recoverable: nil)
+                    completion(resultPath ?? self.finalOutputURL?.path)
                 }
-                engine.stop()
-            }
-            removeAudioSessionInterruptionsObserver()
-            removeAudioSessionRouteChangeObserver()
-            removeAppLifecycleObservers()
-
-            // Stop duration and wave level monitoring
-            stopDurationMonitoring()
-            stopWaveLevelMonitoring()
-            stopRecordingHealthCheck()
-
-            // Finish writer and wait for completion
-            if assetWriter != nil {
-                finishWriterAndWait { [weak self] in
-                    guard let self = self else {
-                        completion(nil)
-                        return
-                    }
-
-                    self.performStateOperation {
-                        self.audioEngine = nil
-                        self.converter = nil
-                        self.aacFormat = nil
-
-                        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-
-                        self.isRecording = false
-                        self.isPaused = false
-                        self.delegate?.recordingDidChangeStatus("stopped", reason: "user", message: nil, recoverable: nil)
-                        completion(filePath)
-                    }
-                }
-            } else {
-                audioEngine = nil
-                converter = nil
-                aacFormat = nil
-
-                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-
-                isRecording = false
-                isPaused = false
-                delegate?.recordingDidChangeStatus("stopped", reason: "user", message: nil, recoverable: nil)
-                completion(filePath)
             }
         }
     }
 
-    func pauseRecording() {
-        performStateOperation {
-            guard isRecording && !isPaused else { return }
+    /// Pause recording and finalize the in-flight segment to disk so it can
+    /// be played back / concatenated. The completion handler fires once the
+    /// segment file is fully written.
+    func pauseRecording(completion: (() -> Void)? = nil) {
+        let shouldProceed: Bool = performStateOperation {
+            guard isRecording && !isPaused else { return false }
             isPaused = true
-
-            // Pause duration and wave level monitoring
             pauseDurationMonitoring()
             pauseWaveLevelMonitoring()
+            return true
+        }
 
-            delegate?.recordingDidChangeStatus("paused", reason: "user", message: nil, recoverable: nil)
+        guard shouldProceed else {
+            completion?()
+            return
+        }
+
+        finalizeActiveSegment { [weak self] in
+            self?.delegate?.recordingDidChangeStatus("paused", reason: "user", message: nil, recoverable: nil)
+            completion?()
         }
     }
 
@@ -290,49 +327,48 @@ final class RecordingManager {
         performStateOperation {
             guard isRecording && isPaused else { return }
 
-            // Check if we need to reinitialize after a reset (no writer + tap removed)
-            if assetWriter == nil && !inputNodeTapInstalled {
-                // Reinitialize recording session after reset
-                do {
-                    guard let engine = audioEngine else {
-                        throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Audio engine not initialized"])
-                    }
+            // Drop any preview that was created for paused playback before we
+            // start capturing more audio.
+            cleanupPausedPlaybackPreview()
 
-                    let input = engine.inputNode
-                    let inputFormat = input.outputFormat(forBus: 0)
-
-                    // Setup new asset writer for the new file
-                    try setupAssetWriter(inputFormat: inputFormat)
-
-                    // Reinstall tap
-                    if !inputNodeTapInstalled {
-                        input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, time in
-                            guard let self = self else { return }
-                            let shouldSkip: Bool = self.performStateOperation { self.isPaused || !self.isRecording }
-                            if shouldSkip { return }
-
-                            if let writer = self.assetWriter, writer.status == .writing, !self.writerStarted {
-                                self.writerStarted = true
-                                let startTime = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
-                                writer.startSession(atSourceTime: startTime)
-                            }
-                            self.appendToWriter(buffer: buffer, at: time)
-                            self.encodeAndEmit(buffer: buffer)
-                        }
-                        inputNodeTapInstalled = true
-                    }
-
-                    // Restart engine
-                    try engine.start()
-                } catch {
-                    delegate?.recordingDidEncounterError(error)
-                    return
+            do {
+                guard let engine = audioEngine else {
+                    throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Audio engine not initialized"])
                 }
+
+                let input = engine.inputNode
+                let inputFormat = input.outputFormat(forBus: 0)
+
+                // Allocate and prepare a writer for the next segment.
+                fileURL = nextSegmentURL()
+                try setupAssetWriter(inputFormat: inputFormat)
+
+                if !inputNodeTapInstalled {
+                    input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, time in
+                        guard let self = self else { return }
+                        let shouldSkip: Bool = self.performStateOperation { self.isPaused || !self.isRecording }
+                        if shouldSkip { return }
+
+                        if let writer = self.assetWriter, writer.status == .writing, !self.writerStarted {
+                            self.writerStarted = true
+                            let startTime = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
+                            writer.startSession(atSourceTime: startTime)
+                        }
+                        self.appendToWriter(buffer: buffer, at: time)
+                        self.encodeAndEmit(buffer: buffer)
+                    }
+                    inputNodeTapInstalled = true
+                }
+
+                if !engine.isRunning {
+                    try engine.start()
+                }
+            } catch {
+                delegate?.recordingDidEncounterError(error)
+                return
             }
 
             isPaused = false
-
-            // Resume duration and wave level monitoring
             resumeDurationMonitoring()
             resumeWaveLevelMonitoring()
 
@@ -343,14 +379,13 @@ final class RecordingManager {
     /// Reset the current recording session without finalizing a file.
     /// Behavior:
     /// - Keeps audio engine configured but removes active taps
-    /// - Finishes and discards current writer and file
+    /// - Discards every captured segment
     /// - Resets duration and wave level monitoring counters to 0
     /// - Leaves the recording in paused state so `resumeRecording()` can continue fresh
-    func resetRecording() {
-        performStateOperation {
-            guard isRecording else { return }
+    func resetRecording(completion: (() -> Void)? = nil) {
+        let shouldProceed: Bool = performStateOperation {
+            guard isRecording else { return false }
 
-            // Remove input tap and stop engine without tearing down configuration entirely
             if let engine = audioEngine {
                 if inputNodeTapInstalled {
                     engine.inputNode.removeTap(onBus: 0)
@@ -359,31 +394,265 @@ final class RecordingManager {
                 engine.pause()
             }
 
-            // Finalize current writer so any existing partial file remains valid
-            // Do NOT delete the file; allow clients to query it if needed
-            finishWriter()
-            // Remove references so a new writer will be setup on resume
-            assetWriter = nil
-            writerInput = nil
-            writerStarted = false
-            // Rotate to a fresh target path for the next session
-            if let currentURL = fileURL {
-                let dir = currentURL.deletingLastPathComponent()
-                let newURL = dir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970 * 1000)).m4a")
-                fileURL = newURL
-            }
-
-            // Reset monitoring counters and pause monitors (do not destroy timers)
             pauseDurationMonitoring()
             pauseWaveLevelMonitoring()
             currentDuration = 0.0
-
-            // Keep recording flag, but set paused so resumeRecording() can proceed
             isPaused = true
-
-            // Notify paused status
-            delegate?.recordingDidChangeStatus("paused", reason: "user", message: nil, recoverable: nil)
+            return true
         }
+
+        guard shouldProceed else {
+            completion?()
+            return
+        }
+
+        // Finish whatever writer is currently open, then discard everything.
+        let finalize: () -> Void = { [weak self] in
+            guard let self = self else {
+                completion?()
+                return
+            }
+            self.performStateOperation {
+                self.assetWriter = nil
+                self.writerInput = nil
+                self.writerStarted = false
+                self.cleanupSegments()
+                self.cleanupPausedPlaybackPreview()
+            }
+            self.delegate?.recordingDidChangeStatus("paused", reason: "user", message: nil, recoverable: nil)
+            completion?()
+        }
+
+        if assetWriter != nil {
+            finishWriterAndWait {
+                finalize()
+            }
+        } else {
+            finalize()
+        }
+    }
+
+    // MARK: - Segment finalization
+
+    /// Closes the current asset writer (if any) and registers its file as a
+    /// finalized segment. Safe to call repeatedly. The completion handler
+    /// fires once the file is on disk.
+    private func finalizeActiveSegment(completion: @escaping () -> Void) {
+        guard assetWriter != nil else {
+            completion()
+            return
+        }
+
+        let segmentURL = fileURL
+        finishWriterAndWait { [weak self] in
+            guard let self = self else {
+                completion()
+                return
+            }
+            self.performStateOperation {
+                if let url = segmentURL,
+                   FileManager.default.fileExists(atPath: url.path),
+                   let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                   let size = attributes[.size] as? Int64,
+                   size > 0 {
+                    self.segmentURLs.append(url)
+                } else if let url = segmentURL {
+                    print("[RecordingManager] Discarding empty segment: \(url.path)")
+                    try? FileManager.default.removeItem(at: url)
+                }
+                self.fileURL = nil
+                self.assetWriter = nil
+                self.writerInput = nil
+                self.writerStarted = false
+            }
+            completion()
+        }
+    }
+
+    /// Concatenate all captured segments into `finalOutputURL`. If only one
+    /// segment exists it is moved into place. Reports the final output path
+    /// via the completion handler.
+    private func assembleFinalOutput(completion: @escaping (String?) -> Void) {
+        guard let outputURL = finalOutputURL else {
+            completion(nil)
+            return
+        }
+        let segmentsCopy = segmentURLs
+
+        if segmentsCopy.isEmpty {
+            print("[RecordingManager] No segments captured for stopRecording")
+            completion(nil)
+            return
+        }
+
+        // Make sure the destination directory exists and that we don't collide
+        // with a stale file from a previous run.
+        let parent = outputURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parent.path) {
+            try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try? FileManager.default.removeItem(at: outputURL)
+        }
+
+        if segmentsCopy.count == 1 {
+            do {
+                try FileManager.default.moveItem(at: segmentsCopy[0], to: outputURL)
+                delegate?.recordingDidFinalize(outputURL.path)
+                completion(outputURL.path)
+            } catch {
+                print("[RecordingManager] Failed to move single segment into place: \(error.localizedDescription)")
+                self.delegate?.recordingDidEncounterError(error)
+                completion(nil)
+            }
+            return
+        }
+
+        concatenateSegments(segmentsCopy, to: outputURL) { [weak self] error in
+            if let error = error {
+                print("[RecordingManager] Failed to concatenate segments: \(error.localizedDescription)")
+                self?.delegate?.recordingDidEncounterError(error)
+                completion(nil)
+            } else {
+                self?.delegate?.recordingDidFinalize(outputURL.path)
+                completion(outputURL.path)
+            }
+        }
+    }
+
+    private func concatenateSegments(_ segments: [URL], to outputURL: URL, completion: @escaping (Error?) -> Void) {
+        let composition = AVMutableComposition()
+        guard let track = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            completion(NSError(domain: "AudioEngine", code: -1,
+                               userInfo: [NSLocalizedDescriptionKey: "Failed to create composition track"]))
+            return
+        }
+
+        var insertTime = CMTime.zero
+        for segment in segments {
+            let asset = AVAsset(url: segment)
+            guard let assetTrack = asset.tracks(withMediaType: .audio).first else {
+                continue
+            }
+            let timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+            do {
+                try track.insertTimeRange(timeRange, of: assetTrack, at: insertTime)
+                insertTime = CMTimeAdd(insertTime, asset.duration)
+            } catch {
+                completion(error)
+                return
+            }
+        }
+
+        if insertTime == .zero {
+            completion(NSError(domain: "AudioEngine", code: -1,
+                               userInfo: [NSLocalizedDescriptionKey: "No audio data found in segments"]))
+            return
+        }
+
+        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
+            completion(NSError(domain: "AudioEngine", code: -1,
+                               userInfo: [NSLocalizedDescriptionKey: "Failed to create export session"]))
+            return
+        }
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .m4a
+
+        exportSession.exportAsynchronously { [weak exportSession] in
+            guard let exportSession = exportSession else {
+                completion(NSError(domain: "AudioEngine", code: -1,
+                                   userInfo: [NSLocalizedDescriptionKey: "Export session was deallocated"]))
+                return
+            }
+            switch exportSession.status {
+            case .completed:
+                completion(nil)
+            case .failed, .cancelled:
+                completion(exportSession.error ?? NSError(domain: "AudioEngine", code: -1,
+                                                          userInfo: [NSLocalizedDescriptionKey: "Concatenation export failed"]))
+            default:
+                completion(NSError(domain: "AudioEngine", code: -1,
+                                   userInfo: [NSLocalizedDescriptionKey: "Concatenation export ended with status \(exportSession.status.rawValue)"]))
+            }
+        }
+    }
+
+    // MARK: - Paused-recording playback preview
+
+    /// Concatenate the segments captured so far into a temporary preview file
+    /// that the caller can hand to the playback engine while the recording is
+    /// still paused.
+    func prepareForPausedPlayback(completion: @escaping (Result<(url: URL, duration: Double), Error>) -> Void) {
+        let isReady: (paused: Bool, segmentsSnapshot: [URL]) = performStateOperation {
+            return (paused: isRecording && isPaused, segmentsSnapshot: segmentURLs)
+        }
+
+        guard isReady.paused else {
+            completion(.failure(NSError(domain: "AudioEngine", code: -1,
+                                        userInfo: [NSLocalizedDescriptionKey: "playPausedRecording requires an active, paused recording"])))
+            return
+        }
+        guard !isReady.segmentsSnapshot.isEmpty else {
+            completion(.failure(NSError(domain: "AudioEngine", code: -1,
+                                        userInfo: [NSLocalizedDescriptionKey: "No audio has been recorded yet to play back"])))
+            return
+        }
+
+        // Drop any prior preview before generating a new one.
+        cleanupPausedPlaybackPreview()
+
+        let previewParent: URL
+        if let dir = segmentDirectory {
+            previewParent = dir.deletingLastPathComponent()
+        } else if let finalURL = finalOutputURL {
+            previewParent = finalURL.deletingLastPathComponent()
+        } else {
+            previewParent = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        }
+
+        let previewFile = previewParent.appendingPathComponent("paused_recording_preview_\(Int(Date().timeIntervalSince1970 * 1000)).m4a")
+
+        // For a single segment, just copy it (no export session needed).
+        if isReady.segmentsSnapshot.count == 1 {
+            do {
+                if FileManager.default.fileExists(atPath: previewFile.path) {
+                    try FileManager.default.removeItem(at: previewFile)
+                }
+                try FileManager.default.copyItem(at: isReady.segmentsSnapshot[0], to: previewFile)
+                let duration = CMTimeGetSeconds(AVAsset(url: previewFile).duration)
+                self.previewURL = previewFile
+                completion(.success((url: previewFile, duration: duration)))
+            } catch {
+                completion(.failure(error))
+            }
+            return
+        }
+
+        concatenateSegments(isReady.segmentsSnapshot, to: previewFile) { [weak self] error in
+            if let error = error {
+                completion(.failure(error))
+            } else {
+                let duration = CMTimeGetSeconds(AVAsset(url: previewFile).duration)
+                self?.previewURL = previewFile
+                completion(.success((url: previewFile, duration: duration)))
+            }
+        }
+    }
+
+    /// Delete the temporary preview file (if any).
+    func cleanupPausedPlaybackPreview() {
+        if let url = previewURL {
+            try? FileManager.default.removeItem(at: url)
+            previewURL = nil
+        }
+    }
+
+    func getPausedPlaybackPreviewURL() -> URL? {
+        return previewURL
     }
 
 
@@ -439,14 +708,11 @@ final class RecordingManager {
         if let input = writerInput {
             input.markAsFinished()
         }
-        let finalizedPath = fileURL?.path
         if let writer = assetWriter {
             writer.finishWriting { [weak self] in
                 guard let self = self else { return }
                 if writer.status == .failed, let err = writer.error {
                     self.delegate?.recordingDidEncounterError(err)
-                } else if let path = finalizedPath {
-                    self.delegate?.recordingDidFinalize(path)
                 }
             }
         }
@@ -455,7 +721,9 @@ final class RecordingManager {
         writerStarted = false
     }
 
-    /// Finish writer and wait for completion
+    /// Finish writer and wait for completion. Reports writer errors via the
+    /// delegate but does NOT emit `recordingDidFinalize` — that fires only
+    /// once for the fully assembled recording.
     private func finishWriterAndWait(completion: @escaping () -> Void) {
         if let input = writerInput {
             input.markAsFinished()
@@ -475,19 +743,17 @@ final class RecordingManager {
                     print("[RecordingManager] Asset writer failed: \(err.localizedDescription)")
                     self.delegate?.recordingDidEncounterError(err)
                 } else if let path = finalizedPath {
-                    // Verify the file exists and has content
                     if FileManager.default.fileExists(atPath: path) {
                         do {
                             let attributes = try FileManager.default.attributesOfItem(atPath: path)
                             let fileSize = attributes[.size] as? Int64 ?? 0
-                            print("[RecordingManager] Recording file ready: \(fileSize) bytes at \(path)")
+                            print("[RecordingManager] Segment ready: \(fileSize) bytes at \(path)")
                         } catch {
                             print("[RecordingManager] Could not get file attributes: \(error.localizedDescription)")
                         }
                     } else {
-                        print("[RecordingManager] Warning: Recording file does not exist at \(path)")
+                        print("[RecordingManager] Warning: Segment file does not exist at \(path)")
                     }
-                    self.delegate?.recordingDidFinalize(path)
                 }
 
                 completion()
@@ -1225,7 +1491,7 @@ final class RecordingManager {
             } else {
                 statusString = "recording"
             }
-            return (status: statusString, duration: currentDuration, path: fileURL?.path)
+            return (status: statusString, duration: currentDuration, path: finalOutputURL?.path)
         }
     }
 }

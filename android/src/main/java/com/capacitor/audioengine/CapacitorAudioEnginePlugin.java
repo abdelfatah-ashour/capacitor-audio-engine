@@ -41,6 +41,10 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     private PlaybackManager playbackManager;
     private Handler mainHandler;
 
+    // Tracks the URL currently registered with PlaybackManager for the
+    // paused-recording preview so we can release it on cleanup.
+    private String pausedPlaybackPreviewUrl;
+
     // Background executor for heavy audio processing operations
     private ExecutorService audioProcessingExecutor;
 
@@ -928,6 +932,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 }
             }
 
+            // Drop any in-progress paused-playback preview before assembling the final file.
+            stopPausedPlaybackInternal();
+
             // Stop recording and wait for file to be ready
             String filePath = recordingManager.stopRecordingAndWaitForFile();
 
@@ -994,6 +1001,8 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @PluginMethod
     public void resumeRecording(PluginCall call) {
         try {
+            // Stop any in-progress preview playback before we mutate the segments.
+            stopPausedPlaybackInternal();
             recordingManager.resumeRecording();
 
             // Resume wave level monitoring
@@ -1016,10 +1025,73 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @PluginMethod
     public void resetRecording(PluginCall call) {
         try {
+            stopPausedPlaybackInternal();
             recordingManager.resetRecording();
             call.resolve();
         } catch (Exception e) {
             call.reject("RECORDING_RESET_ERROR", e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void preparePausedRecordingPreview(PluginCall call) {
+        try {
+            RecordingManager.StatusInfo status = recordingManager.getStatus();
+            if (!"paused".equals(status.status())) {
+                call.reject("PAUSED_PREVIEW_INVALID_STATE",
+                        "preparePausedRecordingPreview requires recording to be paused (current: " + status.status() + ")");
+                return;
+            }
+
+            // Drop any prior preview file/track before generating a fresh one.
+            stopPausedPlaybackInternal();
+
+            audioProcessingExecutor.execute(() -> {
+                File previewFile;
+                try {
+                    previewFile = recordingManager.prepareForPausedPlayback();
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to prepare paused recording preview", e);
+                    mainHandler.post(() -> call.reject("PAUSED_PREVIEW_PREPARE_ERROR", e.getMessage()));
+                    return;
+                }
+
+                String previewPath = previewFile.getAbsolutePath();
+                String previewUri = "file://" + previewPath;
+                double duration = AudioFileProcessor.getAudioDuration(previewPath);
+
+                // Track the URI so resume/stop/reset can release it from the
+                // PlaybackManager cache when the preview file is deleted.
+                pausedPlaybackPreviewUrl = previewUri;
+
+                JSObject result = new JSObject();
+                result.put("uri", previewUri);
+                result.put("path", previewPath);
+                result.put("duration", duration);
+                mainHandler.post(() -> call.resolve(result));
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "Error in preparePausedRecordingPreview", e);
+            call.reject("PAUSED_PREVIEW_ERROR", e.getMessage());
+        }
+    }
+
+    private void stopPausedPlaybackInternal() {
+        if (pausedPlaybackPreviewUrl != null && playbackManager != null) {
+            try {
+                playbackManager.stopTrack(pausedPlaybackPreviewUrl);
+            } catch (Exception e) {
+                Log.w(TAG, "Error stopping preview track", e);
+            }
+            try {
+                playbackManager.unloadTrack(pausedPlaybackPreviewUrl);
+            } catch (Exception e) {
+                Log.w(TAG, "Error unloading preview track", e);
+            }
+            pausedPlaybackPreviewUrl = null;
+        }
+        if (recordingManager != null) {
+            recordingManager.cleanupPausedPlaybackPreview();
         }
     }
 

@@ -315,6 +315,15 @@ export interface MicAvailableResult {
   isAvailable: boolean;
 }
 
+export interface PausedRecordingPreviewInfo {
+  /** URI of the preview file for the paused recording */
+  uri: string;
+  /** Path of the preview file */
+  path: string;
+  /** Duration in seconds of the audio captured so far */
+  duration: number;
+}
+
 /**
  * Interface for the Native Audio Plugin that provides audio recording capabilities.
  *
@@ -644,13 +653,52 @@ export interface CapacitorAudioEnginePlugin {
 
   /**
    * Manually pause live recording capture.
+   *
+   * On both Android and iOS, recording is segment-based: pausing finalizes the
+   * current segment to disk so a preview can be generated for playback via
+   * `preparePausedRecordingPreview`.
+   * Resuming begins a new segment; on `stopRecording`, all segments are
+   * concatenated into a single output file at the path supplied to
+   * `startRecording`.
    */
   pauseRecording(): Promise<void>;
 
   /**
    * Manually resume live recording capture.
+   *
+   * If a paused-recording preview is currently loaded (from
+   * `preparePausedRecordingPreview`), the preview file is removed and any
+   * playback through the playback engine is released before recording
+   * resumes.
    */
   resumeRecording(): Promise<void>;
+
+  /**
+   * Generate a temporary preview file from the audio captured so far while
+   * the recording is paused, and return its URI so it can be played back
+   * through the standard playback API.
+   *
+   * Concatenates every segment finalized so far into a fresh preview file
+   * and returns its location. The file is cleaned up automatically when the
+   * recording is resumed, reset, stopped, or when a new recording session
+   * starts. Each call regenerates the preview to reflect the latest segments.
+   *
+   * Must be called while recording is in the `paused` state and at least one
+   * segment has been captured.
+   *
+   * Drive playback with the regular playback methods using the returned
+   * `uri`:
+   * - `preloadTracks({ tracks: [uri] })` to preload it
+   * - `playTrack({ url: uri })` to start playing
+   * - `pauseTrack`, `resumeTrack`, `seekTrack`, `stopTrack`,
+   *   `getPlaybackInfo` for full transport control
+   *
+   * @returns Promise that resolves with the preview file URI, path, and the
+   * duration of the audio captured so far.
+   * @throws If recording is not paused or no audio has been captured yet.
+   * @platform web Not supported.
+   */
+  preparePausedRecordingPreview(): Promise<PausedRecordingPreviewInfo>;
 
   /**
    * Get current recording status information including state, duration, and output path.

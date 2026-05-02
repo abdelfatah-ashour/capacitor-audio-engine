@@ -15,9 +15,22 @@ import androidx.core.content.ContextCompat;
 import android.content.pm.PackageManager;
 
 import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Timer;
 import java.util.TimerTask;
 
+/**
+ * Records audio in segments. Each pause/resume cycle finalizes the current
+ * MediaRecorder output to its own segment file; on stop the segments are
+ * concatenated into a single output file at the path supplied to startRecording.
+ *
+ * Segment-based recording lets the captured audio be played back while the
+ * recording is paused (see {@link #prepareForPausedPlayback()}), since each
+ * segment is fully written to disk before pause returns.
+ */
 class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     interface RecordingCallback {
         void onStatusChanged(String status, String reason, String message, Boolean recoverable);
@@ -26,6 +39,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     }
 
     private static final String TAG = "RecordingManager";
+    private static final String PREVIEW_FILE_PREFIX = "paused_recording_preview_";
 
     private final RecordingCallback callback;
     private final Context context;
@@ -44,10 +58,16 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     private volatile boolean isDurationMonitoring = false;
     private volatile boolean isDurationPaused = false;
 
-    // Wave level monitoring removed - handled by WaveLevelEmitter
     private boolean isRecording = false;
     private boolean isPaused = false;
-    private String currentOutputPath;
+
+    // Segment-based recording state
+    private final List<File> segments = new ArrayList<>();
+    private File segmentDirectory;
+    private File currentSegmentFile;
+    private int segmentIndex = 0;
+    private String finalOutputPath;
+    private File previewFile;
 
     private StartOptions lastOptions;
 
@@ -75,81 +95,51 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     void startRecording(StartOptions options) {
         if (isRecording) return;
         try {
-            // Explicit permission check to avoid SecurityException at runtime
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 if (callback != null) callback.onError("RECORD_AUDIO permission not granted");
                 return;
             }
 
-            // Request audio focus for recording
             if (!requestAudioFocus()) {
                 Log.w(TAG, "Failed to gain audio focus, but continuing with recording");
-                // Continue anyway - don't fail recording just because of audio focus
             }
 
-            // Start foreground service for background recording
             try {
                 Intent serviceIntent = new Intent(context, AudioRecordingService.class);
                 ContextCompat.startForegroundService(context, serviceIntent);
                 Log.d(TAG, "Foreground service started for recording");
             } catch (Exception e) {
                 Log.w(TAG, "Failed to start foreground service", e);
-                // Continue with recording even if service fails to start
             }
 
-            String outputPath = options.path;
             lastOptions = options;
+            String outputPath = options != null ? options.path : null;
 
-            // Reset duration for fresh recordings (not for resume after reset)
-            // We can detect this by checking if we're not currently recording/paused
-            if (!isPaused) {
-                synchronized (this) {
-                    currentDuration = 0.0;
-                }
+            // Reset segment state for a fresh session.
+            cleanupSegments();
+            cleanupPausedPlaybackPreview();
+            segmentIndex = 0;
+            synchronized (this) {
+                currentDuration = 0.0;
             }
 
-            // Prepare output path
-            if (outputPath != null && !outputPath.isEmpty()) {
-                currentOutputPath = getNormalizedPath(outputPath);
-                File outFile = new File(currentOutputPath);
-                File parent = outFile.getParentFile();
-                if (parent != null && !parent.exists()) {
-                    //noinspection ResultOfMethodCallIgnored
-                    parent.mkdirs();
-                }
-                if (outFile.exists()) {
-                    //noinspection ResultOfMethodCallIgnored
-                    outFile.delete();
-                }
-            } else {
-                // Use same directory as Capacitor Filesystem Directory.Data
-                // On Android, this maps to the app's data directory (internal storage)
-                String dataDir = context.getFilesDir().getAbsolutePath();
-                currentOutputPath = dataDir + "/recording_" + System.currentTimeMillis() + ".m4a";
-                File outFile = new File(currentOutputPath);
-                File parent = outFile.getParentFile();
-                if (parent != null && !parent.exists()) {
-                    //noinspection ResultOfMethodCallIgnored
-                    parent.mkdirs();
-                }
-                if (outFile.exists()) {
-                    //noinspection ResultOfMethodCallIgnored
-                    outFile.delete();
-                }
-            }
-            // Configure MediaRecorder using unified configuration
-            // Reuse pre-warmed recorder if available, otherwise create new one
+            finalOutputPath = resolveFinalOutputPath(outputPath);
+            ensureFinalOutputParentExists(finalOutputPath);
+
+            // Place segments in their own directory next to the final output so
+            // we can clean them up atomically on stop/reset.
+            segmentDirectory = createSegmentDirectory(finalOutputPath);
+            currentSegmentFile = nextSegmentFile();
+
             if (mediaRecorder == null) {
                 Log.d(TAG, "Creating new MediaRecorder");
                 mediaRecorder = new MediaRecorder();
                 setBestAudioSource(mediaRecorder);
             } else {
-                // Use the pre-warmed recorder (it's already created and has audio source set)
                 Log.d(TAG, "Reusing pre-warmed MediaRecorder");
-                // No need to reset or reconfigure audio source - it's already set
             }
 
-            configureRecorderCommon(mediaRecorder, currentOutputPath);
+            configureRecorderCommon(mediaRecorder, currentSegmentFile.getAbsolutePath());
             try {
                 mediaRecorder.prepare();
                 mediaRecorder.start();
@@ -164,7 +154,6 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
             isRecording = true;
             isPaused = false;
 
-            // Start duration monitoring only after successful start()
             try {
                 startDurationMonitoring();
 
@@ -173,9 +162,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
                 }
             } catch (Exception monitoringError) {
                 Log.e(TAG, "Failed to start monitoring after recording start", monitoringError);
-                // Ensure any partially started timers are stopped
                 try { stopDurationMonitoring(); } catch (Exception ignored) {}
-                // Cleanup recorder and reset state
                 cleanupMediaRecorder();
                 isRecording = false;
                 isPaused = false;
@@ -188,75 +175,29 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
             isRecording = false;
         }
     }
-    private String getNormalizedPath(String outputPath) {
-        String baseDir = context.getFilesDir().getAbsolutePath();
-        String normalizedPath;
-        if (outputPath.startsWith("file://")) {
-            normalizedPath = outputPath.substring(7);
-        } else if (outputPath.startsWith("/")) {
-            normalizedPath = baseDir + "/" + outputPath.substring(1);
-        } else {
-            normalizedPath = baseDir + "/" + outputPath;
-        }
-        return normalizedPath;
-    }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     void stopRecording() {
-        if (!isRecording) return;
-        try {
-            if (isPaused && mediaRecorder != null) {
-                // If paused, some devices require a resume before stop; ignore errors
-                try { mediaRecorder.resume(); } catch (Exception ignored) {}
-            }
-        } catch (Exception ignored) {}
-
-        cleanupMediaRecorder();
-
-        // Stop duration monitoring
-        stopDurationMonitoring();
-
-        // Stop foreground service
-        try {
-            Intent serviceIntent = new Intent(context, AudioRecordingService.class);
-            context.stopService(serviceIntent);
-            Log.d(TAG, "Foreground service stopped");
-        } catch (Exception e) {
-            Log.w(TAG, "Failed to stop foreground service", e);
-        }
-
-        // Abandon audio focus
-        abandonAudioFocus();
-
-        isRecording = false;
-        isPaused = false;
-        if (callback != null) callback.onStatusChanged("stopped", "user", null, null);
+        stopRecordingAndWaitForFile();
     }
 
     /**
-     * Stop recording and wait for the file to be fully written to disk
-     * @return The path to the recording file, or null if failed
+     * Stop recording, finalize the active segment, concatenate all segments
+     * into the final output path, and return that path.
      */
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     String stopRecordingAndWaitForFile() {
-        if (!isRecording) return currentOutputPath;
+        if (!isRecording) return finalOutputPath;
 
-        String filePath = currentOutputPath;
-
+        // Finalize whatever segment is currently being written.
         try {
-            if (isPaused && mediaRecorder != null) {
-                // If paused, some devices require a resume before stop; ignore errors
-                try { mediaRecorder.resume(); } catch (Exception ignored) {}
-            }
-        } catch (Exception ignored) {}
+            finalizeActiveSegmentForStop();
+        } catch (Exception e) {
+            Log.w(TAG, "Error finalizing active segment on stop", e);
+        }
 
-        // Stop the MediaRecorder and ensure it's properly flushed
-        cleanupMediaRecorderAndWaitForFile();
-
-        // Stop duration monitoring
         stopDurationMonitoring();
 
-        // Stop foreground service
         try {
             Intent serviceIntent = new Intent(context, AudioRecordingService.class);
             context.stopService(serviceIntent);
@@ -265,30 +206,43 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
             Log.w(TAG, "Failed to stop foreground service", e);
         }
 
-        // Abandon audio focus
         abandonAudioFocus();
+
+        // Combine segments into the final output file.
+        String resultPath = finalOutputPath;
+        try {
+            if (!segments.isEmpty() && finalOutputPath != null) {
+                File outFile = new File(finalOutputPath);
+                AudioFileProcessor.concatenateAudioFiles(new ArrayList<>(segments), outFile);
+                resultPath = outFile.getAbsolutePath();
+            } else {
+                Log.w(TAG, "No segments captured for stopRecording");
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to concatenate recording segments", e);
+            if (callback != null) callback.onError("Failed to assemble recording: " + e.getMessage());
+        }
+
+        // Always clean up segments and any preview file regardless of concat outcome.
+        cleanupSegments();
+        cleanupPausedPlaybackPreview();
 
         isRecording = false;
         isPaused = false;
         if (callback != null) callback.onStatusChanged("stopped", "user", null, null);
 
-        return filePath;
+        return resultPath;
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     void pauseRecording() {
         if (!isRecording || isPaused) return;
         try {
-            try {
-                mediaRecorder.pause();
-            } catch (SecurityException se) {
-                Log.w(TAG, "SecurityException pausing MediaRecorder", se);
-                if (callback != null) callback.onError("SecurityException: cannot pause recording");
-                return;
-            }
-            isPaused = true;
+            // Stop and release the current MediaRecorder so the segment file is
+            // fully flushed to disk and can be played back / concatenated.
+            finalizeActiveSegmentForPause();
 
-            // Pause duration monitoring
+            isPaused = true;
             pauseDurationMonitoring();
 
             if (callback != null) callback.onStatusChanged("paused", "user", null, null);
@@ -302,38 +256,32 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     void resumeRecording() {
         if (!isRecording || !isPaused) return;
         try {
-            if (mediaRecorder != null) {
-                try {
-                    // Prefer resume when supported (normal pause/resume flow)
-                    mediaRecorder.resume();
-                } catch (SecurityException se) {
-                    Log.w(TAG, "SecurityException resuming MediaRecorder", se);
-                    if (callback != null) callback.onError("SecurityException: cannot resume recording");
-                    return;
-                } catch (IllegalStateException ise) {
-                    // If resume() isn't valid (e.g., recorder was only prepared by reset), start() instead
-                    try {
-                        mediaRecorder.start();
-                    } catch (Exception startEx) {
-                        Log.w(TAG, "Failed to start MediaRecorder on resume after reset", startEx);
-                        if (callback != null) callback.onError("Failed to start recording after reset: " + startEx.getMessage());
-                        return;
-                    }
-                }
-            } else {
-                // Re-create and resume recording if needed on older devices
-                if (lastOptions == null) {
-                    lastOptions = new StartOptions();
-                    lastOptions.path = currentOutputPath;
-                }
-                startRecording(lastOptions);
-                isPaused = false;
+            // Drop any preview created for paused playback before we capture more audio.
+            cleanupPausedPlaybackPreview();
+
+            // Begin a brand-new segment for the next chunk of audio.
+            currentSegmentFile = nextSegmentFile();
+
+            mediaRecorder = new MediaRecorder();
+            setBestAudioSource(mediaRecorder);
+            configureRecorderCommon(mediaRecorder, currentSegmentFile.getAbsolutePath());
+
+            try {
+                mediaRecorder.prepare();
+                mediaRecorder.start();
+            } catch (SecurityException se) {
+                Log.w(TAG, "SecurityException resuming MediaRecorder", se);
+                if (callback != null) callback.onError("SecurityException: cannot resume recording");
+                cleanupMediaRecorder();
+                return;
+            } catch (Exception ex) {
+                Log.w(TAG, "Failed to start new segment on resume", ex);
+                if (callback != null) callback.onError("Failed to resume recording: " + ex.getMessage());
+                cleanupMediaRecorder();
                 return;
             }
 
             isPaused = false;
-
-            // Resume duration monitoring
             resumeDurationMonitoring();
 
             if (callback != null) callback.onStatusChanged("recording", "user", null, null);
@@ -347,26 +295,231 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
     void resetRecording() {
         if (!isRecording) return;
         try {
-            // Pause logical state
-            isPaused = true;
+            // Stop the active recorder so its segment file is closed before we delete it.
+            try {
+                cleanupMediaRecorder();
+            } catch (Exception ignored) {}
 
-            // Dispose current recorder instance
-            cleanupMediaRecorder();
+            // Drop every captured segment and any preview file.
+            cleanupSegments();
+            cleanupPausedPlaybackPreview();
+            segmentIndex = 0;
 
-            // Stop monitoring and reset duration to 0
+            // Fully stop monitoring so a subsequent resume restarts it from 0.
             stopDurationMonitoring();
             synchronized (this) {
                 currentDuration = 0.0;
             }
 
-            // Create a fresh recorder configured for the same path, but remain paused until resume
-            prepareMediaRecorderForCurrentPath();
+            // Recording stays alive but paused; resumeRecording() will start a fresh segment.
+            isPaused = true;
 
             if (callback != null) callback.onStatusChanged("paused", "user", null, null);
         } catch (Exception e) {
             Log.w(TAG, "Error resetting recording", e);
             if (callback != null) callback.onError(e.getMessage());
         }
+    }
+
+    /**
+     * Concatenate the segments captured so far into a temporary preview file
+     * that callers can play back while the recording is still paused.
+     *
+     * @return the preview file (path/uri) ready to be handed to PlaybackManager.
+     * @throws IOException if recording is not paused or no audio has been captured yet.
+     */
+    File prepareForPausedPlayback() throws IOException {
+        if (!isRecording || !isPaused) {
+            throw new IOException("playPausedRecording requires an active, paused recording");
+        }
+        if (segments.isEmpty()) {
+            throw new IOException("No audio has been recorded yet to play back");
+        }
+
+        // Drop any prior preview before generating a new one — segments may have
+        // grown (or shrunk via reset) since the last call.
+        cleanupPausedPlaybackPreview();
+
+        File previewDir = (segmentDirectory != null && segmentDirectory.getParentFile() != null)
+                ? segmentDirectory.getParentFile()
+                : context.getFilesDir();
+        File preview = new File(previewDir, PREVIEW_FILE_PREFIX + System.currentTimeMillis() + ".m4a");
+
+        AudioFileProcessor.concatenateAudioFiles(new ArrayList<>(segments), preview);
+        previewFile = preview;
+        return preview;
+    }
+
+    /**
+     * Delete the temporary preview file (if any) created by
+     * {@link #prepareForPausedPlayback()}.
+     */
+    void cleanupPausedPlaybackPreview() {
+        if (previewFile != null) {
+            try {
+                if (previewFile.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    previewFile.delete();
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to delete preview file", e);
+            }
+            previewFile = null;
+        }
+    }
+
+    String getPausedPlaybackPreviewPath() {
+        return previewFile != null ? previewFile.getAbsolutePath() : null;
+    }
+
+    private void finalizeActiveSegmentForPause() {
+        if (mediaRecorder == null) {
+            // No active recorder (e.g. after reset). Nothing to finalize, but the
+            // current segment file may already represent prior audio.
+            registerCurrentSegmentIfValid();
+            return;
+        }
+        try {
+            try {
+                mediaRecorder.stop();
+            } catch (IllegalStateException ise) {
+                Log.w(TAG, "MediaRecorder stop in illegal state during pause", ise);
+            } catch (RuntimeException re) {
+                // stop() throws RuntimeException if no audio was captured yet
+                // (e.g. pause invoked immediately after start).
+                Log.w(TAG, "MediaRecorder stop runtime error during pause", re);
+            }
+            try { mediaRecorder.reset(); } catch (Exception ignored) {}
+            try { mediaRecorder.release(); } catch (Exception ignored) {}
+        } finally {
+            mediaRecorder = null;
+        }
+        registerCurrentSegmentIfValid();
+    }
+
+    private void finalizeActiveSegmentForStop() {
+        if (isPaused) {
+            // The current segment was already finalized by pauseRecording.
+            return;
+        }
+        finalizeActiveSegmentForPause();
+    }
+
+    private void registerCurrentSegmentIfValid() {
+        if (currentSegmentFile == null) return;
+        if (currentSegmentFile.exists() && currentSegmentFile.length() > 0) {
+            segments.add(currentSegmentFile);
+        } else {
+            Log.w(TAG, "Discarding empty segment: " + currentSegmentFile.getAbsolutePath());
+            try {
+                if (currentSegmentFile.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    currentSegmentFile.delete();
+                }
+            } catch (Exception ignored) {}
+        }
+        currentSegmentFile = null;
+    }
+
+    private void cleanupSegments() {
+        for (File segment : segments) {
+            try {
+                if (segment != null && segment.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    segment.delete();
+                }
+            } catch (Exception ignored) {}
+        }
+        segments.clear();
+
+        // Also drop any in-flight segment file.
+        if (currentSegmentFile != null && currentSegmentFile.exists()) {
+            try {
+                //noinspection ResultOfMethodCallIgnored
+                currentSegmentFile.delete();
+            } catch (Exception ignored) {}
+        }
+        currentSegmentFile = null;
+
+        if (segmentDirectory != null) {
+            try {
+                File[] leftovers = segmentDirectory.listFiles();
+                if (leftovers != null) {
+                    for (File f : leftovers) {
+                        //noinspection ResultOfMethodCallIgnored
+                        f.delete();
+                    }
+                }
+                //noinspection ResultOfMethodCallIgnored
+                segmentDirectory.delete();
+            } catch (Exception ignored) {}
+            segmentDirectory = null;
+        }
+    }
+
+    private File nextSegmentFile() {
+        if (segmentDirectory == null) {
+            segmentDirectory = createSegmentDirectory(finalOutputPath);
+        }
+        String name = String.format(Locale.US, "segment_%03d.m4a", segmentIndex++);
+        return new File(segmentDirectory, name);
+    }
+
+    private File createSegmentDirectory(String finalPath) {
+        File parent;
+        if (finalPath != null) {
+            File outFile = new File(finalPath);
+            File outParent = outFile.getParentFile();
+            parent = outParent != null ? outParent : context.getFilesDir();
+        } else {
+            parent = context.getFilesDir();
+        }
+        File dir = new File(parent, ".audio_engine_segments_" + System.currentTimeMillis());
+        if (!dir.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    private String resolveFinalOutputPath(String outputPath) {
+        String resolved;
+        if (outputPath != null && !outputPath.isEmpty()) {
+            resolved = getNormalizedPath(outputPath);
+        } else {
+            String dataDir = context.getFilesDir().getAbsolutePath();
+            resolved = dataDir + "/recording_" + System.currentTimeMillis() + ".m4a";
+        }
+        // Make sure no stale file from a previous session remains.
+        File outFile = new File(resolved);
+        if (outFile.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            outFile.delete();
+        }
+        return resolved;
+    }
+
+    private void ensureFinalOutputParentExists(String path) {
+        if (path == null) return;
+        File outFile = new File(path);
+        File parent = outFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            parent.mkdirs();
+        }
+    }
+
+    private String getNormalizedPath(String outputPath) {
+        String baseDir = context.getFilesDir().getAbsolutePath();
+        String normalizedPath;
+        if (outputPath.startsWith("file://")) {
+            normalizedPath = outputPath.substring(7);
+        } else if (outputPath.startsWith("/")) {
+            normalizedPath = baseDir + "/" + outputPath.substring(1);
+        } else {
+            normalizedPath = baseDir + "/" + outputPath;
+        }
+        return normalizedPath;
     }
 
     private void cleanupMediaRecorder() {
@@ -392,104 +545,12 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
         }
     }
 
-    /**
-     * Cleanup MediaRecorder and wait for file to be fully written to disk
-     * Optimized for faster cleanup after long recordings
-     */
-    private void cleanupMediaRecorderAndWaitForFile() {
-        try {
-            if (mediaRecorder != null) {
-                // Stop the MediaRecorder - this blocks until it's done
-                try {
-                    Log.d(TAG, "Stopping MediaRecorder...");
-                    mediaRecorder.stop();
-                    Log.d(TAG, "MediaRecorder stopped successfully");
-
-                    // MediaRecorder.stop() is synchronous and should flush all data
-                    // Reduced sleep time for faster cleanup after long recordings
-                    Thread.sleep(50);
-
-                } catch (IllegalStateException ise) {
-                    Log.w(TAG, "MediaRecorder stop called in illegal state", ise);
-                } catch (RuntimeException re) {
-                    Log.w(TAG, "MediaRecorder stop runtime error", re);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    Log.w(TAG, "Interrupted while waiting for file", ie);
-                }
-
-                // Reset and release immediately - don't wait for file verification
-                try {
-                    mediaRecorder.reset();
-                } catch (Exception ignored) {}
-                try {
-                    mediaRecorder.release();
-                } catch (Exception ignored) {}
-                mediaRecorder = null;
-
-                // Verify the file is ready asynchronously to avoid blocking
-                if (currentOutputPath != null) {
-                    verifyFileAsync(currentOutputPath);
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error in cleanupMediaRecorderAndWaitForFile", e);
-        }
-    }
-
-    /**
-     * Verify file existence and size asynchronously to avoid blocking
-     */
-    private void verifyFileAsync(String filePath) {
-        new Thread(() -> {
-            try {
-                // Wait a bit for file system to catch up
-                Thread.sleep(100);
-
-                File outputFile = new File(filePath);
-                if (outputFile.exists() && outputFile.length() > 0) {
-                    Log.d(TAG, "Recording file verified: " + outputFile.length() + " bytes");
-                } else {
-                    Log.w(TAG, "Recording file not ready: exists=" + outputFile.exists() +
-                          ", size=" + outputFile.length());
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Error verifying file asynchronously", e);
-            }
-        }).start();
-    }
-
-    private void prepareMediaRecorderForCurrentPath() {
-        try {
-            if (currentOutputPath == null) return;
-            File outFile = new File(currentOutputPath);
-            File parent = outFile.getParentFile();
-            if (parent != null && !parent.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                parent.mkdirs();
-            }
-            if (outFile.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                outFile.delete();
-            }
-
-            mediaRecorder = new MediaRecorder();
-            setBestAudioSource(mediaRecorder);
-            configureRecorderCommon(mediaRecorder, currentOutputPath);
-            mediaRecorder.prepare();
-            // Do not start here; remain paused until resumeRecording()
-        } catch (Exception e) {
-            Log.w(TAG, "prepareMediaRecorderForCurrentPath error", e);
-        }
-    }
-
     private void configureRecorderCommon(MediaRecorder recorder, String outputPath) {
         try {
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
             int bitrate = AudioEngineConfig.Recording.DEFAULT_BITRATE;
             recorder.setAudioEncodingBitRate(bitrate);
-            // Recording configuration
             int sampleRate = AudioEngineConfig.Recording.DEFAULT_SAMPLE_RATE;
             recorder.setAudioSamplingRate(sampleRate);
             int channels = AudioEngineConfig.Recording.DEFAULT_CHANNELS;
@@ -500,21 +561,21 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
         }
     }
 
-        private void setBestAudioSource(MediaRecorder recorder) {
+    private void setBestAudioSource(MediaRecorder recorder) {
+        try {
+            recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION);
+        } catch (Exception e) {
             try {
-                recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION);
-            } catch (Exception e) {
+                recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION);
+            } catch (Exception inner1) {
                 try {
-                    recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION);
-                } catch (Exception inner1) {
-                    try {
-                        recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-                    } catch (Exception inner2) {
-                        Log.w(TAG, "Failed to set audio source", inner2);
-                    }
+                    recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+                } catch (Exception inner2) {
+                    Log.w(TAG, "Failed to set audio source", inner2);
                 }
             }
         }
+    }
 
     // Duration monitoring methods
     private void startDurationMonitoring() {
@@ -523,8 +584,6 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
 
         isDurationMonitoring = true;
         isDurationPaused = false;
-        // For fresh recordings, currentDuration should already be 0.0
-        // For resumed recordings after reset, we preserve the existing currentDuration
 
         durationTimer = new Timer();
         durationTimer.schedule(new TimerTask() {
@@ -543,8 +602,10 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
                     });
                 }
             }
-        }, 1000, 1000); // Start after 1 second, repeat every 1 second
-    }    private void stopDurationMonitoring() {
+        }, 1000, 1000);
+    }
+
+    private void stopDurationMonitoring() {
         if (durationTimer != null) {
             durationTimer.cancel();
             durationTimer = null;
@@ -561,18 +622,13 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
 
     private void resumeDurationMonitoring() {
         if (!isDurationMonitoring) {
-            // If monitoring was completely stopped (e.g., after reset), restart it
-            // but preserve the current duration
             Log.d(TAG, "Restarting duration monitoring after reset, preserving duration: " + currentDuration);
-            startDurationMonitoring(); // Will preserve existing duration
+            startDurationMonitoring();
         } else {
-            // Just resume paused monitoring
             isDurationPaused = false;
         }
         Log.d(TAG, "Duration monitoring resumed");
     }
-
-    // Wave level monitoring removed - handled by WaveLevelEmitter
 
     // Audio focus management
     private boolean requestAudioFocus() {
@@ -618,29 +674,18 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
 
         switch (focusChange) {
             case AudioManager.AUDIOFOCUS_GAIN:
-                // Audio focus gained - we can continue recording
                 Log.d(TAG, "Audio focus gained - recording can continue");
-                // Don't auto-resume if user explicitly paused
-                // Just log that we have focus again
                 break;
 
             case AudioManager.AUDIOFOCUS_LOSS:
-                // Permanent loss of audio focus - another app took over
                 Log.w(TAG, "Audio focus lost permanently - another app is using audio");
-                // For recording, we should continue in background with foreground service
-                // Don't automatically pause - let the recording continue
                 break;
 
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                // Temporary loss of audio focus - e.g., phone call
                 Log.w(TAG, "Audio focus lost temporarily - transient interruption");
-                // For recording, we want to keep recording in background
-                // Don't pause - the foreground service will keep it alive
                 break;
 
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                // Another app needs audio but we can "duck" (lower volume)
-                // For recording, this doesn't affect us - continue recording
                 Log.d(TAG, "Audio focus loss can duck - continuing recording");
                 break;
 
@@ -664,7 +709,7 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
             } else {
                 statusString = "recording";
             }
-            return new StatusInfo(statusString, currentDuration, currentOutputPath);
+            return new StatusInfo(statusString, currentDuration, finalOutputPath);
         }
     }
 
@@ -672,23 +717,17 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
 
     /**
      * Pre-warm MediaRecorder for faster subsequent recordings
-     * This helps reduce delay when starting new recordings after long sessions
      */
     public void preWarmRecorder() {
         try {
             if (mediaRecorder == null && !isRecording) {
                 Log.d(TAG, "Pre-warming MediaRecorder for faster subsequent recordings");
-                // Just create and configure the MediaRecorder, but don't prepare it yet
-                // This avoids the IllegalStateException when reusing
                 mediaRecorder = new MediaRecorder();
                 setBestAudioSource(mediaRecorder);
-                // Don't call configureRecorderCommon or prepare yet
-                // This will be done in startRecording when we have the actual output path
                 Log.d(TAG, "MediaRecorder pre-warmed successfully (ready for configuration)");
             }
         } catch (Exception e) {
             Log.w(TAG, "Failed to pre-warm MediaRecorder", e);
-            // Clean up on failure
             if (mediaRecorder != null) {
                 try {
                     mediaRecorder.release();

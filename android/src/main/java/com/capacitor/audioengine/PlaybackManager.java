@@ -539,6 +539,35 @@ class PlaybackManager implements AudioManager.OnAudioFocusChangeListener {
     }
 
     /**
+     * Release the MediaPlayer associated with the given URL and remove it
+     * from the preloaded cache. If the track is currently playing, it is
+     * stopped first. No-op if the URL was never preloaded.
+     */
+    void unloadTrack(String url) {
+        if (url == null || url.isEmpty()) return;
+
+        TrackInfo trackInfo = preloadedTracks.remove(url);
+        if (trackInfo == null) return;
+
+        if (trackInfo.player != null) {
+            try {
+                if (trackInfo.player.isPlaying()) {
+                    trackInfo.player.pause();
+                }
+            } catch (Exception ignored) {}
+            try { trackInfo.player.reset(); } catch (Exception ignored) {}
+            try { trackInfo.player.release(); } catch (Exception ignored) {}
+        }
+
+        if (currentTrackUrl != null && currentTrackUrl.equals(url)) {
+            currentTrackUrl = null;
+            updateStatus(PlaybackStatus.IDLE);
+            stopProgressMonitoring();
+            abandonAudioFocus();
+        }
+    }
+
+    /**
      * Destroy all playback resources and reinitialize
      */
     void destroy() {

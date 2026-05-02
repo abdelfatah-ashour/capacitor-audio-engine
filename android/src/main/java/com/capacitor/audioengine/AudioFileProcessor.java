@@ -8,7 +8,10 @@ import android.os.Build;
 import android.util.Log;
 import com.getcapacitor.JSObject;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.List;
 
 /**
  * Handles audio file processing operations including trimming and merging
@@ -304,6 +307,154 @@ public class AudioFileProcessor {
                 }
             }
             throw new IOException("Failed to trim audio file: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Concatenate multiple AAC/M4A audio files into a single output file.
+     * The first segment determines the muxer track format. Sample
+     * presentation timestamps are rebased to a monotonically increasing
+     * timeline starting at 0.
+     *
+     * @param sources    Ordered list of input files to concatenate.
+     * @param outputFile Destination file. Will be overwritten if it exists.
+     * @throws IOException if no sources have valid audio data or writing fails.
+     */
+    public static void concatenateAudioFiles(List<File> sources, File outputFile) throws IOException {
+        if (sources == null || sources.isEmpty()) {
+            throw new IOException("No source files to concatenate");
+        }
+
+        // Filter out missing/empty files up-front; if only one remains, copy it.
+        java.util.List<File> validSources = new java.util.ArrayList<>(sources.size());
+        for (File source : sources) {
+            if (source != null && source.exists() && source.length() > 0) {
+                validSources.add(source);
+            } else {
+                Log.w(TAG, "Skipping empty/missing segment: " + (source == null ? "null" : source.getName()));
+            }
+        }
+        if (validSources.isEmpty()) {
+            throw new IOException("No valid audio segments to concatenate");
+        }
+        if (validSources.size() == 1) {
+            copyFile(validSources.get(0), outputFile);
+            return;
+        }
+
+        if (outputFile.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            outputFile.delete();
+        }
+        File parent = outputFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            parent.mkdirs();
+        }
+
+        boolean muxerStarted = false;
+        try (ResourceManager.SafeMediaMuxer safeMuxer = new ResourceManager.SafeMediaMuxer(
+            outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)) {
+
+            MediaMuxer muxer = safeMuxer.getMuxer();
+            int muxerTrack = -1;
+            long globalPtsUs = 0L;
+            long lastPtsUs = -1L;
+
+            for (File source : validSources) {
+                try (ResourceManager.SafeMediaExtractor safeExtractor = new ResourceManager.SafeMediaExtractor()) {
+                    MediaExtractor extractor = safeExtractor.getExtractor();
+                    extractor.setDataSource(source.getAbsolutePath());
+
+                    int audioTrack = findAudioTrack(extractor);
+                    if (audioTrack == -1) {
+                        Log.w(TAG, "No audio track in segment: " + source.getName());
+                        continue;
+                    }
+
+                    MediaFormat audioFormat = extractor.getTrackFormat(audioTrack);
+
+                    if (muxerTrack == -1) {
+                        muxerTrack = muxer.addTrack(audioFormat);
+                        muxer.start();
+                        muxerStarted = true;
+                    }
+
+                    extractor.selectTrack(audioTrack);
+
+                    int bufferSize = 64 * 1024;
+                    if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                        try {
+                            bufferSize = Math.max(bufferSize, audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
+                        } catch (Exception ignored) { }
+                    }
+                    java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(bufferSize);
+                    android.media.MediaCodec.BufferInfo bufferInfo = new android.media.MediaCodec.BufferInfo();
+
+                    long segmentFirstPtsUs = -1L;
+                    long segmentLastRelativeUs = 0L;
+
+                    while (true) {
+                        int sampleSize = extractor.readSampleData(buffer, 0);
+                        if (sampleSize < 0) break;
+
+                        long sampleTime = extractor.getSampleTime();
+                        if (segmentFirstPtsUs < 0) segmentFirstPtsUs = sampleTime;
+
+                        long relativePts = Math.max(0L, sampleTime - segmentFirstPtsUs);
+                        long pts = globalPtsUs + relativePts;
+                        if (lastPtsUs >= 0 && pts <= lastPtsUs) {
+                            pts = lastPtsUs + 1;
+                        }
+
+                        bufferInfo.offset = 0;
+                        bufferInfo.size = sampleSize;
+                        bufferInfo.presentationTimeUs = pts;
+                        bufferInfo.flags = convertExtractorFlags(extractor.getSampleFlags());
+
+                        muxer.writeSampleData(muxerTrack, buffer, bufferInfo);
+                        extractor.advance();
+                        lastPtsUs = pts;
+                        segmentLastRelativeUs = relativePts;
+                    }
+
+                    // Advance global timeline by this segment's duration plus a tiny gap
+                    // to keep the next segment's PTS strictly increasing.
+                    globalPtsUs += segmentLastRelativeUs + 1;
+                }
+            }
+
+            if (!muxerStarted) {
+                throw new IOException("No audio data found in any segment");
+            }
+
+            Log.d(TAG, "Concatenated " + validSources.size() + " segments into " + outputFile.getAbsolutePath());
+        } catch (Exception e) {
+            if (outputFile.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                outputFile.delete();
+            }
+            throw new IOException("Failed to concatenate audio files: " + e.getMessage(), e);
+        }
+    }
+
+    private static void copyFile(File source, File dest) throws IOException {
+        if (dest.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            dest.delete();
+        }
+        File parent = dest.getParentFile();
+        if (parent != null && !parent.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            parent.mkdirs();
+        }
+        try (FileInputStream in = new FileInputStream(source);
+             FileOutputStream out = new FileOutputStream(dest)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
         }
     }
 

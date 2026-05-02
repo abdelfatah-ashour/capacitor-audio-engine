@@ -47,6 +47,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         CAPPluginMethod(name: "getRecordingStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimAudio", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "micAvailable", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "preparePausedRecordingPreview", returnType: CAPPluginReturnPromise),
     ]
 
     // MARK: - Properties
@@ -55,6 +56,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
     private var permissionService: PermissionManagerService!
     private var recordingManager: RecordingManager!
     private var playbackManager: PlaybackManager!
+
+    /// URL currently registered with PlaybackManager for the paused-recording
+    /// preview, so we can release the AVPlayer when playback ends.
+    private var pausedPlaybackPreviewUrl: String?
 
     // MARK: - Thread Safety
 
@@ -786,48 +791,103 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
     }
 
     @objc func stopRecording(_ call: CAPPluginCall) {
-        recordingManager.stopRecording()
-        // Stop shared wave monitoring when recording stops
+        // Drop any in-flight paused-playback preview before assembling the final file.
+        stopPausedPlaybackInternal()
         waveLevelEmitter.stopMonitoring()
 
-        // Get the recording status to retrieve the file path
-        let status = recordingManager.getStatus()
+        recordingManager.stopRecordingAndWaitForFile { [weak self] filePath in
+            guard let self = self else {
+                call.reject("Plugin deallocated before stop completed")
+                return
+            }
 
-        guard let filePath = status.path else {
-            call.reject("No recording file path available")
-            return
-        }
+            guard let filePath = filePath else {
+                call.reject("No recording file path available")
+                return
+            }
 
-        // Extract audio file info using shared method
-        Task {
-            do {
-                let audioInfo = try await createAudioFileInfo(filePath: filePath)
-                call.resolve(audioInfo)
-            } catch {
-                call.reject("Failed to get audio info: \(error.localizedDescription)")
+            Task {
+                do {
+                    let audioInfo = try await self.createAudioFileInfo(filePath: filePath)
+                    call.resolve(audioInfo)
+                } catch {
+                    call.reject("Failed to get audio info: \(error.localizedDescription)")
+                }
             }
         }
     }
 
     @objc func pauseRecording(_ call: CAPPluginCall) {
-        recordingManager.pauseRecording()
-        // Pause shared wave monitoring
         waveLevelEmitter.pauseMonitoring()
-        call.resolve()
+        // Resolve once the active segment has been finalized to disk so
+        // subsequent playPausedRecording calls are guaranteed to find the data.
+        recordingManager.pauseRecording {
+            call.resolve()
+        }
     }
 
     @objc func resumeRecording(_ call: CAPPluginCall) {
+        // If we were previewing the paused recording, stop and clean it up first.
+        stopPausedPlaybackInternal()
         recordingManager.resumeRecording()
-        // Resume shared wave monitoring
         waveLevelEmitter.resumeMonitoring()
         call.resolve()
     }
 
     @objc func resetRecording(_ call: CAPPluginCall) {
-        recordingManager.resetRecording()
-        // Pause shared wave monitoring; let WaveLevelEmitter clear via pause
+        stopPausedPlaybackInternal()
         waveLevelEmitter.pauseMonitoring()
-        call.resolve()
+        recordingManager.resetRecording {
+            call.resolve()
+        }
+    }
+
+    @objc func preparePausedRecordingPreview(_ call: CAPPluginCall) {
+        let status = recordingManager.getStatus()
+        guard status.status == "paused" else {
+            call.reject("PAUSED_PREVIEW_INVALID_STATE",
+                       "preparePausedRecordingPreview requires recording to be paused (current: \(status.status))")
+            return
+        }
+
+        // Drop any prior preview file/track before generating a fresh one.
+        stopPausedPlaybackInternal()
+
+        recordingManager.prepareForPausedPlayback { [weak self] result in
+            guard let self = self else {
+                call.reject("Plugin deallocated before preview was ready")
+                return
+            }
+
+            switch result {
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    call.reject("PAUSED_PREVIEW_PREPARE_ERROR", error.localizedDescription)
+                }
+
+            case .success(let payload):
+                let previewUri = "file://" + payload.url.path
+                // Track the URI so resume/stop/reset can release it from the
+                // PlaybackManager cache when the preview file is deleted.
+                self.pausedPlaybackPreviewUrl = previewUri
+                DispatchQueue.main.async {
+                    call.resolve([
+                        "uri": previewUri,
+                        "path": payload.url.path,
+                        "duration": payload.duration
+                    ])
+                }
+            }
+        }
+    }
+
+    private func stopPausedPlaybackInternal() {
+        if let url = pausedPlaybackPreviewUrl {
+            playbackManager?.stopTrack(url: url)
+            playbackManager?.unloadTrack(url: url)
+            pausedPlaybackPreviewUrl = nil
+        }
+        recordingManager?.cleanupPausedPlaybackPreview()
     }
 
     @objc func getRecordingStatus(_ call: CAPPluginCall) {

@@ -425,6 +425,31 @@ final class PlaybackManager: NSObject {
     }
 
     /**
+     * Release the AVPlayer associated with the given URL and remove it from
+     * the preloaded cache. If the track is currently playing, it is paused
+     * first. No-op if the URL was never preloaded.
+     */
+    func unloadTrack(url: String) {
+        stateQueue.async { [weak self] in
+            guard let self = self else { return }
+            guard let trackInfo = self.preloadedTracks.removeValue(forKey: url) else { return }
+
+            trackInfo.player?.pause()
+            trackInfo.player = nil
+            trackInfo.playerItem = nil
+            trackInfo.statusObserver?.invalidate()
+            trackInfo.durationObserver?.invalidate()
+
+            if self.currentTrackUrl == url {
+                self.currentTrackUrl = nil
+                self.currentTrackId = nil
+                self.updateStatus(.idle)
+                self.stopProgressMonitoring()
+            }
+        }
+    }
+
+    /**
      * Destroy all playback resources and reinitialize
      */
     func destroy() {
