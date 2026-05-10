@@ -438,7 +438,7 @@ public class AudioFileProcessor {
         }
     }
 
-    private static void copyFile(File source, File dest) throws IOException {
+    static void copyFile(File source, File dest) throws IOException {
         if (dest.exists()) {
             //noinspection ResultOfMethodCallIgnored
             dest.delete();

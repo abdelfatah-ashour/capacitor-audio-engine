@@ -22,8 +22,18 @@ final class RecordingManager {
     private var inputNodeTapInstalled: Bool = false
     private var isRecording: Bool = false
     private var isPaused: Bool = false
-    private var currentSampleRate: Double = 44100
+
+    // Canonical capture format the rest of the pipeline (writer, JS emission,
+    // wave-level meter) consumes. Hardware may deliver samples in a different
+    // rate/channel layout (e.g. 48 kHz stereo on USB mics); a per-tap
+    // AVAudioConverter normalizes incoming buffers into this format before
+    // anything else looks at them.
+    private let canonicalSampleRate: Double = 44_100
+    private let canonicalChannels: AVAudioChannelCount = 1
+    private var currentSampleRate: Double = 44_100
     private var currentChannels: AVAudioChannelCount = 1
+    private var canonicalFormat: AVAudioFormat?
+    private var inputToCanonicalConverter: AVAudioConverter?
 
     // Duration monitoring
     private var durationTimer: Timer?
@@ -58,6 +68,19 @@ final class RecordingManager {
     private var segmentIndex: Int = 0
     private var finalOutputURL: URL?
     private var previewURL: URL?
+
+    // Long-lived "main" AVAssetWriter that runs for the entire session in
+    // parallel with the per-segment writer. Every tap buffer is appended to
+    // both, so on stop we just close this writer (moov-write only) instead
+    // of walking all segments.
+    private var mainWriter: AVAssetWriter?
+    private var mainWriterInput: AVAssetWriterInput?
+    private var mainWriterStarted: Bool = false
+    private var mainOutputURL: URL?
+    // Session-wide PCM frame counter used to derive monotonic PTS for the
+    // main writer regardless of how many times AVAudioEngine has been
+    // paused/resumed (its own input clock is not session-monotonic).
+    private var mainSessionFrames: Int64 = 0
 
     // App lifecycle observers
     private var appWillEnterForegroundObserver: Any?
@@ -142,7 +165,89 @@ final class RecordingManager {
         return dir.appendingPathComponent(name)
     }
 
+    /// Open the long-lived main writer that receives every tap buffer for
+    /// the rest of the session. Called at startRecording and on
+    /// resetRecording.
+    private func openMainWriter() throws {
+        try setupMainAssetWriter()
+    }
+
+    /// Cancel the main writer and delete its output file.
+    private func discardMainWriter() {
+        if let w = mainWriter {
+            mainWriterInput?.markAsFinished()
+            if w.status == .writing {
+                w.cancelWriting()
+            }
+        }
+        mainWriter = nil
+        mainWriterInput = nil
+        mainWriterStarted = false
+        if let url = mainOutputURL, FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        mainOutputURL = nil
+        mainSessionFrames = 0
+    }
+
+    private func setupMainAssetWriter() throws {
+        let dir = ensureSegmentDirectory()
+        let url = dir.appendingPathComponent("main_session.m4a")
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        mainOutputURL = url
+        let writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
+        let outputSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVNumberOfChannelsKey: Int(canonicalChannels),
+            AVSampleRateKey: canonicalSampleRate,
+            AVEncoderBitRateKey: desiredBitrate
+        ]
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
+        input.expectsMediaDataInRealTime = true
+        guard writer.canAdd(input) else {
+            throw NSError(domain: "AudioEngine", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Main writer cannot add audio input"])
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw NSError(domain: "AudioEngine", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Main writer startWriting failed: \(writer.error?.localizedDescription ?? "?")"])
+        }
+        mainWriter = writer
+        mainWriterInput = input
+        mainWriterStarted = false
+        mainSessionFrames = 0
+    }
+
+    /// Finalize the main writer and return its file via completion.
+    private func closeMainWriter(completion: @escaping (URL?) -> Void) {
+        guard let writer = mainWriter, let input = mainWriterInput else {
+            completion(nil)
+            return
+        }
+        let url = mainOutputURL
+        input.markAsFinished()
+        writer.finishWriting { [weak self] in
+            self?.performStateOperation {
+                self?.mainWriter = nil
+                self?.mainWriterInput = nil
+                self?.mainOutputURL = nil
+                self?.mainWriterStarted = false
+                self?.mainSessionFrames = 0
+            }
+            let success = (writer.status == .completed)
+            completion(success ? url : nil)
+        }
+    }
+
     private func cleanupSegments() {
+        // Defensive: if the main writer is somehow still alive (e.g. early
+        // failure path), make sure it lets go of its file before we wipe
+        // the segment dir.
+        discardMainWriter()
+
         for url in segmentURLs {
             try? FileManager.default.removeItem(at: url)
         }
@@ -169,6 +274,7 @@ final class RecordingManager {
     func startRecording() {
         performStateOperation {
             guard !isRecording else { return }
+
             do {
                 // Drop any leftover segments / preview from a prior session.
                 cleanupSegments()
@@ -178,66 +284,241 @@ final class RecordingManager {
                 observeAudioSessionInterruptions()
                 observeAudioSessionRouteChanges()
                 observeAppLifecycle()
+
                 let engine = AVAudioEngine()
                 audioEngine = engine
 
                 let input = engine.inputNode
                 let inputFormat = input.outputFormat(forBus: 0)
-                currentSampleRate = inputFormat.sampleRate
-                currentChannels = inputFormat.channelCount
 
-                // Prepare AAC output format and converter for JS emission
-                let settings: [String: Any] = [
+                // Build the canonical (44.1 kHz mono Float32) capture format
+                // and a converter that resamples the hardware tap into it.
+                guard let canonical = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: canonicalSampleRate,
+                    channels: canonicalChannels,
+                    interleaved: false
+                ) else {
+                    throw NSError(domain: "AudioEngine", code: -1,
+                                  userInfo: [NSLocalizedDescriptionKey: "Failed to create canonical PCM format"])
+                }
+                canonicalFormat = canonical
+                inputToCanonicalConverter = AVAudioConverter(from: inputFormat, to: canonical)
+                currentSampleRate = canonicalSampleRate
+                currentChannels = canonicalChannels
+
+                // AAC output format/converter used for the per-buffer JS emission.
+                let aacSettings: [String: Any] = [
                     AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVNumberOfChannelsKey: Int(currentChannels),
-                    AVSampleRateKey: currentSampleRate,
+                    AVNumberOfChannelsKey: Int(canonicalChannels),
+                    AVSampleRateKey: canonicalSampleRate,
                     AVEncoderBitRateKey: desiredBitrate
                 ]
-                guard let outFormat = AVAudioFormat(settings: settings) else {
-                    throw NSError(domain: "AudioEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create AAC format"])
+                guard let outFormat = AVAudioFormat(settings: aacSettings) else {
+                    throw NSError(domain: "AudioEngine", code: -1,
+                                  userInfo: [NSLocalizedDescriptionKey: "Failed to create AAC format"])
                 }
                 aacFormat = outFormat
-                converter = AVAudioConverter(from: inputFormat, to: outFormat)
+                converter = AVAudioConverter(from: canonical, to: outFormat)
 
                 // Allocate the first segment file and point the writer at it.
                 fileURL = nextSegmentURL()
-                try setupAssetWriter(inputFormat: inputFormat)
+                try openMainWriter()
+                try setupAssetWriter()
 
-                if !inputNodeTapInstalled {
-                    input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, time in
-                        guard let self = self else { return }
-                        // Respect pause without finalizing writer; skip processing while paused
-                        let shouldSkip: Bool = self.performStateOperation { self.isPaused || !self.isRecording }
-                        if shouldSkip { return }
-
-                        // Start writer session at first buffer
-                        if let writer = self.assetWriter, writer.status == .writing, !self.writerStarted {
-                            self.writerStarted = true
-                            let startTime = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
-                            writer.startSession(atSourceTime: startTime)
-                        }
-                        // Append PCM to writer (it will encode to AAC)
-                        self.appendToWriter(buffer: buffer, at: time)
-                        // Emit AAC to JS
-                        self.encodeAndEmit(buffer: buffer)
-                    }
-                    inputNodeTapInstalled = true
-                }
+                installInputTap(on: input, hardwareFormat: inputFormat)
 
                 try engine.start()
                 isRecording = true
                 isPaused = false
 
-                // Start duration and wave level monitoring
                 startDurationMonitoring()
                 startWaveLevelMonitoring()
                 startRecordingHealthCheck()
 
                 delegate?.recordingDidChangeStatus("recording", reason: "user", message: nil, recoverable: nil)
             } catch {
+                tearDownEngineAfterFailure()
                 delegate?.recordingDidEncounterError(error)
             }
         }
+    }
+
+    /// Best-effort cleanup invoked when startRecording or resumeRecording
+    /// throws partway through bring-up. Leaves the manager in an idle state
+    /// and never re-enters the delegate.
+    private func tearDownEngineAfterFailure() {
+        removeInputTapIfInstalled()
+        if let engine = audioEngine, engine.isRunning {
+            engine.stop()
+        }
+        audioEngine = nil
+        converter = nil
+        aacFormat = nil
+        canonicalFormat = nil
+        inputToCanonicalConverter = nil
+        if assetWriter != nil {
+            // Force-release the writer; we don't await completion here because
+            // we're already on the failure path.
+            writerInput?.markAsFinished()
+            assetWriter = nil
+            writerInput = nil
+            writerStarted = false
+        }
+        discardMainWriter()
+        cleanupSegments()
+        isRecording = false
+        isPaused = false
+    }
+
+    /// Installs the input tap that drives the canonical-format → writer/JS
+    /// chain. Idempotent: a second call is a no-op.
+    private func installInputTap(on input: AVAudioInputNode, hardwareFormat: AVAudioFormat) {
+        guard !inputNodeTapInstalled else { return }
+        input.installTap(onBus: 0, bufferSize: 2048, format: hardwareFormat) { [weak self] buffer, time in
+            self?.handleTapBuffer(buffer, at: time)
+        }
+        inputNodeTapInstalled = true
+    }
+
+    private func removeInputTapIfInstalled() {
+        guard inputNodeTapInstalled, let engine = audioEngine else {
+            inputNodeTapInstalled = false
+            return
+        }
+        engine.inputNode.removeTap(onBus: 0)
+        inputNodeTapInstalled = false
+    }
+
+    /// Convert a hardware-format buffer into the canonical 44.1 kHz mono
+    /// Float32 format and forward it to the writer + JS emission.
+    private func handleTapBuffer(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        let shouldSkip: Bool = performStateOperation { isPaused || !isRecording }
+        if shouldSkip { return }
+
+        guard let canonical = canonicalFormat,
+              let conv = inputToCanonicalConverter else { return }
+
+        // Worst-case output frame count when downsampling (or upsampling) to
+        // the canonical rate. AVAudioConverter writes <= this many frames.
+        let ratio = canonical.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 1024)
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: capacity) else {
+            return
+        }
+
+        var consumed = false
+        var convError: NSError?
+        let status = conv.convert(to: outBuffer, error: &convError) { _, outStatus in
+            if consumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        if status == .error || outBuffer.frameLength == 0 {
+            if let err = convError {
+                print("[RecordingManager] PCM conversion error: \(err.localizedDescription)")
+            }
+            return
+        }
+
+        // Start writer session at the first canonical buffer.
+        if let writer = assetWriter, writer.status == .writing, !writerStarted {
+            writerStarted = true
+            let startTime = CMTime(
+                seconds: Double(time.sampleTime) / buffer.format.sampleRate,
+                preferredTimescale: 1_000_000_000
+            )
+            writer.startSession(atSourceTime: startTime)
+        }
+
+        appendToWriter(buffer: outBuffer, at: time, sourceSampleRate: buffer.format.sampleRate)
+
+        // Mirror the same canonical buffer into the long-lived main writer
+        // with a session-wide PTS so pause/resume cannot create a gap. The
+        // main writer is independent of the segment writer's session, so we
+        // start its session on the first appended buffer.
+        if let mw = mainWriter, let mwInput = mainWriterInput, mw.status == .writing {
+            let mainPts = CMTime(
+                value: mainSessionFrames,
+                timescale: Int32(canonicalSampleRate)
+            )
+            if !mainWriterStarted {
+                mw.startSession(atSourceTime: mainPts)
+                mainWriterStarted = true
+            }
+            appendToMainWriter(buffer: outBuffer, pts: mainPts, input: mwInput)
+            mainSessionFrames += Int64(outBuffer.frameLength)
+        }
+
+        encodeAndEmit(buffer: outBuffer)
+    }
+
+    /// Append the canonical PCM buffer into the main writer's input with the
+    /// supplied session-wide PTS. Mirrors {@code appendToWriter} but uses an
+    /// independent timeline so the main writer's output is gap-free across
+    /// pause/resume cycles.
+    private func appendToMainWriter(buffer: AVAudioPCMBuffer, pts: CMTime, input: AVAssetWriterInput) {
+        guard input.isReadyForMoreMediaData, buffer.frameLength > 0 else { return }
+
+        var asbd = buffer.format.streamDescription.pointee
+        var formatDesc: CMAudioFormatDescription?
+        let fmtStatus = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &asbd,
+            layoutSize: 0, layout: nil,
+            magicCookieSize: 0, magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDesc
+        )
+        guard fmtStatus == noErr, let fmtDesc = formatDesc else { return }
+
+        let audioBuffer = buffer.audioBufferList.pointee.mBuffers
+        guard let src = audioBuffer.mData else { return }
+        let dataLength = Int(audioBuffer.mDataByteSize)
+
+        var blockBuffer: CMBlockBuffer?
+        let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: dataLength,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: dataLength,
+            flags: kCMBlockBufferAssureMemoryNowFlag,
+            blockBufferOut: &blockBuffer
+        )
+        guard blockStatus == kCMBlockBufferNoErr, let block = blockBuffer else { return }
+
+        let copyStatus = CMBlockBufferReplaceDataBytes(
+            with: src,
+            blockBuffer: block,
+            offsetIntoDestination: 0,
+            dataLength: dataLength
+        )
+        guard copyStatus == kCMBlockBufferNoErr else { return }
+
+        var sampleBuffer: CMSampleBuffer?
+        let sampleStatus = CMAudioSampleBufferCreateWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: block,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: fmtDesc,
+            sampleCount: CMItemCount(buffer.frameLength),
+            presentationTimeStamp: pts,
+            packetDescriptions: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard sampleStatus == noErr, let sbuf = sampleBuffer else { return }
+
+        input.append(sbuf)
     }
 
     func stopRecording() {
@@ -259,11 +540,8 @@ final class RecordingManager {
         }
 
         performStateOperation {
+            removeInputTapIfInstalled()
             if let engine = audioEngine {
-                if inputNodeTapInstalled {
-                    engine.inputNode.removeTap(onBus: 0)
-                    inputNodeTapInstalled = false
-                }
                 engine.stop()
             }
             removeAudioSessionInterruptionsObserver()
@@ -306,6 +584,15 @@ final class RecordingManager {
     func pauseRecording(completion: (() -> Void)? = nil) {
         let shouldProceed: Bool = performStateOperation {
             guard isRecording && !isPaused else { return false }
+
+            // Order matters: kill the tap first so no further callbacks land
+            // on the writer while we're tearing it down. Then pause the
+            // engine, mark state, stop the meters. The writer is finalized
+            // after the queue releases, off the state queue.
+            removeInputTapIfInstalled()
+            if let engine = audioEngine, engine.isRunning {
+                engine.pause()
+            }
             isPaused = true
             pauseDurationMonitoring()
             pauseWaveLevelMonitoring()
@@ -339,26 +626,17 @@ final class RecordingManager {
                 let input = engine.inputNode
                 let inputFormat = input.outputFormat(forBus: 0)
 
+                // Re-create the converter against the (possibly new) input
+                // format — sample rate can change after a route switch.
+                if let canonical = canonicalFormat {
+                    inputToCanonicalConverter = AVAudioConverter(from: inputFormat, to: canonical)
+                }
+
                 // Allocate and prepare a writer for the next segment.
                 fileURL = nextSegmentURL()
-                try setupAssetWriter(inputFormat: inputFormat)
+                try setupAssetWriter()
 
-                if !inputNodeTapInstalled {
-                    input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, time in
-                        guard let self = self else { return }
-                        let shouldSkip: Bool = self.performStateOperation { self.isPaused || !self.isRecording }
-                        if shouldSkip { return }
-
-                        if let writer = self.assetWriter, writer.status == .writing, !self.writerStarted {
-                            self.writerStarted = true
-                            let startTime = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
-                            writer.startSession(atSourceTime: startTime)
-                        }
-                        self.appendToWriter(buffer: buffer, at: time)
-                        self.encodeAndEmit(buffer: buffer)
-                    }
-                    inputNodeTapInstalled = true
-                }
+                installInputTap(on: input, hardwareFormat: inputFormat)
 
                 if !engine.isRunning {
                     try engine.start()
@@ -386,11 +664,8 @@ final class RecordingManager {
         let shouldProceed: Bool = performStateOperation {
             guard isRecording else { return false }
 
-            if let engine = audioEngine {
-                if inputNodeTapInstalled {
-                    engine.inputNode.removeTap(onBus: 0)
-                    inputNodeTapInstalled = false
-                }
+            removeInputTapIfInstalled()
+            if let engine = audioEngine, engine.isRunning {
                 engine.pause()
             }
 
@@ -416,8 +691,16 @@ final class RecordingManager {
                 self.assetWriter = nil
                 self.writerInput = nil
                 self.writerStarted = false
+                self.discardMainWriter()
                 self.cleanupSegments()
                 self.cleanupPausedPlaybackPreview()
+                // Reopen a fresh main writer so the next resume can stream
+                // straight into it.
+                do {
+                    try self.openMainWriter()
+                } catch {
+                    print("[RecordingManager] Failed to reopen main writer after reset: \(error.localizedDescription)")
+                }
             }
             self.delegate?.recordingDidChangeStatus("paused", reason: "user", message: nil, recoverable: nil)
             completion?()
@@ -455,6 +738,9 @@ final class RecordingManager {
                    let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
                    let size = attributes[.size] as? Int64,
                    size > 0 {
+                    // The encoded audio already went into the long-lived
+                    // main writer in parallel; the segment file is kept
+                    // purely as a snapshot for prepareForPausedPlayback().
                     self.segmentURLs.append(url)
                 } else if let url = segmentURL {
                     print("[RecordingManager] Discarding empty segment: \(url.path)")
@@ -469,9 +755,12 @@ final class RecordingManager {
         }
     }
 
-    /// Concatenate all captured segments into `finalOutputURL`. If only one
-    /// segment exists it is moved into place. Reports the final output path
-    /// via the completion handler.
+    /// Assemble the final output. Strategy:
+    /// 1. Finish the long-lived main writer (`moov`-write only — O(1) regardless
+    ///    of recording length).
+    /// 2. Move its file to `finalOutputURL`.
+    /// Falls back to the single-segment move or `concatenateSegments`
+    /// export if the main writer somehow has no usable file.
     private func assembleFinalOutput(completion: @escaping (String?) -> Void) {
         guard let outputURL = finalOutputURL else {
             completion(nil)
@@ -479,14 +768,6 @@ final class RecordingManager {
         }
         let segmentsCopy = segmentURLs
 
-        if segmentsCopy.isEmpty {
-            print("[RecordingManager] No segments captured for stopRecording")
-            completion(nil)
-            return
-        }
-
-        // Make sure the destination directory exists and that we don't collide
-        // with a stale file from a previous run.
         let parent = outputURL.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: parent.path) {
             try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -495,20 +776,56 @@ final class RecordingManager {
             try? FileManager.default.removeItem(at: outputURL)
         }
 
-        if segmentsCopy.count == 1 {
+        closeMainWriter { [weak self] mainURL in
+            guard let self = self else { completion(nil); return }
+
+            if let mainURL = mainURL,
+               FileManager.default.fileExists(atPath: mainURL.path),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: mainURL.path),
+               let size = attrs[.size] as? Int64,
+               size > 0 {
+                do {
+                    try FileManager.default.moveItem(at: mainURL, to: outputURL)
+                    self.delegate?.recordingDidFinalize(outputURL.path)
+                    completion(outputURL.path)
+                } catch {
+                    print("[RecordingManager] Failed to move main writer output: \(error.localizedDescription)")
+                    self.fallbackAssemble(segmentsCopy, to: outputURL, completion: completion)
+                }
+                return
+            }
+
+            if segmentsCopy.isEmpty {
+                print("[RecordingManager] No audio captured for stopRecording")
+                completion(nil)
+                return
+            }
+
+            self.fallbackAssemble(segmentsCopy, to: outputURL, completion: completion)
+        }
+    }
+
+    /// Final-output assembly path used when the merger is unavailable or
+    /// produced no usable file. Mirrors the pre-merger behavior: move the
+    /// only segment, or run the AVMutableComposition concat.
+    private func fallbackAssemble(_ segments: [URL], to outputURL: URL, completion: @escaping (String?) -> Void) {
+        if segments.count == 1 {
             do {
-                try FileManager.default.moveItem(at: segmentsCopy[0], to: outputURL)
+                if FileManager.default.fileExists(atPath: outputURL.path) {
+                    try FileManager.default.removeItem(at: outputURL)
+                }
+                try FileManager.default.moveItem(at: segments[0], to: outputURL)
                 delegate?.recordingDidFinalize(outputURL.path)
                 completion(outputURL.path)
             } catch {
                 print("[RecordingManager] Failed to move single segment into place: \(error.localizedDescription)")
-                self.delegate?.recordingDidEncounterError(error)
+                delegate?.recordingDidEncounterError(error)
                 completion(nil)
             }
             return
         }
 
-        concatenateSegments(segmentsCopy, to: outputURL) { [weak self] error in
+        concatenateSegments(segments, to: outputURL) { [weak self] error in
             if let error = error {
                 print("[RecordingManager] Failed to concatenate segments: \(error.localizedDescription)")
                 self?.delegate?.recordingDidEncounterError(error)
@@ -616,30 +933,26 @@ final class RecordingManager {
 
         let previewFile = previewParent.appendingPathComponent("paused_recording_preview_\(Int(Date().timeIntervalSince1970 * 1000)).m4a")
 
-        // For a single segment, just copy it (no export session needed).
-        if isReady.segmentsSnapshot.count == 1 {
-            do {
-                if FileManager.default.fileExists(atPath: previewFile.path) {
-                    try FileManager.default.removeItem(at: previewFile)
-                }
-                try FileManager.default.copyItem(at: isReady.segmentsSnapshot[0], to: previewFile)
-                let duration = CMTimeGetSeconds(AVAsset(url: previewFile).duration)
-                self.previewURL = previewFile
-                completion(.success((url: previewFile, duration: duration)))
-            } catch {
-                completion(.failure(error))
-            }
+        // Always preview just the most-recently-finalized segment so
+        // pause -> preview -> resume cycles stay O(1) regardless of how
+        // many segments have accumulated in the session. The full
+        // recording is only assembled at stopRecording.
+        guard let source = isReady.segmentsSnapshot.last else {
+            completion(.failure(NSError(domain: "AudioEngine", code: -1,
+                                        userInfo: [NSLocalizedDescriptionKey: "No audio has been recorded yet to play back"])))
             return
         }
 
-        concatenateSegments(isReady.segmentsSnapshot, to: previewFile) { [weak self] error in
-            if let error = error {
-                completion(.failure(error))
-            } else {
-                let duration = CMTimeGetSeconds(AVAsset(url: previewFile).duration)
-                self?.previewURL = previewFile
-                completion(.success((url: previewFile, duration: duration)))
+        do {
+            if FileManager.default.fileExists(atPath: previewFile.path) {
+                try FileManager.default.removeItem(at: previewFile)
             }
+            try FileManager.default.copyItem(at: source, to: previewFile)
+            let duration = CMTimeGetSeconds(AVAsset(url: previewFile).duration)
+            self.previewURL = previewFile
+            completion(.success((url: previewFile, duration: duration)))
+        } catch {
+            completion(.failure(error))
         }
     }
 
@@ -656,13 +969,13 @@ final class RecordingManager {
     }
 
 
-    private func setupAssetWriter(inputFormat: AVAudioFormat) throws {
+    private func setupAssetWriter() throws {
         guard let url = fileURL else { return }
         assetWriter = try AVAssetWriter(outputURL: url, fileType: .m4a)
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVNumberOfChannelsKey: Int(currentChannels),
-            AVSampleRateKey: currentSampleRate,
+            AVNumberOfChannelsKey: Int(canonicalChannels),
+            AVSampleRateKey: canonicalSampleRate,
             AVEncoderBitRateKey: desiredBitrate
         ]
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
@@ -675,33 +988,82 @@ final class RecordingManager {
         }
     }
 
-    private func appendToWriter(buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
-        guard let input = writerInput, let writer = assetWriter, writer.status == .writing else { return }
-        if input.isReadyForMoreMediaData {
-            // Create CMBlockBuffer/ CMSampleBuffer from PCM
-            var asbd = buffer.format.streamDescription.pointee
-            var formatDesc: CMAudioFormatDescription?
-            CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &formatDesc)
+    /// Append a canonical-format PCM buffer to the writer. Deep-copies the
+    /// sample bytes via kCFAllocatorDefault so Core Media owns the memory and
+    /// the underlying AVAudioPCMBuffer can be safely recycled by the engine
+    /// before the writer drains it.
+    private func appendToWriter(buffer: AVAudioPCMBuffer, at time: AVAudioTime, sourceSampleRate: Double) {
+        guard let input = writerInput,
+              let writer = assetWriter,
+              writer.status == .writing,
+              input.isReadyForMoreMediaData,
+              buffer.frameLength > 0 else { return }
 
-            guard let fmtDesc = formatDesc else { return }
-            let frames = CMItemCount(buffer.frameLength)
-            let pts = CMTime(seconds: Double(time.sampleTime) / buffer.format.sampleRate, preferredTimescale: 1_000_000_000)
+        var asbd = buffer.format.streamDescription.pointee
+        var formatDesc: CMAudioFormatDescription?
+        let fmtStatus = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &asbd,
+            layoutSize: 0, layout: nil,
+            magicCookieSize: 0, magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDesc
+        )
+        guard fmtStatus == noErr, let fmtDesc = formatDesc else { return }
 
-            var blockBuffer: CMBlockBuffer?
-            let audioBuffer = buffer.audioBufferList.pointee.mBuffers
-            let data = audioBuffer.mData!
-            let dataLength = Int(audioBuffer.mDataByteSize)
-            let status = CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: data, blockLength: dataLength, blockAllocator: kCFAllocatorNull, customBlockSource: nil, offsetToData: 0, dataLength: dataLength, flags: 0, blockBufferOut: &blockBuffer)
-            if status != kCMBlockBufferNoErr { return }
+        let audioBuffer = buffer.audioBufferList.pointee.mBuffers
+        guard let src = audioBuffer.mData else { return }
+        let dataLength = Int(audioBuffer.mDataByteSize)
 
-            var sampleBuffer: CMSampleBuffer?
-            let sampleStatus = CMAudioSampleBufferCreateWithPacketDescriptions(allocator: kCFAllocatorDefault, dataBuffer: blockBuffer, dataReady: true, makeDataReadyCallback: nil, refcon: nil, formatDescription: fmtDesc, sampleCount: frames, presentationTimeStamp: pts, packetDescriptions: nil, sampleBufferOut: &sampleBuffer)
-            if sampleStatus != noErr { return }
+        // Allocate a fresh memory block owned by Core Media and copy the
+        // samples into it. blockAllocator: kCFAllocatorDefault means the
+        // CMBlockBuffer will free this memory when it is released.
+        var blockBuffer: CMBlockBuffer?
+        let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: dataLength,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: dataLength,
+            flags: kCMBlockBufferAssureMemoryNowFlag,
+            blockBufferOut: &blockBuffer
+        )
+        guard blockStatus == kCMBlockBufferNoErr, let block = blockBuffer else { return }
 
-            if let sbuf = sampleBuffer {
-                input.append(sbuf)
-            }
-        }
+        let copyStatus = CMBlockBufferReplaceDataBytes(
+            with: src,
+            blockBuffer: block,
+            offsetIntoDestination: 0,
+            dataLength: dataLength
+        )
+        guard copyStatus == kCMBlockBufferNoErr else { return }
+
+        // Use the originating hardware sample timeline for PTS so segments
+        // remain monotonically aligned across pause/resume; the writer sees
+        // canonical-rate samples but the original clock as their timeline.
+        let pts = CMTime(
+            seconds: Double(time.sampleTime) / sourceSampleRate,
+            preferredTimescale: 1_000_000_000
+        )
+
+        var sampleBuffer: CMSampleBuffer?
+        let sampleStatus = CMAudioSampleBufferCreateWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: block,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: fmtDesc,
+            sampleCount: CMItemCount(buffer.frameLength),
+            presentationTimeStamp: pts,
+            packetDescriptions: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard sampleStatus == noErr, let sbuf = sampleBuffer else { return }
+
+        input.append(sbuf)
     }
 
     private func finishWriter() {
@@ -800,7 +1162,15 @@ final class RecordingManager {
                                 mode: .voiceChat,
                                 options: [.defaultToSpeaker, .mixWithOthers])
 
-        try session.setPreferredSampleRate(currentSampleRate)
+        // Hint hardware to deliver our canonical layout. iOS may refuse if the
+        // mic doesn't support it; the per-tap AVAudioConverter handles the
+        // remaining conversion either way.
+        do {
+            try session.setPreferredSampleRate(canonicalSampleRate)
+            try session.setPreferredInputNumberOfChannels(Int(canonicalChannels))
+        } catch {
+            print("[RecordingManager] Preferred sample rate/channels not honored by device: \(error.localizedDescription)")
+        }
         try session.setPreferredInput(nil)
         try session.setActive(true)
     }
@@ -1276,11 +1646,8 @@ final class RecordingManager {
             // We need to stop and notify the user
 
             // Clean up invalid objects
+            removeInputTapIfInstalled()
             if let engine = audioEngine {
-                if inputNodeTapInstalled {
-                    engine.inputNode.removeTap(onBus: 0)
-                    inputNodeTapInstalled = false
-                }
                 engine.stop()
             }
 
@@ -1309,11 +1676,8 @@ final class RecordingManager {
         print("[RecordingManager] Recording was lost - cleaning up and notifying UI")
 
         // Clean up resources
+        removeInputTapIfInstalled()
         if let engine = audioEngine {
-            if inputNodeTapInstalled {
-                engine.inputNode.removeTap(onBus: 0)
-                inputNodeTapInstalled = false
-            }
             engine.stop()
         }
 

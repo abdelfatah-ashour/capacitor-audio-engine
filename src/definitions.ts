@@ -641,9 +641,31 @@ export interface CapacitorAudioEnginePlugin {
 
   /**
    * Start live recording capture from microphone.
+   *
+   * Two recording pipelines are available, picked at start time:
+   *
+   * - **Default (`enablePausedPreview: false`)**: one MediaRecorder writes
+   *   straight to `path` and uses native pause/resume. Stop finalizes in
+   *   constant time regardless of recording length. `preparePausedRecordingPreview`
+   *   is **not** available in this mode and will reject.
+   * - **Preview-enabled (`enablePausedPreview: true`)**: segment-based
+   *   pipeline that lets you call `preparePausedRecordingPreview` while
+   *   paused. There is some per-pause bookkeeping and a one-time muxer
+   *   cost on each preview, so only opt in when your UI actually offers a
+   *   preview-while-paused feature.
+   *
    * @returns Promise that resolves with the recording URI
    */
-  startRecording(options: { path: string }): Promise<{ uri: string }>;
+  startRecording(options: {
+    path: string;
+    /**
+     * Opt into the segment-based pipeline so `preparePausedRecordingPreview`
+     * works while paused. Defaults to `false` for the fastest stop time.
+     * @platform android
+     * @platform ios
+     */
+    enablePausedPreview?: boolean;
+  }): Promise<{ uri: string }>;
 
   /**
    * Stop live recording capture and get file information.
@@ -684,7 +706,8 @@ export interface CapacitorAudioEnginePlugin {
    * starts. Each call regenerates the preview to reflect the latest segments.
    *
    * Must be called while recording is in the `paused` state and at least one
-   * segment has been captured.
+   * segment has been captured. The recording must have been started with
+   * `enablePausedPreview: true`; otherwise this call rejects.
    *
    * Drive playback with the regular playback methods using the returned
    * `uri`:

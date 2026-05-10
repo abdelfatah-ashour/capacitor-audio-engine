@@ -880,6 +880,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             String outputPath = call.getString("path");
             RecordingManager.StartOptions opts = new RecordingManager.StartOptions();
             opts.path = outputPath;
+            opts.enablePausedPreview = call.getBoolean("enablePausedPreview", false);
 
             // Start recording with validated permissions
             try {
@@ -921,44 +922,50 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     @PluginMethod
     public void stopRecording(PluginCall call) {
-        try {
-            // Stop wave level monitoring first
-            if (waveLevelEmitter != null && waveLevelEmitter.isMonitoring()) {
-                try {
-                    waveLevelEmitter.stopMonitoring();
-                    Log.d(TAG, "Wave level monitoring stopped with recording");
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to stop wave level monitoring", e);
-                }
+        // Stop wave-level monitoring and tear down preview playback on the
+        // calling thread — these are cheap and must observe the synchronous
+        // ordering with subsequent state changes.
+        if (waveLevelEmitter != null && waveLevelEmitter.isMonitoring()) {
+            try {
+                waveLevelEmitter.stopMonitoring();
+                Log.d(TAG, "Wave level monitoring stopped with recording");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to stop wave level monitoring", e);
             }
+        }
+        stopPausedPlaybackInternal();
 
-            // Drop any in-progress paused-playback preview before assembling the final file.
-            stopPausedPlaybackInternal();
-
-            // Stop recording and wait for file to be ready
-            String filePath = recordingManager.stopRecordingAndWaitForFile();
+        // Run the muxer-finalize + file move on the audio executor so the
+        // bridge thread is never blocked, even if a preview reseed is queued
+        // ahead of us.
+        audioProcessingExecutor.execute(() -> {
+            String filePath;
+            try {
+                filePath = recordingManager.stopRecordingAndWaitForFile();
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping recording", e);
+                mainHandler.post(() -> call.reject("RECORDING_STOP_ERROR", e.getMessage()));
+                return;
+            }
 
             if (filePath == null || filePath.isEmpty()) {
-                call.reject("RECORDING_STOP_ERROR", "No recording file path available");
+                mainHandler.post(() -> call.reject("RECORDING_STOP_ERROR", "No recording file path available"));
                 return;
             }
 
-            // Verify file exists and has content
             File recordingFile = new File(filePath);
             if (!recordingFile.exists()) {
-                call.reject("RECORDING_STOP_ERROR", "Recording file was not created: " + filePath);
+                mainHandler.post(() -> call.reject("RECORDING_STOP_ERROR", "Recording file was not created: " + filePath));
                 return;
             }
-
             if (recordingFile.length() == 0) {
-                call.reject("RECORDING_STOP_ERROR", "Recording file is empty: " + filePath);
+                mainHandler.post(() -> call.reject("RECORDING_STOP_ERROR", "Recording file is empty: " + filePath));
                 return;
             }
 
             Log.d(TAG, "Recording stopped successfully. File: " + filePath + ", size: " + recordingFile.length()
                     + " bytes");
 
-            // Pre-warm recorder for faster subsequent recordings after long sessions
             try {
                 recordingManager.preWarmRecorder();
                 Log.d(TAG, "MediaRecorder pre-warmed for faster subsequent recordings");
@@ -966,13 +973,9 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
                 Log.w(TAG, "Failed to pre-warm MediaRecorder", e);
             }
 
-            // Get audio file info
             JSObject audioInfo = AudioFileProcessor.getAudioFileInfo(filePath);
-            call.resolve(audioInfo);
-        } catch (Exception e) {
-            Log.e(TAG, "Error stopping recording", e);
-            call.reject("RECORDING_STOP_ERROR", e.getMessage());
-        }
+            mainHandler.post(() -> call.resolve(audioInfo));
+        });
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)

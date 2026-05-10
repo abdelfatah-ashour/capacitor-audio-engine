@@ -1321,6 +1321,7 @@ export class FeaturesDemoComponent implements OnInit, OnDestroy {
       const path = `/audio-files/recording_${Date.now()}.m4a`;
       await CapacitorAudioEngine.startRecording({
         path,
+        enablePausedPreview: true,
       });
 
       const encoding = 'aac' as const;

@@ -402,7 +402,7 @@ export class CapacitorAudioEngineWeb extends WebPlugin implements CapacitorAudio
     alert(message);
   }
 
-  async startRecording(_options: { path: string }): Promise<{ uri: string }> {
+  async startRecording(_options: { path: string; enablePausedPreview?: boolean }): Promise<{ uri: string }> {
     void _options; // Parameter for API compatibility
     console.warn('startRecording is not supported on web platform.');
     return { uri: '' };
