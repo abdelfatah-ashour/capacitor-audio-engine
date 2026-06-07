@@ -83,6 +83,12 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
 
         // Initialize playback manager
         playbackManager = PlaybackManager(delegate: self)
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
+        } catch {
+            log("Failed to pre-arm audio session category at load: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Logging Utility
@@ -1069,8 +1075,11 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         Task {
             let audioSession = AVAudioSession.sharedInstance()
 
-            // Try to activate the audio session to get input availability
-            try? audioSession.setCategory(.record, mode: .default)
+            // Use `.playAndRecord` + `.mixWithOthers` (NOT `.record`) to probe input.
+            // `.record` is input-only and silences all playback, so probing it while a
+            // WebView feedback tone is playing cuts the tone off (CP-3745). `.playAndRecord`
+            // with `.mixWithOthers` reads the same input availability without muting output.
+            try? audioSession.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .defaultToSpeaker])
 
             // Check if microphone exists
             let microphoneExists: Bool
@@ -1100,8 +1109,7 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
     private func isMicrophoneInUse(audioSession: AVAudioSession) -> Bool {
         // Check if the MIC is currently in use for recording by another app
         do {
-            // Set category to record - same as we use for actual recording
-            try audioSession.setCategory(.record, mode: .default, options: [])
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .defaultToSpeaker])
 
             // Try to activate the audio session for recording
             try audioSession.setActive(true, options: [])
@@ -1110,7 +1118,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
             let isInputAvailable = audioSession.isInputAvailable
 
             if !isInputAvailable {
-                try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
                 print("[AudioEngine] Input not available - MIC might be in use")
                 return true
             }
@@ -1128,7 +1135,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
                         try audioSession.setInputGain(currentGain)
                         print("[AudioEngine] Successfully tested input gain - MIC is available")
                     } catch {
-                        try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
                         print("[AudioEngine] Cannot set input gain - MIC might be in use: \(error)")
                         return true
                     }
@@ -1143,7 +1149,6 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
             let inputFormat = inputNode.inputFormat(forBus: 0)
 
             if inputFormat.sampleRate == 0 || inputFormat.channelCount == 0 {
-                try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
                 print("[AudioEngine] Invalid input format - MIC might be in use")
                 return true
             }
@@ -1155,14 +1160,10 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
             // Remove the tap immediately
             inputNode.removeTap(onBus: 0)
 
-            // Deactivate the session
-            try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-
             print("[AudioEngine] MIC is available for recording")
             return false
 
         } catch let error as NSError {
-            try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
 
             // Check for specific error codes that indicate mic is in use
             if error.domain == NSOSStatusErrorDomain {

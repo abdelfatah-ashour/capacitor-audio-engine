@@ -1158,18 +1158,11 @@ final class RecordingManager {
     private func configureAudioSessionForRecording() throws {
         let session = AVAudioSession.sharedInstance()
 
-        try session.setCategory(.playAndRecord,
-                                mode: .voiceChat,
-                                options: [.defaultToSpeaker, .mixWithOthers])
-
-        // Hint hardware to deliver our canonical layout. iOS may refuse if the
-        // mic doesn't support it; the per-tap AVAudioConverter handles the
-        // remaining conversion either way.
-        do {
-            try session.setPreferredSampleRate(canonicalSampleRate)
-            try session.setPreferredInputNumberOfChannels(Int(canonicalChannels))
-        } catch {
-            print("[RecordingManager] Preferred sample rate/channels not honored by device: \(error.localizedDescription)")
+        let desiredOptions: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .mixWithOthers]
+        if session.category != .playAndRecord
+            || session.mode != .default
+            || !session.categoryOptions.isSuperset(of: desiredOptions) {
+            try session.setCategory(.playAndRecord, mode: .default, options: desiredOptions)
         }
         try session.setPreferredInput(nil)
         try session.setActive(true)

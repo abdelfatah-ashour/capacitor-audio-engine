@@ -168,9 +168,13 @@ class WaveLevelEmitter {
             let inputFormat = inputNode.outputFormat(forBus: 0)
             log("Input format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) channels")
 
-            // Configure audio session for recording
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
+            let desiredOptions: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .mixWithOthers]
+            if audioSession.category != .playAndRecord
+                || audioSession.mode != .default
+                || !audioSession.categoryOptions.isSuperset(of: desiredOptions) {
+                try audioSession.setCategory(.playAndRecord, mode: .default, options: desiredOptions)
+            }
             try audioSession.setActive(true)
 
             // Install tap on input node for real-time audio processing
