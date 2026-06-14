@@ -521,14 +521,14 @@ final class RecordingManager {
         input.append(sbuf)
     }
 
-    func stopRecording() {
-        stopRecordingAndWaitForFile { _ in }
+    func stopRecording(deactivateAudioSession: Bool = true) {
+        stopRecordingAndWaitForFile(deactivateAudioSession: deactivateAudioSession) { _ in }
     }
 
     /// Stop recording, finalize the active segment, concatenate every segment
     /// captured during the session into the user-requested final output path,
     /// and report that path via the completion handler.
-    func stopRecordingAndWaitForFile(completion: @escaping (String?) -> Void) {
+    func stopRecordingAndWaitForFile(deactivateAudioSession: Bool = true, completion: @escaping (String?) -> Void) {
         let shouldProceed: Bool = performStateOperation {
             guard isRecording else { return false }
             return true
@@ -564,7 +564,9 @@ final class RecordingManager {
                     self.converter = nil
                     self.aacFormat = nil
 
-                    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                    if deactivateAudioSession {
+                        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                    }
 
                     self.cleanupSegments()
                     self.cleanupPausedPlaybackPreview()
