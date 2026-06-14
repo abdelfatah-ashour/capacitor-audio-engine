@@ -113,7 +113,8 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
                 return;
             }
 
-            if (!requestAudioFocus()) {
+            boolean shouldRequestFocus = options == null || options.requestAudioFocus == null || options.requestAudioFocus;
+            if (shouldRequestFocus && !requestAudioFocus()) {
                 Log.w(TAG, "Failed to gain audio focus, but continuing with recording");
             }
 
@@ -649,6 +650,12 @@ class RecordingManager implements AudioManager.OnAudioFocusChangeListener {
          * available regardless of this flag.
          */
         Boolean enablePausedPreview;
+        /**
+         * When false, recording does not request exclusive playback audio focus,
+         * allowing app audio (e.g. a disclosure tone) to keep playing while
+         * recording. Defaults to true to preserve previous behavior.
+         */
+        Boolean requestAudioFocus;
     }
 
     StatusInfo getStatus() {

@@ -665,13 +665,25 @@ export interface CapacitorAudioEnginePlugin {
      * @platform ios
      */
     enablePausedPreview?: boolean;
+    /**
+     * When `false`, recording does not request exclusive playback audio focus,
+     * so app audio (e.g. an audible-disclosure tone) keeps playing while
+     * recording instead of being stopped. Defaults to `true`.
+     * @platform android
+     */
+    requestAudioFocus?: boolean;
   }): Promise<{ uri: string }>;
 
   /**
    * Stop live recording capture and get file information.
+   * @param options - Optional stop options
+   * @param options.deactivateAudioSession - iOS only. When `false`, the shared
+   * `AVAudioSession` is left active on stop so concurrently playing app audio
+   * (e.g. an audible-disclosure tone) is not cut off and an immediate restart
+   * is seamless. Defaults to `true`.
    * @returns Promise that resolves with complete audio file information
    */
-  stopRecording(): Promise<AudioFileInfo>;
+  stopRecording(options?: { deactivateAudioSession?: boolean }): Promise<AudioFileInfo>;
 
   /**
    * Manually pause live recording capture.

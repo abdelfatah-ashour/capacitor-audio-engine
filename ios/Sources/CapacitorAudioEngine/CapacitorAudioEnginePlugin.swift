@@ -801,7 +801,9 @@ public class CapacitorAudioEnginePlugin: CAPPlugin, CAPBridgedPlugin, WaveLevelE
         stopPausedPlaybackInternal()
         waveLevelEmitter.stopMonitoring()
 
-        recordingManager.stopRecordingAndWaitForFile { [weak self] filePath in
+        let deactivateAudioSession = call.getBool("deactivateAudioSession", true)
+
+        recordingManager.stopRecordingAndWaitForFile(deactivateAudioSession: deactivateAudioSession) { [weak self] filePath in
             guard let self = self else {
                 call.reject("Plugin deallocated before stop completed")
                 return

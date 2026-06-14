@@ -881,6 +881,7 @@ public class CapacitorAudioEnginePlugin extends Plugin implements EventManager.E
             RecordingManager.StartOptions opts = new RecordingManager.StartOptions();
             opts.path = outputPath;
             opts.enablePausedPreview = call.getBoolean("enablePausedPreview", false);
+            opts.requestAudioFocus = call.getBoolean("requestAudioFocus", true);
 
             // Start recording with validated permissions
             try {
